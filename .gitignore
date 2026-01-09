@@ -10,6 +10,7 @@ _hf_cache/
 
 # config
 *.yaml
+!compose.yaml
 
 # logs
 *.log

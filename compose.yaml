@@ -1,0 +1,58 @@
+services:
+  whisper_poc:
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile.base
+    image: call-analytics-base:cuda12
+    working_dir: /work
+    volumes:
+      - ./:/work
+      - ./_hf_cache:/root/.cache/huggingface
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=qwen3:latest
+      #- DAYS=2026/01/01,2026/01/02,2026/01/03,2026/01/04,2026/01/05
+      - PROCESS_LIMIT=30
+      - WHISPER_INITIAL_PROMPT=Розмова про XXX Group, Auvix, телевізори, аудіосистеми
+      - WHISPER_DEVICE=cuda
+      - WHISPER_COMPUTE_TYPE=float16
+      - WHISPER_MODEL=medium
+      - MIN_BYTES=20000
+      - MIN_SECONDS=1.0
+    gpus: all
+    command: ["python", "src/process_calls.py"]
+
+  whisper_debug:
+    image: call-analytics-base:cuda12
+    working_dir: /work
+    volumes:
+      - ./:/work
+      - ./_hf_cache:/root/.cache/huggingface
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=qwen3:latest
+      #- DAYS=2026/01/01,2026/01/02,2026/01/03,2026/01/04,2026/01/05
+      - PROCESS_LIMIT=30
+      - WHISPER_INITIAL_PROMPT=Розмова про XXX Group, Auvix, телевізори, аудіосистеми
+      - WHISPER_DEVICE=cuda
+      - WHISPER_COMPUTE_TYPE=float16
+      - WHISPER_MODEL=medium
+      - MIN_BYTES=20000
+      - MIN_SECONDS=1.0
+    gpus: all
+    ports:
+      - "5678:5678"
+    command:
+      - python
+      - -Xfrozen_modules=off
+      - -m
+      - debugpy
+      - --listen
+      - 0.0.0.0:5678
+      - --wait-for-client
+      - src/process_calls.py

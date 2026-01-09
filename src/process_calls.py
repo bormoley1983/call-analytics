@@ -64,8 +64,8 @@ PROCESS_LIMIT = int(os.getenv("PROCESS_LIMIT", "30"))
 #DAYS = int(os.getenv("DAYS", "2026/01/01,2026/01/02,2026/01/03,2026/01/04,2026/01/05"))
 
 # Force regeneration controls
-FORCE_REANALYZE = os.getenv("FORCE_REANALYZE", "0") == "1"
-FORCE_RETRANSCRIBE = os.getenv("FORCE_RETRANSCRIBE", "0") == "1"
+FORCE_REANALYZE = os.getenv("FORCE_REANALYZE", "0") == "0"
+FORCE_RETRANSCRIBE = os.getenv("FORCE_RETRANSCRIBE", "0") == "0"
 FORCE_TRANSLATE_UK = os.getenv("FORCE_TRANSLATE_UK", "1") == "1"  # default ON (you want UA)
 
 # Translation batching limits (to keep prompts small)
@@ -553,45 +553,41 @@ class ManagerMapper:
         Find manager based on phone numbers and call direction.
         
         Logic:
-        1. Check if call involves management/dev shared line (0551234567)
-           - For incoming to 888/889: assign to that specific manager
-           - For outgoing from 888/889: assign to that specific manager
-        2. Check sales team:
-           - For incoming: can be any sales manager (forwarded)
-           - For outgoing: match source extension/number to specific sales manager
-        3. Return default if no match
+        1. For outgoing: check source (who made the call)
+        2. For incoming: check destination (who received the call)
+        3. Check management/dev first (by extension), then sales
         """
         src_norm = self.normalize_number(src_number)
         dst_norm = self.normalize_number(dst_number)
         
-        # Check management/dev shared line
+        # Check management/dev managers by extension FIRST
+        for mgr in self.management_dev.get('managers', []):
+            internal_exts = [str(ext) for ext in mgr.get('internal_extensions', [])]
+            
+            if direction == "incoming":
+                # Incoming: check destination extension
+                if dst_number in internal_exts:
+                    return {
+                        "name": mgr['name'],
+                        "id": mgr['id'],
+                        "role": mgr.get('role', 'management')
+                    }
+            elif direction == "outgoing":
+                # Outgoing: check source extension
+                if src_number in internal_exts:
+                    return {
+                        "name": mgr['name'],
+                        "id": mgr['id'],
+                        "role": mgr.get('role', 'management')
+                    }
+        
+        # Check if call involves management/dev shared external line (as fallback)
         mgmt_line = self.normalize_number(
             self.management_dev.get('shared_external_line', '')
         )
         
         if mgmt_line and (src_norm == mgmt_line or dst_norm == mgmt_line):
-            # Call involves management/dev line
-            for mgr in self.management_dev.get('managers', []):
-                internal_exts = [str(ext) for ext in mgr.get('internal_extensions', [])]
-                
-                if direction == "incoming":
-                    # Incoming to management/dev: check destination extension
-                    if dst_number in internal_exts:
-                        return {
-                            "name": mgr['name'],
-                            "id": mgr['id'],
-                            "role": mgr.get('role', 'management')
-                        }
-                elif direction == "outgoing":
-                    # Outgoing from management/dev: check source extension
-                    if src_number in internal_exts:
-                        return {
-                            "name": mgr['name'],
-                            "id": mgr['id'],
-                            "role": mgr.get('role', 'management')
-                        }
-            
-            # If shared line but no specific extension match, mark as management general
+            # Call involves management/dev line but no specific extension matched
             return {
                 "name": "Management (general)",
                 "id": "management_general",
@@ -607,8 +603,7 @@ class ManagerMapper:
             ]
             
             if direction == "incoming":
-                # Incoming sales calls: check if destination matches this sales manager
-                # (Note: if forwarded to all, might need additional logic)
+                # Incoming sales calls: check if destination matches
                 if dst_number in internal_exts or dst_norm in external_lines:
                     return {
                         "name": sales_mgr['name'],
@@ -625,8 +620,6 @@ class ManagerMapper:
                     }
         
         return self.default_manager
-
-# ...existing code...
 
 def aggregate_report_by_manager(per_call: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
@@ -834,6 +827,18 @@ def main() -> None:
         else:
             transcript = transcribe(model, norm_path)
 
+        # Add manager info to transcript
+        transcript["manager_name"] = meta["manager_name"]
+        transcript["manager_id"] = meta["manager_id"]
+        transcript["role"] = meta["role"]
+        transcript["call_meta"] = {
+            "direction": meta.get("direction"),
+            "src_number": meta.get("src_number"),
+            "dst_number": meta.get("dst_number"),
+            "date": meta.get("date"),
+            "time": meta.get("time"),
+        }
+
         # Ensure UA transcript fields
         changed = False
         try:
@@ -866,17 +871,37 @@ def main() -> None:
                 analysis["summary"] = "Не вдалося отримати коректний JSON-аналіз від моделі. Дзвінок позначено як проблемний для повторної перевірки."
                 analysis["analysis_error"] = repr(e)
 
+        # Add manager info to analysis
+        analysis["manager_name"] = meta["manager_name"]
+        analysis["manager_id"] = meta["manager_id"]
+        analysis["role"] = meta["role"]
+        analysis["call_meta"] = {
+            "direction": meta.get("direction"),
+            "src_number": meta.get("src_number"),
+            "dst_number": meta.get("dst_number"),
+            "date": meta.get("date"),
+            "time": meta.get("time"),
+            "audio_seconds": meta.get("audio_seconds"),
+        }
+
         # Always save normalized analysis back
         an_path.write_text(json.dumps(analysis, ensure_ascii=False, indent=2), encoding="utf-8")
 
         per_call.append({"meta": meta, "analysis": analysis, "status": "processed"})
 
+    # Generate overall report
     report = aggregate_report(per_call)
     (OUT / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print("\n=== SUMMARY ===")
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    # Generate per-manager report
+    manager_report = aggregate_report_by_manager(per_call)
+    (OUT / "report_by_manager.json").write_text(json.dumps(manager_report, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    print("\n=== OVERALL SUMMARY ===")
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    
+    print("\n=== PER-MANAGER SUMMARY ===")
+    print(json.dumps(manager_report, ensure_ascii=False, indent=2))
 
 if __name__ == "__main__":
     main()

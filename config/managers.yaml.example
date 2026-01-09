@@ -1,0 +1,38 @@
+# Manager mapping configuration
+
+# Management and Development - these are tracked separately
+management_dev:
+  shared_external_line: "0551234567"
+  managers:
+    - name: "MGR1"
+      id: "manager_001"
+      role: "management"
+      internal_extensions:
+        - "888"
+
+# Sales team - incoming calls forwarded to all, outgoing from specific extensions
+sales:
+  managers:
+    - name: "Sales1"
+      id: "sales_001"
+      internal_extensions:
+        - "101"
+        - "201"
+      external_lines:
+        - "0501234567"
+        - "0511234567"
+    
+    - name: "Sales2"
+      id: "sales_002"
+      internal_extensions:
+        - "102"
+        - "202"
+      external_lines:
+        - "0501234567"
+        - "0511234567"
+
+# Default manager for unmatched calls
+default_manager:
+  name: "Unknon/General"
+  id: "manager_unknown"
+  role: "unknown"

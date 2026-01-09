@@ -1,0 +1,18 @@
+# Brand name corrections for transcription
+corrections:
+  # Ukrainian mistranscription -> Correct term
+  "AAA": "AAA"
+  "AAA": "AAA"
+  "XXX-групп": "XXX Group"
+  "XXX групп": "XXX Group"
+  "XXX груп": "XXX Group"
+  "епл": "Apple"
+  "самсунг": "Samsung"
+  "соні": "Sony"
+  "лджі": "LG"
+
+# Initial prompt for Whisper (helps with context)
+initial_prompt: |
+  Розмова про продукцію XXX Group, компанії AAA, 
+  телевізори, аудіосистеми, проектори, освітлення.
+  Brands: AAA, XXX Group, Apple, Samsung, Sony, LG.

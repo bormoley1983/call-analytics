@@ -1,0 +1,18 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# data & outputs (DO NOT COMMIT)
+calls_raw/
+out/
+_hf_cache/
+
+# config
+*.yaml
+
+# logs
+*.log
+
+# misc
+.DS_Store

@@ -14,18 +14,17 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
-      - OLLAMA_MODEL=qwen2.5:32b
+      #- OLLAMA_MODEL=qwen2.5:32b
 
       #- DAYS=2026/01/01,2026/01/02,2026/01/03,2026/01/04,2026/01/05
-      - PROCESS_LIMIT=30
+      #- PROCESS_LIMIT=30
       - MIN_BYTES=20000
       - MIN_SECONDS=1.0
       
-      - WHISPER_MODEL=large-v3-turbo
-      - WHISPER_DEVICE=cuda
-      - WHISPER_COMPUTE_TYPE=float16
-      - WHISPER_BEAM_SIZE=5
-      - FORCE_TRANSLATE_UK=0
+      #- WHISPER_MODEL=large-v3-turbo
+      #- WHISPER_DEVICE=cuda
+      #- WHISPER_COMPUTE_TYPE=float16
+      #- WHISPER_BEAM_SIZE=5
     gpus: all
     command: ["python", "src/process_calls.py"]
 
@@ -39,16 +38,17 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
-      - OLLAMA_MODEL=qwen2.5:32b
+      #- OLLAMA_MODEL=qwen2.5:32b
 
       #- DAYS=2026/01/01,2026/01/02,2026/01/03,2026/01/04,2026/01/05
-      - PROCESS_LIMIT=30
-      - MIN_BYTES=20000
-      - MIN_SECONDS=1.0
+      #- PROCESS_LIMIT=30
+      #- MIN_BYTES=20000
+      #- MIN_SECONDS=1.0
       
-      - WHISPER_MODEL=large-v3-turbo
-      - WHISPER_DEVICE=cuda
-      - WHISPER_COMPUTE_TYPE=float16
+      #- WHISPER_MODEL=large-v3-turbo
+      #- WHISPER_DEVICE=cuda
+      #- WHISPER_COMPUTE_TYPE=float16
+      #- WHISPER_BEAM_SIZE=5
     gpus: all
     ports:
       - "5678:5678"

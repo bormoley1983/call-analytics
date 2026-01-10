@@ -1,0 +1,15 @@
+# Analysis configuration example
+# Copy to analysis.yaml and customize
+
+company:
+  name: "Your Company Name"
+  business: "your business description"
+  products:
+    - "product1"
+    - "product2"
+  brands:
+    - "Brand1"
+
+analysis_prompt: |
+  Ти аналізуєш телефонні дзвінки для компанії {company_name}...
+  [rest of template]

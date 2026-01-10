@@ -22,7 +22,6 @@ import re
 import time
 import subprocess
 import hashlib
-import yaml
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
@@ -31,72 +30,48 @@ import requests
 from tqdm import tqdm
 from faster_whisper import WhisperModel
 
-# ----------------------------
-# Paths
-# ----------------------------
-ROOT = Path(os.getenv("PROJECT_ROOT", Path(__file__).resolve().parents[1]))
-CALLS_RAW = ROOT / "calls_raw"
-OUT = ROOT / "out"
-NORM = OUT / "normalized"
-TRANS = OUT / "transcripts"
-ANALYSIS = OUT / "analysis"
-CONFIG_DIR = ROOT / "config"
-MANAGERS_CONFIG = CONFIG_DIR / "managers.yaml"
-BRANDS_CONFIG = CONFIG_DIR / "brands.yaml"
+from call_config import AppConfig, load_app_config
+
 
 # ----------------------------
-# Env config
+# CONSTANTS
 # ----------------------------
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:latest")
+TRUNCATION_MESSAGE_UK = "\n\n[... транскрипт обрізано через обмеження довжини моделі ...]"
+TRANSLATION_PROMPT_TEMPLATE = """Переклади наступні фрагменти на українську мову. Збережи нумерацію.
 
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")          # small|medium|large-v3
-DEVICE = os.getenv("WHISPER_DEVICE", "cuda")                  # cuda|cpu
-COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "float16")   # cuda: float16 ; cpu: int8
+{combined}
 
-MIN_BYTES = int(os.getenv("MIN_BYTES", "20000"))              # skip tiny files
-MIN_SECONDS = float(os.getenv("MIN_SECONDS", "1.0"))          # skip very short audio
-
-# Processing limit (default 30 files)
-PROCESS_LIMIT = int(os.getenv("PROCESS_LIMIT", "30"))
-
-# Processing limit (default 30 files)
-#DAYS = int(os.getenv("DAYS", "2026/01/01,2026/01/02,2026/01/03,2026/01/04,2026/01/05"))
-
-# Force regeneration controls
-FORCE_REANALYZE = os.getenv("FORCE_REANALYZE", "0") == "0"
-FORCE_RETRANSCRIBE = os.getenv("FORCE_RETRANSCRIBE", "0") == "0"
-FORCE_TRANSLATE_UK = os.getenv("FORCE_TRANSLATE_UK", "1") == "1"  # default ON (you want UA)
-
-# Translation batching limits (to keep prompts small)
-MAX_SEGMENTS_TRANSLATE = int(os.getenv("MAX_SEGMENTS_TRANSLATE", "60"))
-MAX_CHARS_TRANSLATE = int(os.getenv("MAX_CHARS_TRANSLATE", "12000"))
-MAX_CHARS_ANALYZE = int(os.getenv("MAX_CHARS_ANALYZE", "9000"))
+Поверни ТІЛЬКИ переклад у такому ж форматі (номер. текст), без додаткових пояснень."""
 
 # ----------------------------
-# Helpers
+# Helpers - Now Accept Config
 # ----------------------------
-def ensure_dirs() -> None:
-    for p in [OUT, NORM, TRANS, ANALYSIS]:
+def ensure_dirs(config: AppConfig) -> None:
+    """Ensure output directories exist."""
+    for p in [config.out, config.norm, config.trans, config.analysis]:
         p.mkdir(parents=True, exist_ok=True)
 
+
 def sha12(s: str) -> str:
+    """Generate 12-character hash for file identification."""
     return hashlib.sha1(s.encode("utf-8")).hexdigest()[:12]
 
-def discover_all_wav_files() -> List[Path]:
+
+def discover_all_wav_files(config: AppConfig) -> List[Path]:
     """
     Recursively discover all .wav files under CALLS_RAW directory.
     Returns them sorted by modification time (oldest first) for consistent processing.
     """
-    if not CALLS_RAW.exists():
+    if not config.calls_raw.exists():
         return []
     
-    all_files = list(CALLS_RAW.rglob("*.wav"))
+    all_files = list(config.calls_raw.rglob("*.wav"))
     # Sort by modification time (oldest first)
     all_files.sort(key=lambda p: p.stat().st_mtime)
     return all_files
 
-def discover_wav_files_from_specified_dirs() -> List[Path]:
+
+def discover_wav_files_from_specified_dirs(config: AppConfig) -> List[Path]:
     """
     Discover WAV files from specific date directories.
     Expects DAYS env var: "2026/01/01,2026/01/02,..."
@@ -107,26 +82,27 @@ def discover_wav_files_from_specified_dirs() -> List[Path]:
     if not days_env.strip():
         print("DAYS env var not set or empty. Returning empty list.")
         return []
-																 
+    
     day_list = [d.strip().replace("\\", "/") for d in days_env.split(",") if d.strip()]
     all_files: List[Path] = []
 
     for d in day_list:
-        day_path = CALLS_RAW / d
+        day_path = config.calls_raw / d
         if day_path.exists():
             all_files.extend(day_path.glob("*.wav"))
 
     all_files = sorted(all_files)
-																	
+    
     if not all_files:
-        print("No WAV files found. Checked day folders under:", CALLS_RAW)
+        print("No WAV files found. Checked day folders under:", config.calls_raw)
         for d in day_list:
-            print("  ", (CALLS_RAW / d))
-        return
+            print("  ", (config.calls_raw / d))
+        return []
 
     return all_files
 
-def filter_unprocessed_files(files: List[Path]) -> List[Path]:
+
+def filter_unprocessed_files(files: List[Path], config: AppConfig) -> List[Path]:
     """
     Filter out files that have already been processed.
     A file is considered processed if both transcript and analysis exist.
@@ -134,11 +110,11 @@ def filter_unprocessed_files(files: List[Path]) -> List[Path]:
     unprocessed = []
     for src in files:
         cid = sha12(src.name + str(src.stat().st_size))
-        tr_path = TRANS / f"{cid}.json"
-        an_path = ANALYSIS / f"{cid}.json"
+        tr_path = config.trans / f"{cid}.json"
+        an_path = config.analysis / f"{cid}.json"
         
         # If forcing re-processing, include all
-        if FORCE_RETRANSCRIBE or FORCE_REANALYZE:
+        if config.force_retranscribe or config.force_reanalyze:
             unprocessed.append(src)
         # Otherwise only include if not fully processed
         elif not (tr_path.exists() and an_path.exists()):
@@ -146,8 +122,9 @@ def filter_unprocessed_files(files: List[Path]) -> List[Path]:
     
     return unprocessed
 
+
 def parse_freepbx_filename(name: str) -> Dict[str, Any]:
-    # Expected: dir-dst-src-YYYYMMDD-HHMMSS-uniqueid.wav
+    """Parse FreePBX filename format: dir-dst-src-YYYYMMDD-HHMMSS-uniqueid.wav"""
     base = name.rsplit(".", 1)[0] if "." in name else name
     parts = base.split("-")
     meta: Dict[str, Any] = {"raw_name": name}
@@ -161,27 +138,23 @@ def parse_freepbx_filename(name: str) -> Dict[str, Any]:
 
     direction = "incoming" if dir_tag == "in" else "outgoing" if dir_tag == "out" else "unknown"
 
-    meta.update(
-        {
-            "direction": direction,
-            "dst_number": dst,
-            "src_number": src,
-            "date": yyyymmdd,
-            "time": hhmmss,
-            "asterisk_uniqueid": uniqueid,
-        }
-    )
+    meta.update({
+        "direction": direction,
+        "dst_number": dst,
+        "src_number": src,
+        "date": yyyymmdd,
+        "time": hhmmss,
+        "asterisk_uniqueid": uniqueid,
+    })
     return meta
 
+
 def ffprobe_duration_seconds(path: Path) -> float:
+    """Get audio duration using ffprobe."""
     cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
         str(path)
     ]
     p = subprocess.run(cmd, capture_output=True, text=True)
@@ -192,24 +165,34 @@ def ffprobe_duration_seconds(path: Path) -> float:
     except Exception:
         return 0.0
 
+
 def normalize_audio(src: Path, dst: Path) -> None:
-    # Convert to 16kHz mono wav (better for Whisper, even if source is 8kHz)
+    """Convert to 16kHz mono wav (better for Whisper)."""
     cmd = ["ffmpeg", "-y", "-i", str(src), "-ac", "1", "-ar", "16000", "-vn", str(dst)]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-def transcribe(model: WhisperModel, wav_path: Path) -> Dict[str, Any]:
+
+def transcribe(model: WhisperModel, wav_path: Path, config: AppConfig) -> Dict[str, Any]:
+    """Transcribe audio using Whisper model with config settings."""
     segments, info = model.transcribe(
         str(wav_path),
+        language="uk",
+        initial_prompt=config.whisper_initial_prompt,
         vad_filter=True,
-        beam_size=5,
+        beam_size=config.whisper_beam_size,
         word_timestamps=False,
     )
     seg_list: List[Dict[str, Any]] = []
     full_text: List[str] = []
+
     for s in segments:
         t = (s.text or "").strip()
         if not t:
             continue
+        
+        # Apply brand name corrections
+        t = correct_brand_names(t, config.brand_corrections)
+        
         seg_list.append({"start": float(s.start), "end": float(s.end), "text": t})
         full_text.append(t)
 
@@ -220,411 +203,277 @@ def transcribe(model: WhisperModel, wav_path: Path) -> Dict[str, Any]:
         "text": "\n".join(full_text).strip(),
     }
 
-def _ollama_generate(prompt: str, temperature: float = 0.2, timeout: int = 600, retries: int = 4, force_json: bool = False) -> str:
-    last_err: Exception | None = None
+
+def estimate_tokens(text: str) -> int:
+    """Rough estimation of tokens for Ukrainian/Cyrillic text (~2 chars per token)."""
+    return len(text) // 2
+
+
+def truncate_text_for_analysis(text: str, config: AppConfig) -> str:
+    """
+    Truncate text to fit within model's context window.
+    Reserve space for system prompt, JSON schema, and response.
+    """
+    available_tokens = config.ollama_context_window - config.ollama_token_overhead
+    max_chars = available_tokens * 2  # ~2 chars per token for Ukrainian
+    
+    current_tokens = estimate_tokens(text)
+    
+    if current_tokens <= available_tokens:
+        return text
+    
+    print(f"Warning: Transcript too long ({current_tokens} tokens estimated). Truncating to {available_tokens} tokens.")
+    
+    truncated = text[:max_chars]
+    
+    # Try to truncate at sentence boundary
+    last_period = truncated.rfind('.')
+    last_newline = truncated.rfind('\n')
+    cut_point = max(last_period, last_newline)
+    
+    if cut_point > max_chars * 0.9:
+        truncated = truncated[:cut_point + 1]
+    
+    return truncated + TRUNCATION_MESSAGE_UK
+
+
+def correct_brand_names(text: str, corrections: Dict[str, str]) -> str:
+    """Replace incorrectly transcribed brand names with word boundaries."""
+    corrected = text
+    for wrong, correct in corrections.items():
+        pattern = re.compile(rf'\b{re.escape(wrong)}\b', re.IGNORECASE)
+        corrected = pattern.sub(correct, corrected)
+    return corrected
+
+
+def _ollama_generate(prompt: str, config: AppConfig, temperature: float = 0.2, force_json: bool = False) -> str:
+    """Generate text using Ollama with retry logic."""
     last_err: Exception | None = None
 
     payload = {
-        "model": OLLAMA_MODEL,
+        "model": config.ollama_model,
         "prompt": prompt,
         "stream": False,
         "options": {"temperature": temperature},
     }
     if force_json:
         payload["format"] = "json"
-        payload["options"]["temperature"] = 0.0
 
-    for attempt in range(retries):
+    for attempt in range(config.ollama_retries):
         try:
             r = requests.post(
-                f"{OLLAMA_URL}/api/generate",
+                f"{config.ollama_url}/api/generate",
                 json=payload,
-                timeout=timeout,
+                timeout=config.ollama_timeout
             )
             r.raise_for_status()
-            return (r.json().get("response", "") or "").strip()
+            data = r.json()
+            return data.get("response", "")
         except Exception as e:
             last_err = e
-            time.sleep(1.5 * (attempt + 1))
+            if attempt < config.ollama_retries - 1:
+                wait_time = 2 ** attempt
+                print(f"Ollama request failed (attempt {attempt+1}/{config.ollama_retries}), retrying in {wait_time}s...")
+                time.sleep(wait_time)
 
-    raise RuntimeError(f"Ollama request failed after {retries} retries: {last_err!r}")
+    raise RuntimeError(f"Ollama request failed after {config.ollama_retries} retries: {last_err!r}")
+
 
 def _extract_json_object(raw: str) -> Dict[str, Any]:
+    """Extract JSON object from text response."""
     m = re.search(r"\{.*\}", raw, flags=re.S)
     if not m:
-        raise ValueError(f"Ollama did not return JSON. Raw head: {raw[:250]}")
+        raise ValueError("No JSON object found in response")
     return json.loads(m.group(0))
 
-def translate_segments_to_uk(segments: List[Dict[str, Any]]) -> List[str] | None:
+
+def translate_segments_to_uk(segments: List[Dict[str, Any]], config: AppConfig) -> List[str] | None:
     """
     Translate segment texts to Ukrainian in a single call.
     Returns list of translated strings in same order, or None if too large.
     """
-    texts = [(seg.get("text") or "").strip() for seg in segments]
-    texts = [t for t in texts if t]
-
+    if not config.force_translate_uk:
+        return None
+    
+    if len(segments) > config.max_segments_translate:
+        return None
+    
+    texts = [seg.get("text", "").strip() for seg in segments if seg.get("text")]
     if not texts:
-        return []
+        return None
+    
+    combined = "\n".join(f"{i+1}. {t}" for i, t in enumerate(texts))
+    if len(combined) > config.max_chars_translate:
+        return None
+    
+    prompt = TRANSLATION_PROMPT_TEMPLATE.format(combined=combined)
+    
+    try:
+        raw = _ollama_generate(prompt, config, temperature=0.1, force_json=False)
+        lines = [ln.strip() for ln in raw.strip().split("\n") if ln.strip()]
+        
+        translated = []
+        for ln in lines:
+            match = re.match(r"^\d+\.\s*(.+)$", ln)
+            if match:
+                translated.append(match.group(1))
+        
+        if len(translated) == len(texts):
+            return translated
 
-    joined = "\n".join(f"{i+1}. {t}" for i, t in enumerate(texts))
-    if len(texts) > MAX_SEGMENTS_TRANSLATE or len(joined) > MAX_CHARS_TRANSLATE:
+        print(f"Translation length mismatch: expected {len(texts)}, got {len(translated)}")
+        return None
+    except Exception as e:
+        print(f"Translation error: {e}")
         return None
 
-    prompt = f"""
-Translate the numbered lines below to Ukrainian (Cyrillic).
-Rules:
-- Keep the same number of lines.
-- Preserve numbers, product codes, names, phone numbers.
-- Return ONLY valid JSON array of strings in Ukrainian, same order as input.
-No markdown, no extra text.
 
-Input lines:
-{joined}
-""".strip()
-
-    raw = _ollama_generate(prompt, temperature=0.0, timeout=600)
-    arr = None
-    try:
-        arr = json.loads(raw)
-    except Exception:
-        # try to salvage if model wrapped it
-        m = re.search(r"\[.*\]", raw, flags=re.S)
-        if m:
-            arr = json.loads(m.group(0))
-
-    if not isinstance(arr, list) or not all(isinstance(x, str) for x in arr):
-        raise ValueError(f"Translate did not return JSON array of strings. Raw head: {raw[:250]}")
-
-    if len(arr) != len(texts):
-        raise ValueError(f"Translate lines count mismatch: got {len(arr)}, expected {len(texts)}")
-
-    return arr
-
-def translate_text_to_uk(text: str) -> str:
-    text = (text or "").strip()
-    if not text:
-        return ""
-    prompt = f"""
-Translate the text below to Ukrainian (Cyrillic).
-Preserve numbers, product codes, names, phone numbers.
-Return ONLY the translated text. No quotes, no commentary.
-
-Text:
-{text}
-""".strip()
-    return _ollama_generate(prompt, temperature=0.0, timeout=600)
-
-def ensure_transcript_uk(transcript: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+def ensure_transcript_uk(transcript: Dict[str, Any], config: AppConfig) -> Tuple[Dict[str, Any], bool]:
     """
-    Ensures transcript contains:
-      - text_uk
-      - segments_uk (if feasible)
-    Returns (transcript, changed_flag)
+    Ensure transcript has Ukrainian text fields.
+    Returns (updated_transcript, changed_flag).
     """
     changed = False
-    txt = (transcript.get("text") or "").strip()
-    segs = transcript.get("segments") or []
-
-    # If already present and we are not forcing, keep.
-    if not FORCE_TRANSLATE_UK and "text_uk" in transcript:
-        return transcript, False
-
-    # Prefer segment translation (keeps timestamps)
-    segments_uk = None
-    try:
-        if isinstance(segs, list) and segs:
-            translated_lines = translate_segments_to_uk(segs)
-            if translated_lines is not None:
-                segments_uk = []
-                idx = 0
-                for seg in segs:
-                    t = (seg.get("text") or "").strip()
-                    if not t:
-                        continue
-                    segments_uk.append(
-                        {
-                            "start": float(seg.get("start", 0.0)),
-                            "end": float(seg.get("end", 0.0)),
-                            "text": translated_lines[idx],
-                        }
-                    )
-                    idx += 1
-    except Exception:
-        segments_uk = None  # fallback to full text translation
-
-    if segments_uk is not None and len(segments_uk) > 0:
-        transcript["segments_uk"] = segments_uk
-        transcript["text_uk"] = "\n".join([s["text"] for s in segments_uk]).strip()
-        changed = True
-        return transcript, changed
-
-    # Fallback: translate the whole text
-    transcript["text_uk"] = translate_text_to_uk(txt)
-    changed = True
+    
+    if "text_uk" not in transcript or not transcript["text_uk"]:
+        if config.force_translate_uk:
+            segments = transcript.get("segments", [])
+            translated = translate_segments_to_uk(segments, config)
+            
+            if translated:
+                transcript["text_uk"] = "\n".join(translated)
+                transcript["segments_uk"] = [
+                    {"start": seg["start"], "end": seg["end"], "text": uk_text}
+                    for seg, uk_text in zip(segments, translated)
+                ]
+                changed = True
+            else:
+                transcript["text_uk"] = transcript.get("text", "")
+                transcript["segments_uk"] = transcript.get("segments", [])
+                changed = True
+        else:
+            transcript["text_uk"] = transcript.get("text", "")
+            transcript["segments_uk"] = transcript.get("segments", [])
+            changed = True
+    
     return transcript, changed
 
-def ensure_analysis_schema(analysis: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
-    a = analysis or {}
 
-    # Defaults
-    a.setdefault("spam_probability", 0.0)
-    a.setdefault("effective_call", True)
-    a.setdefault("intent", "інше")
-    a.setdefault("direction", meta.get("direction", "unknown"))
-    a.setdefault("outcome", "невідомо")
-    a.setdefault("key_questions", [])
-    a.setdefault("objections", [])
-    a.setdefault("summary", "")
-    a.setdefault("action_items", [])
-    a.setdefault("suggested_script", [])
-
-    # Coerce types
-    try:
-        a["spam_probability"] = float(a.get("spam_probability", 0.0))
-    except Exception:
-        a["spam_probability"] = 0.0
-    a["spam_probability"] = max(0.0, min(1.0, a["spam_probability"]))
-
-    if not isinstance(a.get("key_questions"), list):
-        a["key_questions"] = []
-    if not isinstance(a.get("objections"), list):
-        a["objections"] = []
-    if not isinstance(a.get("action_items"), list):
-        a["action_items"] = []
-    if not isinstance(a.get("suggested_script"), list):
-        a["suggested_script"] = []
-
-    # Normalize direction
-    if a.get("direction") not in ("incoming", "outgoing", "unknown"):
-        a["direction"] = meta.get("direction", "unknown")
-
-    return a
-
-def ollama_analyze(call_meta: Dict[str, Any], transcript_text_uk: str) -> Dict[str, Any]:
-    t = (transcript_text_uk or "").strip()
-    if len(t) > MAX_CHARS_ANALYZE:
-        t = t[:MAX_CHARS_ANALYZE] + "\n..."
-
-    prompt = f"""
-Ти аналізуєш телефонні дзвінки для e-commerce магазину.
-
-ВАЖЛИВО:
-- ПОВЕРТАЙ ЛИШЕ валідний JSON. Без markdown. Без пояснень.
-- УСІ текстові поля мають бути УКРАЇНСЬКОЮ (кирилиця), навіть якщо дзвінок був російською.
-- Якщо транскрипт порожній/шум/повтори — все одно поверни JSON за схемою (spam_probability=1.0, effective_call=false).
-
-Використовуй фіксовану таксономію:
-intent: один із ["доставка","ціна","наявність","оплата","гарантія","повернення","скарга","консультація","інше"]
-outcome: один із ["продаж","потрібен_фоллоуап","лише_інфо","втрачено","невідомо"]
-
-Схема:
-{{
-  "spam_probability": number,
-  "effective_call": boolean,
-  "intent": string,
-  "direction": "{call_meta.get("direction","unknown")}",
-  "outcome": string,
-  "key_questions": [string],
-  "objections": [string],
-  "summary": string,
-  "action_items": [string],
-  "suggested_script": [string]
-}}
-
-Метадані:
-{json.dumps(call_meta, ensure_ascii=False)}
-
-Транскрипт (українською):
-{transcript_text_uk}
-""".strip()
-
-    raw = _ollama_generate(prompt, timeout=600, force_json=True)
+def ollama_analyze(call_meta: Dict[str, Any], transcript_text_uk: str, config: AppConfig) -> Dict[str, Any]:
+    """
+    Analyze call via Ollama in Ukrainian, expecting a JSON response.
+    """
+    # Truncate if needed
+    t = truncate_text_for_analysis(transcript_text_uk, config)
     
-    # With format=json we expect full JSON object
+    direction = call_meta.get("direction", "unknown")
+    src_num = call_meta.get("src_number", "")
+    dst_num = call_meta.get("dst_number", "")
+    
+    # Get company info from config
+    company_info = config.analysis_config.get("company", {})
+    company_name = company_info.get("name", "компанія")
+    business = company_info.get("business", "продукцію")
+    
+    # Get prompt template from config
+    prompt_template = config.analysis_config.get("analysis_prompt", "")
+    
+    prompt = prompt_template.format(
+        company_name=company_name,
+        business=business,
+        direction=direction,
+        src_number=src_num,
+        dst_number=dst_num,
+        transcript=t
+    )
+    
+    raw = _ollama_generate(prompt, config, temperature=0.3, force_json=True)
+    
     try:
         analysis = json.loads(raw)
-    except Exception:
-        # salvage attempt (should be rare)
+    except json.JSONDecodeError:
         analysis = _extract_json_object(raw)
 
     return ensure_analysis_schema(analysis, call_meta)
 
-def aggregate_report(per_call: List[Dict[str, Any]]) -> Dict[str, Any]:
-    total = len(per_call)
-    processed = [c for c in per_call if c.get("status") == "processed"]
-    skipped = [c for c in per_call if c.get("status") != "processed"]
 
+def ensure_analysis_schema(analysis: Dict[str, Any], call_meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensure analysis has all required fields with defaults."""
+    defaults: Dict[str, Any] = {
+        "spam_probability": 0.0,
+        "effective_call": False,
+        "intent": "інше",
+        "direction": call_meta.get("direction", "unknown"),
+        "outcome": "невідомо",
+        "key_questions": [],
+        "objections": [],
+        "summary": "",
+    }
+    
+    for key, default_val in defaults.items():
+        if key not in analysis:
+            analysis[key] = default_val
+    
+    return analysis
+
+
+def aggregate_report(per_call: List[Dict[str, Any]], config: AppConfig) -> Dict[str, Any]:
+    """Aggregate overall statistics from all calls."""
+    processed = [c for c in per_call if c.get("status") == "processed"]
+    
     def num(x: Any, default: float = 0.0) -> float:
         try:
             return float(x)
-        except Exception:
+        except (TypeError, ValueError):
             return default
-
-    spam = sum(1 for c in processed if num((c.get("analysis") or {}).get("spam_probability", 0.0)) >= 0.7)
-							
-    effective = sum(1 for c in processed if (c.get("analysis") or {}).get("effective_call") is True)
-
-    by_dir = {"incoming": 0, "outgoing": 0, "unknown": 0}
+    
+    total_calls = len(per_call)
+    transcribed = len(processed)
+    skipped_small = len([c for c in per_call if c.get("status") == "skipped_too_small"])
+    skipped_short = len([c for c in per_call if c.get("status") == "skipped_too_short"])
+    
+    spam = sum(1 for c in processed 
+               if num((c.get("analysis") or {}).get("spam_probability", 0.0)) >= config.spam_probability_threshold)
+    effective = sum(1 for c in processed 
+                    if (c.get("analysis") or {}).get("effective_call") is True)
+    
+    total_duration = sum(c.get("meta", {}).get("audio_seconds", 0.0) for c in processed)
+    
     intents: Dict[str, int] = {}
+    outcomes: Dict[str, int] = {}
     questions: Dict[str, int] = {}
-
+    
     for c in processed:
-        a = c.get("analysis") or {}
-        d = a.get("direction", "unknown")
-        by_dir[d] = by_dir.get(d, 0) + 1
-
-        intent = a.get("intent", "інше")
+        analysis = c.get("analysis", {})
+        
+        intent = analysis.get("intent", "інше")
         intents[intent] = intents.get(intent, 0) + 1
-
-        for q in a.get("key_questions", []) or []:
-            qq = (q or "").strip()
-            if qq:
-                questions[qq] = questions.get(qq, 0) + 1
-
+        
+        outcome = analysis.get("outcome", "невідомо")
+        outcomes[outcome] = outcomes.get(outcome, 0) + 1
+        
+        for q in analysis.get("key_questions", []) or []:
+            q_lower = q.lower().strip()
+            if q_lower:
+                questions[q_lower] = questions.get(q_lower, 0) + 1
+    
     return {
         "generated_at": datetime.utcnow().isoformat() + "Z",
-        "total_files_seen": total,
-        "processed_calls": len(processed),
-        "skipped_files": len(skipped),
-        "skipped_breakdown": {
-            "too_small_or_empty": sum(1 for c in skipped if c.get("status") == "skipped_too_small"),
-            "too_short_audio": sum(1 for c in skipped if c.get("status") == "skipped_too_short"),
-        },
-        "spam_calls_estimated": spam,
-        "effective_calls_estimated": effective,
-        "by_direction": by_dir,
+        "total_calls": total_calls,
+        "transcribed": transcribed,
+        "skipped_too_small": skipped_small,
+        "skipped_too_short": skipped_short,
+        "spam_calls": spam,
+        "effective_calls": effective,
+        "total_duration_seconds": total_duration,
         "top_intents": sorted(intents.items(), key=lambda kv: kv[1], reverse=True)[:10],
-        "top_questions": sorted(questions.items(), key=lambda kv: kv[1], reverse=True)[:15],
+        "top_outcomes": sorted(outcomes.items(), key=lambda kv: kv[1], reverse=True)[:5],
+        "top_questions": sorted(questions.items(), key=lambda kv: kv[1], reverse=True)[:10],
     }
 
-def load_brand_corrections() -> Tuple[Dict[str, str], str]:
-    """
-    Load brand name corrections and initial prompt from config.
-    Returns (corrections_dict, initial_prompt).
-    """
-    default_corrections = {
-        "AAA": "AAA",
-        "AAA": "AAA",
-        "XXX-групп": "XXX Group",
-    }
-    default_prompt = "Розмова про продукцію компанії."
-    
-    if not BRANDS_CONFIG.exists():
-        return default_corrections, default_prompt
-    
-    try:
-        with open(BRANDS_CONFIG, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-            corrections = config.get('corrections', default_corrections)
-            prompt = config.get('initial_prompt', default_prompt)
-            return corrections, prompt
-    except Exception as e:
-        print(f"Warning: Could not load brands config: {e}")
-        return default_corrections, default_prompt
 
-# ----------------------------
-# Manager Mapping
-# ----------------------------
-class ManagerMapper:
-    def __init__(self, config_path: Path):
-        self.management_dev: Dict[str, Any] = {}
-        self.sales: List[Dict[str, Any]] = []
-        self.default_manager: Dict[str, str] = {
-            "name": "Unknown/General",
-            "id": "manager_unknown",
-            "role": "unknown"
-        }
-        
-        if config_path.exists():
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = yaml.safe_load(f)
-                self.management_dev = config.get('management_dev', {})
-                self.sales = config.get('sales', {}).get('managers', [])
-                self.default_manager = config.get('default_manager', self.default_manager)
-        else:
-            print(f"Warning: Manager config not found at {config_path}")
-    
-    def normalize_number(self, number: str) -> str:
-        """Remove all non-digit characters from phone number."""
-        return re.sub(r'[^\d]', '', number)
-    
-    def find_manager(self, src_number: str, dst_number: str, direction: str) -> Dict[str, str]:
-        """
-        Find manager based on phone numbers and call direction.
-        
-        Logic:
-        1. For outgoing: check source (who made the call)
-        2. For incoming: check destination (who received the call)
-        3. Check management/dev first (by extension), then sales
-        """
-        src_norm = self.normalize_number(src_number)
-        dst_norm = self.normalize_number(dst_number)
-        
-        # Check management/dev managers by extension FIRST
-        for mgr in self.management_dev.get('managers', []):
-            internal_exts = [str(ext) for ext in mgr.get('internal_extensions', [])]
-            
-            if direction == "incoming":
-                # Incoming: check destination extension
-                if dst_number in internal_exts:
-                    return {
-                        "name": mgr['name'],
-                        "id": mgr['id'],
-                        "role": mgr.get('role', 'management')
-                    }
-            elif direction == "outgoing":
-                # Outgoing: check source extension
-                if src_number in internal_exts:
-                    return {
-                        "name": mgr['name'],
-                        "id": mgr['id'],
-                        "role": mgr.get('role', 'management')
-                    }
-        
-        # Check if call involves management/dev shared external line (as fallback)
-        mgmt_line = self.normalize_number(
-            self.management_dev.get('shared_external_line', '')
-        )
-        
-        if mgmt_line and (src_norm == mgmt_line or dst_norm == mgmt_line):
-            # Call involves management/dev line but no specific extension matched
-            return {
-                "name": "Management (general)",
-                "id": "management_general",
-                "role": "management"
-            }
-        
-        # Check sales team
-        for sales_mgr in self.sales:
-            internal_exts = [str(ext) for ext in sales_mgr.get('internal_extensions', [])]
-            external_lines = [
-                self.normalize_number(num) 
-                for num in sales_mgr.get('external_lines', [])
-            ]
-            
-            if direction == "incoming":
-                # Incoming sales calls: check if destination matches
-                if dst_number in internal_exts or dst_norm in external_lines:
-                    return {
-                        "name": sales_mgr['name'],
-                        "id": sales_mgr['id'],
-                        "role": "sales"
-                    }
-            elif direction == "outgoing":
-                # Outgoing sales calls: check source extension/line
-                if src_number in internal_exts or src_norm in external_lines:
-                    return {
-                        "name": sales_mgr['name'],
-                        "id": sales_mgr['id'],
-                        "role": "sales"
-                    }
-        
-        return self.default_manager
-
-def aggregate_report_by_manager(per_call: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Aggregate statistics per manager with role-based grouping.
-    """
+def aggregate_report_by_manager(per_call: List[Dict[str, Any]], config: AppConfig) -> Dict[str, Any]:
+    """Aggregate statistics per manager with role-based grouping."""
     managers_stats: Dict[str, Dict[str, Any]] = {}
     role_summary: Dict[str, Dict[str, int]] = {}
     
@@ -633,7 +482,7 @@ def aggregate_report_by_manager(per_call: List[Dict[str, Any]]) -> Dict[str, Any
     def num(x: Any, default: float = 0.0) -> float:
         try:
             return float(x)
-        except Exception:
+        except (TypeError, ValueError):
             return default
     
     for call in processed:
@@ -646,8 +495,8 @@ def aggregate_report_by_manager(per_call: List[Dict[str, Any]]) -> Dict[str, Any
         
         if manager_id not in managers_stats:
             managers_stats[manager_id] = {
-                "manager_name": manager_name,
                 "manager_id": manager_id,
+                "manager_name": manager_name,
                 "role": role,
                 "total_calls": 0,
                 "incoming": 0,
@@ -662,11 +511,7 @@ def aggregate_report_by_manager(per_call: List[Dict[str, Any]]) -> Dict[str, Any
         
         # Track role summary
         if role not in role_summary:
-            role_summary[role] = {
-                "total_calls": 0,
-                "effective_calls": 0,
-                "spam_calls": 0
-            }
+            role_summary[role] = {"total_calls": 0}
         role_summary[role]["total_calls"] += 1
         
         stats = managers_stats[manager_id]
@@ -680,14 +525,12 @@ def aggregate_report_by_manager(per_call: List[Dict[str, Any]]) -> Dict[str, Any
             stats["outgoing"] += 1
         
         # Spam
-        if num(analysis.get("spam_probability", 0.0)) >= 0.7:
+        if num(analysis.get("spam_probability", 0.0)) >= config.spam_probability_threshold:
             stats["spam_calls"] += 1
-            role_summary[role]["spam_calls"] += 1
         
         # Effective
         if analysis.get("effective_call") is True:
             stats["effective_calls"] += 1
-            role_summary[role]["effective_calls"] += 1
         
         # Duration
         stats["total_duration_seconds"] += meta.get("audio_seconds", 0.0)
@@ -702,9 +545,9 @@ def aggregate_report_by_manager(per_call: List[Dict[str, Any]]) -> Dict[str, Any
         
         # Questions
         for q in analysis.get("key_questions", []) or []:
-            qq = (q or "").strip()
-            if qq:
-                stats["questions"][qq] = stats["questions"].get(qq, 0) + 1
+            q_lower = q.lower().strip()
+            if q_lower:
+                stats["questions"][q_lower] = stats["questions"].get(q_lower, 0) + 1
     
     # Sort and format per manager
     for manager_id, stats in managers_stats.items():
@@ -735,60 +578,68 @@ def aggregate_report_by_manager(per_call: List[Dict[str, Any]]) -> Dict[str, Any
         "by_role": {
             role: managers 
             for role, managers in by_role.items() 
-            if managers  # Only include roles with data
+            if managers
         },
         "all_managers": list(managers_stats.values()),
         "total_managers": len(managers_stats),
     }
 
-BRAND_CORRECTIONS, WHISPER_INITIAL_PROMPT = load_brand_corrections()
 
 # ----------------------------
-# Main
+# Main Processing Phases
 # ----------------------------
-def main() -> None:
-    ensure_dirs()
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Load manager mapping
-    manager_mapper = ManagerMapper(MANAGERS_CONFIG)
-
-    model = WhisperModel(WHISPER_MODEL, device=DEVICE, compute_type=COMPUTE_TYPE)
-
-    # Choose discovery method based on DAYS env var
+def discover_and_filter_files(config: AppConfig) -> List[Path]:
+    """Discover and filter WAV files based on DAYS env var and processing status."""
     days_env = os.getenv("DAYS", "").strip()
     
     if days_env:
         print(f"Using DAYS filter: {days_env}")
-        all_files = discover_wav_files_from_specified_dirs()
+        all_files = discover_wav_files_from_specified_dirs(config)
     else:
         print("No DAYS filter specified, discovering all WAV files recursively")
-        all_files = discover_all_wav_files()
+        all_files = discover_all_wav_files(config)
 
     print(f"Discovered {len(all_files)} total WAV files")
 
     # Filter to unprocessed files (unless forcing)
-    files_to_process = filter_unprocessed_files(all_files)
+    files_to_process = filter_unprocessed_files(all_files, config)
     print(f"Found {len(files_to_process)} unprocessed files")
 
     # Apply limit
-    if len(files_to_process) > PROCESS_LIMIT:
-        print(f"Limiting to {PROCESS_LIMIT} files (set PROCESS_LIMIT to change)")
-        files_to_process = files_to_process[:PROCESS_LIMIT]
+    if len(files_to_process) > config.process_limit:
+        print(f"Limiting to {config.process_limit} files (set PROCESS_LIMIT to change)")
+        files_to_process = files_to_process[:config.process_limit]
 
-    if not files_to_process:
+    return files_to_process
+
+
+def run_transcription_phase(files: List[Path], config: AppConfig) -> List[Dict[str, Any]]:
+    """
+    Phase 1: Transcription with Whisper (GPU intensive).
+    Returns metadata for all files including skipped ones.
+    """
+    if not files:
         print("No files to process.")
-        return
+        return []
+    
+    print("\n" + "="*80)
+    print("PHASE 1: TRANSCRIPTION (Whisper)")
+    print("="*80)
+    
+    model = WhisperModel(
+        config.whisper_model,
+        device=config.whisper_device,
+        compute_type=config.whisper_compute_type
+    )
+    files_metadata: List[Dict[str, Any]] = []
 
-    per_call: List[Dict[str, Any]] = []
-
-    for src in tqdm(files_to_process, desc="Processing"):
+    for src in tqdm(files, desc="Transcribing"):
         meta = parse_freepbx_filename(src.name)
         meta["source_file"] = src.name
         meta["source_path"] = str(src)
 
         # Map to manager
-        manager_info = manager_mapper.find_manager(
+        manager_info = config.manager_mapper.find_manager(
             meta.get("src_number", ""),
             meta.get("dst_number", ""),
             meta.get("direction", "unknown")
@@ -796,19 +647,19 @@ def main() -> None:
         meta["manager_name"] = manager_info["name"]
         meta["manager_id"] = manager_info["id"]
         meta["role"] = manager_info.get("role", "unknown")
-        # Map to manager
 
         # Skip tiny files
-        if src.stat().st_size < MIN_BYTES:
-            per_call.append({"meta": meta, "status": "skipped_too_small"})
+        if src.stat().st_size < config.min_bytes:
+            meta["status"] = "skipped_too_small"
+            files_metadata.append(meta)
             continue
 
         cid = sha12(src.name + str(src.stat().st_size))
         meta["call_id"] = cid
 
-        norm_path = NORM / f"{cid}.wav"
-        tr_path = TRANS / f"{cid}.json"
-        an_path = ANALYSIS / f"{cid}.json"
+        norm_path = config.norm / f"{cid}.wav"
+        tr_path = config.trans / f"{cid}.json"
+        an_path = config.analysis / f"{cid}.json"
 
         if not norm_path.exists():
             normalize_audio(src, norm_path)
@@ -816,16 +667,17 @@ def main() -> None:
         dur = ffprobe_duration_seconds(norm_path)
         meta["audio_seconds"] = dur
 
-        if dur < MIN_SECONDS:
-            per_call.append({"meta": meta, "status": "skipped_too_short"})
+        if dur < config.min_seconds:
+            meta["status"] = "skipped_too_short"
+            files_metadata.append(meta)
             continue
 
-        # --- Transcribe ---
+        # Transcribe
         transcript: Dict[str, Any]
-        if (not FORCE_RETRANSCRIBE) and tr_path.exists():
+        if (not config.force_retranscribe) and tr_path.exists():
             transcript = json.loads(tr_path.read_text(encoding="utf-8"))
         else:
-            transcript = transcribe(model, norm_path)
+            transcript = transcribe(model, norm_path, config)
 
         # Add manager info to transcript
         transcript["manager_name"] = meta["manager_name"]
@@ -842,33 +694,64 @@ def main() -> None:
         # Ensure UA transcript fields
         changed = False
         try:
-            transcript, changed = ensure_transcript_uk(transcript)
+            transcript, changed = ensure_transcript_uk(transcript, config)
         except Exception as e:
-            # If translation fails, keep original text; analysis will still be forced UA
             transcript.setdefault("text_uk", transcript.get("text", ""))
             transcript.setdefault("segments_uk", [])
             transcript.setdefault("translation_error", repr(e))
             changed = True
 
-        if FORCE_RETRANSCRIBE or changed or (not tr_path.exists()):
+        if config.force_retranscribe or changed or (not tr_path.exists()):
             tr_path.write_text(json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        # --- Analyze ---
+        meta["status"] = "transcribed"
+        meta["tr_path"] = str(tr_path)
+        meta["an_path"] = str(an_path)
+        files_metadata.append(meta)
+
+    # Free Whisper model from memory
+    del model
+    transcribed_count = len([m for m in files_metadata if m.get('status') == 'transcribed'])
+    print(f"\n✓ Transcription complete. Processed {transcribed_count} files.")
+    print("Whisper model released from memory.")
+    
+    return files_metadata
+
+
+def run_analysis_phase(files_metadata: List[Dict[str, Any]], config: AppConfig) -> List[Dict[str, Any]]:
+    """
+    Phase 2: Analysis with Ollama (different GPU usage pattern).
+    Returns per-call results including analysis.
+    """
+    print("\n" + "="*80)
+    print("PHASE 2: ANALYSIS (Ollama)")
+    print("="*80)
+    
+    per_call: List[Dict[str, Any]] = []
+
+    for meta in tqdm([m for m in files_metadata if m.get("status") == "transcribed"], desc="Analyzing"):
+        tr_path = Path(meta["tr_path"])
+        an_path = Path(meta["an_path"])
+        
+        # Load transcript
+        transcript = json.loads(tr_path.read_text(encoding="utf-8"))
+        
+        # Analyze
         analysis: Dict[str, Any]
-        if (not FORCE_REANALYZE) and an_path.exists():
+        if (not config.force_reanalyze) and an_path.exists():
             analysis = json.loads(an_path.read_text(encoding="utf-8"))
             analysis = ensure_analysis_schema(analysis, meta)
         else:
             text_uk = (transcript.get("text_uk") or transcript.get("text") or "").strip()
             try:
-                analysis = ollama_analyze(meta, text_uk)
+                analysis = ollama_analyze(meta, text_uk, config)
             except Exception as e:
                 analysis = ensure_analysis_schema({}, meta)
                 analysis["effective_call"] = False
                 analysis["spam_probability"] = 1.0
                 analysis["intent"] = "інше"
                 analysis["outcome"] = "невідомо"
-                analysis["summary"] = "Не вдалося отримати коректний JSON-аналіз від моделі. Дзвінок позначено як проблемний для повторної перевірки."
+                analysis["summary"] = "Не вдалося отримати коректний JSON-аналіз від моделі."
                 analysis["analysis_error"] = repr(e)
 
         # Add manager info to analysis
@@ -884,25 +767,73 @@ def main() -> None:
             "audio_seconds": meta.get("audio_seconds"),
         }
 
-        # Always save normalized analysis back
+        # Always save normalized analysis
         an_path.write_text(json.dumps(analysis, ensure_ascii=False, indent=2), encoding="utf-8")
-
         per_call.append({"meta": meta, "analysis": analysis, "status": "processed"})
+    
+    # Add skipped files to per_call for report
+    for meta in files_metadata:
+        if meta.get("status") in ("skipped_too_small", "skipped_too_short"):
+            per_call.append({"meta": meta, "status": meta["status"]})
 
+    print(f"\n✓ Analysis complete. Processed {len([c for c in per_call if c.get('status') == 'processed'])} calls.")
+    
+    return per_call
+
+
+def generate_reports(per_call: List[Dict[str, Any]], config: AppConfig) -> None:
+    """Generate and save analysis reports."""
+    print("\n" + "="*80)
+    print("GENERATING REPORTS")
+    print("="*80)
+    
     # Generate overall report
-    report = aggregate_report(per_call)
-    (OUT / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    report = aggregate_report(per_call, config)
+    (config.out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # Generate per-manager report
-    manager_report = aggregate_report_by_manager(per_call)
-    (OUT / "report_by_manager.json").write_text(json.dumps(manager_report, ensure_ascii=False, indent=2), encoding="utf-8")
+    manager_report = aggregate_report_by_manager(per_call, config)
+    (config.out / "report_by_manager.json").write_text(json.dumps(manager_report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print("\n=== OVERALL SUMMARY ===")
     print(json.dumps(report, ensure_ascii=False, indent=2))
     
     print("\n=== PER-MANAGER SUMMARY ===")
     print(json.dumps(manager_report, ensure_ascii=False, indent=2))
+    
+    print(f"\n✓ Reports saved:")
+    print(f"  - {config.out / 'report.json'}")
+    print(f"  - {config.out / 'report_by_manager.json'}")
+
+
+def main() -> None:
+    """Main entry point for call analytics processing."""
+    # Load configuration (single source of truth)
+    config = load_app_config()
+    
+    # Setup directories
+    ensure_dirs(config)
+
+    # Discover and filter files
+    files_to_process = discover_and_filter_files(config)
+    
+    if not files_to_process:
+        print("No files to process.")
+        return
+
+    # Phase 1: Transcription (Whisper - GPU intensive)
+    files_metadata = run_transcription_phase(files_to_process, config)
+
+    # Phase 2: Analysis (Ollama - different GPU pattern)
+    per_call = run_analysis_phase(files_metadata, config)
+
+    # Phase 3: Generate reports
+    generate_reports(per_call, config)
+    
+    print("\n" + "="*80)
+    print("✓ PROCESSING COMPLETE")
+    print("="*80)
+
 
 if __name__ == "__main__":
     main()
-    

@@ -16,22 +16,22 @@ Outputs:
   ./out/report.json
 """
 
-import os
 import json
+import os
 import re
-import time
 import subprocess
-import hashlib
-from pathlib import Path
+import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import requests
-from tqdm import tqdm
 from faster_whisper import WhisperModel
+from tqdm import tqdm
 
-from call_config import AppConfig, load_app_config
-
+from core.rules import (correct_brand_names, ensure_analysis_schema, sha12,
+                        truncate_text_for_analysis)
+from domain.config import AppConfig, load_app_config
 
 # ----------------------------
 # CONSTANTS
@@ -50,11 +50,6 @@ def ensure_dirs(config: AppConfig) -> None:
     """Ensure output directories exist."""
     for p in [config.out, config.norm, config.trans, config.analysis]:
         p.mkdir(parents=True, exist_ok=True)
-
-
-def sha12(s: str) -> str:
-    """Generate 12-character hash for file identification."""
-    return hashlib.sha1(s.encode("utf-8")).hexdigest()[:12]
 
 
 def discover_all_wav_files(config: AppConfig) -> List[Path]:
@@ -202,48 +197,6 @@ def transcribe(model: WhisperModel, wav_path: Path, config: AppConfig) -> Dict[s
         "segments": seg_list,
         "text": "\n".join(full_text).strip(),
     }
-
-
-def estimate_tokens(text: str) -> int:
-    """Rough estimation of tokens for Ukrainian/Cyrillic text (~2 chars per token)."""
-    return len(text) // 2
-
-
-def truncate_text_for_analysis(text: str, config: AppConfig) -> str:
-    """
-    Truncate text to fit within model's context window.
-    Reserve space for system prompt, JSON schema, and response.
-    """
-    available_tokens = config.ollama_context_window - config.ollama_token_overhead
-    max_chars = available_tokens * 2  # ~2 chars per token for Ukrainian
-    
-    current_tokens = estimate_tokens(text)
-    
-    if current_tokens <= available_tokens:
-        return text
-    
-    print(f"Warning: Transcript too long ({current_tokens} tokens estimated). Truncating to {available_tokens} tokens.")
-    
-    truncated = text[:max_chars]
-    
-    # Try to truncate at sentence boundary
-    last_period = truncated.rfind('.')
-    last_newline = truncated.rfind('\n')
-    cut_point = max(last_period, last_newline)
-    
-    if cut_point > max_chars * 0.9:
-        truncated = truncated[:cut_point + 1]
-    
-    return truncated + TRUNCATION_MESSAGE_UK
-
-
-def correct_brand_names(text: str, corrections: Dict[str, str]) -> str:
-    """Replace incorrectly transcribed brand names with word boundaries."""
-    corrected = text
-    for wrong, correct in corrections.items():
-        pattern = re.compile(rf'\b{re.escape(wrong)}\b', re.IGNORECASE)
-        corrected = pattern.sub(correct, corrected)
-    return corrected
 
 
 def _ollama_generate(prompt: str, config: AppConfig, temperature: float = 0.2, force_json: bool = False) -> str:
@@ -395,26 +348,6 @@ def ollama_analyze(call_meta: Dict[str, Any], transcript_text_uk: str, config: A
         analysis = _extract_json_object(raw)
 
     return ensure_analysis_schema(analysis, call_meta)
-
-
-def ensure_analysis_schema(analysis: Dict[str, Any], call_meta: Dict[str, Any]) -> Dict[str, Any]:
-    """Ensure analysis has all required fields with defaults."""
-    defaults: Dict[str, Any] = {
-        "spam_probability": 0.0,
-        "effective_call": False,
-        "intent": "інше",
-        "direction": call_meta.get("direction", "unknown"),
-        "outcome": "невідомо",
-        "key_questions": [],
-        "objections": [],
-        "summary": "",
-    }
-    
-    for key, default_val in defaults.items():
-        if key not in analysis:
-            analysis[key] = default_val
-    
-    return analysis
 
 
 def aggregate_report(per_call: List[Dict[str, Any]], config: AppConfig) -> Dict[str, Any]:

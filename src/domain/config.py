@@ -13,11 +13,10 @@ from typing import Any, Dict, List, Tuple
 import requests
 import yaml
 
-
 # ----------------------------
 # Paths
 # ----------------------------
-ROOT = Path(os.getenv("PROJECT_ROOT", Path(__file__).resolve().parents[1]))
+ROOT = Path(os.getenv("PROJECT_ROOT", Path(__file__).resolve().parents[2]))
 CALLS_RAW = ROOT / "calls_raw"
 OUT = ROOT / "out"
 NORM = OUT / "normalized"

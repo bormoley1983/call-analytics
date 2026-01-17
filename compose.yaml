@@ -26,7 +26,7 @@ services:
       #- WHISPER_COMPUTE_TYPE=float16
       #- WHISPER_BEAM_SIZE=5
     gpus: all
-    command: ["python", "src/process_calls.py"]
+    command: ["python", "src/cli.py"]
 
   whisper_debug:
     image: call-analytics-base:cuda12
@@ -60,4 +60,4 @@ services:
       - --listen
       - 0.0.0.0:5678
       - --wait-for-client
-      - src/process_calls.py
+      - src/cli.py

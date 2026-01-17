@@ -1,0 +1,76 @@
+# skip/filters, brand corrections, etc.
+import hashlib
+import re
+from typing import Any, Dict
+
+from domain.config import AppConfig
+
+# ----------------------------
+# CONSTANTS
+# ----------------------------
+TRUNCATION_MESSAGE_UK = "\n\n[... транскрипт обрізано через обмеження довжини моделі ...]"
+
+def sha12(s: str) -> str:
+    """Generate 12-character hash for file identification."""
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()[:12]
+
+
+def correct_brand_names(text: str, corrections: Dict[str, str]) -> str:
+    """Replace incorrectly transcribed brand names with word boundaries."""
+    corrected = text
+    for wrong, correct in corrections.items():
+        pattern = re.compile(rf'\b{re.escape(wrong)}\b', re.IGNORECASE)
+        corrected = pattern.sub(correct, corrected)
+    return corrected
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough estimation of tokens for Ukrainian/Cyrillic text (~2 chars per token)."""
+    return len(text) // 2
+
+
+def truncate_text_for_analysis(text: str, config: AppConfig) -> str:
+    """
+    Truncate text to fit within model's context window.
+    Reserve space for system prompt, JSON schema, and response.
+    """
+    available_tokens = config.ollama_context_window - config.ollama_token_overhead
+    max_chars = available_tokens * 2  # ~2 chars per token for Ukrainian
+    
+    current_tokens = estimate_tokens(text)
+    
+    if current_tokens <= available_tokens:
+        return text
+    
+    print(f"Warning: Transcript too long ({current_tokens} tokens estimated). Truncating to {available_tokens} tokens.")
+    
+    truncated = text[:max_chars]
+    
+    last_period = truncated.rfind('.')
+    last_newline = truncated.rfind('\n')
+    cut_point = max(last_period, last_newline)
+    
+    if cut_point > max_chars * 0.9:
+        truncated = truncated[:cut_point + 1]
+    
+    return truncated + TRUNCATION_MESSAGE_UK
+
+
+def ensure_analysis_schema(analysis: Dict[str, Any], call_meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensure analysis has all required fields with defaults."""
+    defaults: Dict[str, Any] = {
+        "spam_probability": 0.0,
+        "effective_call": False,
+        "intent": "інше",
+        "direction": call_meta.get("direction", "unknown"),
+        "outcome": "невідомо",
+        "key_questions": [],
+        "objections": [],
+        "summary": "",
+    }
+    
+    for key, default_val in defaults.items():
+        if key not in analysis:
+            analysis[key] = default_val
+    
+    return analysis

@@ -1,42 +1,73 @@
+x-base: &base
+  pull_policy: never
+  image: call-analytics-base:cuda12
+  working_dir: /work
+  volumes:
+    - ./:/work
+    - ./_hf_cache:/root/.cache/huggingface
+    - ./config:/work/config:ro
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  env_file:
+    - config/.env
+  environment:
+    - OLLAMA_URL=http://host.docker.internal:11434
+  gpus: all
+
 services:
-  whisper_poc:
-    pull_policy: never
+  api:
+    <<: *base
     build:
       context: .
       dockerfile: Dockerfile.base
-    image: call-analytics-base:cuda12
-    working_dir: /work
-    volumes:
-      - ./:/work
-      - ./_hf_cache:/root/.cache/huggingface
-      - ./config:/work/config:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    env_file:
-      - config/.env
     environment:
-      # Override to ensure Docker host networking works
       - OLLAMA_URL=http://host.docker.internal:11434
-    gpus: all
+      - PYTHONPATH=/work/src
+    ports:
+      - "127.0.0.1:8000:8000"
+    command: ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+
+  api_debug:
+    <<: *base
+    profiles: [debug-api]
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - PYTHONPATH=/work/src
+    ports:
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:5679:5679"
+    command:
+      - python
+      - -Xfrozen_modules=off
+      - -m
+      - debugpy
+      - --listen
+      - 0.0.0.0:5679
+      - --wait-for-client
+      - -m
+      - uvicorn
+      - api.app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+
+  batch:
+    <<: *base
+    profiles: [batch]
     command: ["python", "src/cli.py"]
 
-  whisper_debug:
-    pull_policy: never
-    image: call-analytics-base:cuda12
-    working_dir: /work
+  batch_debug:
+    <<: *base
+    profiles: [debug-batch]
     volumes:
       - ./:/work
       - ./_hf_cache:/root/.cache/huggingface
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    env_file:
-      - config/.env
-    environment:
-      # Override to ensure Docker host networking works
-      - OLLAMA_URL=http://host.docker.internal:11434
-    gpus: all
+      # no config:ro — debug may need write access
     ports:
-      - "5678:5678"
+      - "127.0.0.1:5678:5678"
     command:
       - python
       - -Xfrozen_modules=off

@@ -34,12 +34,27 @@ class PbxSshDownloader:
     def connect(self) -> None:
         self._client = paramiko.SSHClient()
         self._client.set_missing_host_key_policy(paramiko.RejectPolicy())  # secure default
-        connect_kwargs = dict(hostname=self.host, port=self.port, username=self.username)
+
         if self.key_path:
-            connect_kwargs["key_filename"] = self.key_path
+            self._client.connect(
+                hostname=self.host,
+                port=self.port,
+                username=self.username,
+                key_filename=self.key_path,
+            )
         elif self.password:
-            connect_kwargs["password"] = self.password
-        self._client.connect(**connect_kwargs)
+            self._client.connect(
+                hostname=self.host,
+                port=self.port,
+                username=self.username,
+                password=self.password,
+            )
+        else:
+            self._client.connect(
+                hostname=self.host,
+                port=self.port,
+                username=self.username,
+            )
 
     def close(self) -> None:
         if self._client:

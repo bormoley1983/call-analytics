@@ -12,9 +12,9 @@ Processes FreePBX/Asterisk call recordings: normalizes audio, transcribes with W
 ### 1. Prepare config files
 
 ```bash
-cp config/managers.yaml.example config/managers.yaml
-cp config/brands.yaml.example config/brands.yaml
-cp config/analysis.yaml.example config/analysis.yaml
+cp managers.yaml.example managers.yaml
+cp brands.yaml.example brands.yaml
+cp analysis.yaml.example analysis.yaml
 ```
 
 Edit each file for your company's managers, brand names, and analysis prompt.
@@ -31,14 +31,86 @@ calls_raw/YYYY/MM/DD/<dir>-<dst>-<src>-<YYYYMMDD>-<HHMMSS>-<uniqueid>.wav
 
 ```bash
 docker compose build
-docker compose up
+docker compose up -d
 ```
 
-Outputs are written to `out/`:
-- `out/report.json` / `out/report.html` — overall summary
-- `out/report_by_manager.json` / `out/report_by_manager.html` — per-manager breakdown
+The API starts automatically. Outputs are written to out:
+- report.json / report.html — overall summary
+- report_by_manager.json / report_by_manager.html — per-manager breakdown
 - `out/transcripts/<call_id>.json` — raw transcripts
 - `out/analysis/<call_id>.json` — per-call analysis
+
+---
+
+## Container Services
+
+| Service | Profile | Port | Description |
+|---|---|---|---|
+| `api` | _(default)_ | `127.0.0.1:8000` | REST API — always-on, `restart: unless-stopped` |
+| `api_debug` | `debug-api` | `127.0.0.1:8000` + `5679` | API with debugpy attached |
+| `batch` | `batch` | — | One-shot CLI processing run |
+| `batch_debug` | `debug-batch` | `127.0.0.1:5678` | CLI run with debugpy attached |
+
+All services share the same `call-analytics-base:cuda12` image built from Dockerfile.base.
+
+```bash
+# Start API (default)
+docker compose up -d
+
+# Run a one-shot batch job
+docker compose --profile batch run --rm batch
+
+# Debug API (attach debugger to port 5679)
+docker compose --profile debug-api up api_debug
+
+# Debug batch (attach debugger to port 5678)
+docker compose --profile debug-batch run --rm batch_debug
+```
+
+---
+
+## REST API
+
+The API runs at `http://localhost:8000`. Interactive docs available at:
+- **Swagger UI**: `http://localhost:8000/docs`
+- **ReDoc**: `http://localhost:8000/redoc`
+
+### Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Liveness check + Ollama status |
+| `POST` | `/jobs/sync` | Download new recordings from PBX via SFTP |
+| `POST` | `/jobs/process` | Transcribe + analyse recordings |
+| `GET` | `/jobs` | List recent jobs |
+| `GET` | `/jobs/{job_id}` | Poll job status (`pending` → `running` → `done`/`failed`) |
+| `GET` | `/reports/overall` | Aggregated report |
+| `GET` | `/reports/manager/{manager_id}` | Per-manager report |
+| `GET` | `/managers` | List configured managers and their extensions |
+
+### Typical workflow
+
+```bash
+# 1. Download new recordings from PBX
+curl -X POST http://localhost:8000/jobs/sync
+
+# 2. Trigger processing (optionally scope to specific days)
+curl -X POST http://localhost:8000/jobs/process \
+  -H "Content-Type: application/json" \
+  -d '{"days": "2026/03/13,2026/03/14", "limit": 50}'
+
+# 3. Poll until done
+curl http://localhost:8000/jobs/<job_id>
+
+# 4. Fetch results
+curl http://localhost:8000/reports/overall
+```
+
+### Scheduled nightly run (cron)
+
+```cron
+0 22 * * * curl -sS -X POST http://localhost:8000/jobs/sync && sleep 60 && curl -sS -X POST http://localhost:8000/jobs/process
+```
 
 ---
 
@@ -46,7 +118,7 @@ Outputs are written to `out/`:
 
 ### Environment Variables
 
-All variables are optional — defaults are shown.
+All variables are optional — defaults are shown. Set them in .env.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -55,36 +127,45 @@ All variables are optional — defaults are shown.
 | `WHISPER_MODEL` | `large-v3-turbo` | faster-whisper model |
 | `WHISPER_DEVICE` | `cuda` | `cuda` or `cpu` |
 | `WHISPER_COMPUTE_TYPE` | `float16` | `float16`, `int8`, etc. |
-| `DAYS` | _(all)_ | Comma-separated `YYYY/MM/DD` to process specific days only |
+| `DAYS` | _(all)_ | Comma-separated `YYYY/MM/DD` — process specific days only |
 | `PROCESS_LIMIT` | `30` | Max files per run |
 | `MIN_BYTES` | `20000` | Skip files smaller than this |
 | `MIN_SECONDS` | `1.0` | Skip calls shorter than this |
-| `FORCE_RETRANSCRIBE` | `0` | Set to `1` to re-transcribe already processed files |
-| `FORCE_REANALYZE` | `0` | Set to `1` to re-analyze already analyzed files |
-| `FORCE_TRANSLATE_UK` | `0` | Set to `1` to translate transcripts to Ukrainian |
+| `FORCE_RETRANSCRIBE` | `0` | `1` to re-transcribe already processed files |
+| `FORCE_REANALYZE` | `0` | `1` to re-analyze already analyzed files |
+| `FORCE_TRANSLATE_UK` | `0` | `1` to translate transcripts to Ukrainian |
 | `SPAM_PROBABILITY_THRESHOLD` | `0.7` | Calls above this are counted as spam |
 | `POSTGRES_DSN` | _(unset)_ | If set, syncs results to PostgreSQL after each run |
 
-### Process specific days
+### Logging
 
-Uncomment and edit `DAYS` in `compose.yaml`, or pass it inline:
+All logs go to stdout. Set these in .env to adjust behaviour:
+
+| Variable | Default | Description |
+|---|---|---|
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `LOG_FORMAT` | `%(asctime)s %(levelname)-8s %(name)s: %(message)s` | Python logging format string |
+| `LOG_FILE` | _(unset)_ | Path to a rotating log file (in addition to stdout) |
+| `LOG_MAX_BYTES` | `10485760` | Max bytes per log file before rotation (10 MiB) |
+| `LOG_BACKUP_COUNT` | `5` | Number of rotated log files to keep |
 
 ```bash
-DAYS=2024/10/14,2024/10/15 docker compose up
+# View live API logs
+docker compose logs -f api
 ```
 
 ---
 
 ## PBX Auto-Download (optional)
 
-Download new recordings from the PBX via SFTP before processing:
+Set these in .env to enable the `/jobs/sync` endpoint:
 
-```bash
-PBX_HOST=192.168.1.1 \
-PBX_KEY_PATH=~/.ssh/pbx_key \
-PBX_REMOTE_DIR=/var/spool/asterisk/monitor \
-python src/cli.py sync
-```
+| Variable | Description |
+|---|---|
+| `PBX_HOST` | PBX hostname or IP |
+| `PBX_USER` | SSH user (default: `asterisk`) |
+| `PBX_KEY_PATH` | Path to SSH private key |
+| `PBX_REMOTE_DIR` | Remote recordings directory (default: `/var/spool/asterisk/monitor`) |
 
 The host key must already be in `~/.ssh/known_hosts`.
 
@@ -94,32 +175,22 @@ The host key must already be in `~/.ssh/known_hosts`.
 
 Set `POSTGRES_DSN` to automatically sync results after each run:
 
-```bash
-POSTGRES_DSN=postgresql://user:pass@localhost/calls docker compose up
+```
+POSTGRES_DSN=postgresql://user:pass@localhost/calls
 ```
 
 Two tables are created automatically: `transcripts` and `analyses`.
 
 ---
 
-## Debugging
-
-Use the `whisper_debug` service to attach a remote debugger (port 5678):
-
-```bash
-docker compose run --rm whisper_debug
-```
-
----
-
 ## Troubleshooting
 
-**Ollama not reachable** — Ollama runs on the host; the container connects via `host.docker.internal:11434`. Make sure Ollama is running and the model is pulled before starting the container.
+**Ollama not reachable** — Ollama runs on the host; the container connects via `host.docker.internal:11434`. Make sure Ollama is running and the model is pulled before starting.
 
 **No files processed** — Check that recordings exist under `calls_raw/YYYY/MM/DD/` and are larger than `MIN_BYTES`.
 
 **CUDA out of memory** — Reduce `WHISPER_MODEL` (e.g. `medium`) or switch `WHISPER_COMPUTE_TYPE` to `int8`.
 
 ```bash
-docker compose logs
+docker compose logs -f api
 ```

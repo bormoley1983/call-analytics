@@ -20,7 +20,18 @@ mypy is configured in `mypy.ini` with `mypy_path = src`.
 
 ```
 src/
-  cli.py               # Entry point — commands: run (default), sync
+  cli.py               # Batch entry point — commands: run (default), sync
+  logging_config.py    # Centralised logging setup (LOG_LEVEL, LOG_FILE, etc.)
+  api/
+    app.py             # FastAPI app + router registration + lifespan
+    schemas.py         # Pydantic request/response models
+    job_store.py       # In-memory job state (id → status/result)
+    runner.py          # Runs Pipeline / PbxSshDownloader as background tasks
+    routes/
+      health.py        # GET /health
+      jobs.py          # POST /jobs/sync|process, GET /jobs, GET /jobs/{id}
+      reports.py       # GET /reports/overall|manager/{id}
+      managers.py      # GET /managers
   core/
     pipeline.py        # Orchestrates transcription → analysis → reports
     planner.py         # File discovery and incremental filtering
@@ -52,14 +63,81 @@ config/
 
 ---
 
-## CLI Commands
+## Container Services
+
+| Service | Profile | Port(s) | Description |
+|---|---|---|---|
+| `api` | _(default)_ | `127.0.0.1:8000` | REST API — always-on, `restart: unless-stopped` |
+| `api_debug` | `debug-api` | `127.0.0.1:8000`, `5679` | API with debugpy (wait-for-client) |
+| `batch` | `batch` | — | One-shot CLI processing run |
+| `batch_debug` | `debug-batch` | `127.0.0.1:5678` | CLI run with debugpy (wait-for-client) |
+
+All services share the same `call-analytics-base:cuda12` image built from `Dockerfile.base`.
 
 ```bash
-# Run the full pipeline (default)
-python src/cli.py
-python src/cli.py run
+# Build image
+docker compose build
+
+# Start API (default, stays running)
+docker compose up -d
+
+# One-shot batch processing run
+docker compose --profile batch run --rm batch
+
+# Debug API — attach debugger to 127.0.0.1:5679
+docker compose --profile debug-api up api_debug
+
+# Debug batch — attach debugger to 127.0.0.1:5678
+docker compose --profile debug-batch run --rm batch_debug
+
+# Tail API logs
+docker compose logs -f api
+```
+
+---
+
+## REST API
+
+The API runs at `http://localhost:8000`. Available when the `api` service is up.
+
+Interactive docs:
+- **Swagger UI**: `http://localhost:8000/docs`
+- **ReDoc**: `http://localhost:8000/redoc`
+- **OpenAPI schema**: `http://localhost:8000/openapi.json`
+
+### Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Liveness check + Ollama reachability |
+| `POST` | `/jobs/sync` | Download new recordings from PBX via SFTP |
+| `POST` | `/jobs/process` | Transcribe + analyse (accepts `days`, `limit`, `force_reanalyze`, `force_retranscribe`) |
+| `GET` | `/jobs` | List recent jobs |
+| `GET` | `/jobs/{job_id}` | Poll status: `pending` → `running` → `done` / `failed` |
+| `GET` | `/reports/overall` | Aggregated report from `out/report.json` |
+| `GET` | `/reports/manager/{manager_id}` | Per-manager report from `out/reports/{id}.json` |
+| `GET` | `/managers` | List all configured managers with extensions |
+
+### Job concurrency
+
+Only one `process` job can run at a time. A second `POST /jobs/process` while one is running returns `409 Conflict`. `sync` jobs have no such restriction.
+
+---
+
+## CLI Commands (batch profile)
+
+```bash
+# Run the full pipeline
+docker compose --profile batch run --rm batch python src/cli.py run
 
 # Download new recordings from PBX via SFTP
+docker compose --profile batch run --rm batch python src/cli.py sync
+```
+
+Or directly with venv active (for local dev):
+
+```bash
+python src/cli.py run
 PBX_HOST=192.168.1.1 PBX_KEY_PATH=~/.ssh/pbx_key python src/cli.py sync
 ```
 
@@ -76,9 +154,30 @@ PBX_HOST=192.168.1.1 PBX_KEY_PATH=~/.ssh/pbx_key python src/cli.py sync
 
 ---
 
+## Logging
+
+All services log to stdout. The API calls `setup_logging()` on startup via FastAPI lifespan; the CLI calls it in `__main__`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `LOG_FORMAT` | `%(asctime)s %(levelname)-8s %(name)s: %(message)s` | Python format string |
+| `LOG_FILE` | _(unset)_ | Write to a rotating file in addition to stdout |
+| `LOG_MAX_BYTES` | `10485760` | Rotation threshold (10 MiB) |
+| `LOG_BACKUP_COUNT` | `5` | Number of rotated files to keep |
+
+Set variables in `config/.env`. Example for verbose debug with file output:
+
+```env
+LOG_LEVEL=DEBUG
+LOG_FILE=/work/out/api.log
+```
+
+---
+
 ## Adding Adapters
 
-- **New PBX system:** create `adapters/pbx_<name>.py`, implement `parse_filename(name) -> Dict`. Pass it to `Pipeline` in `cli.py`.
+- **New PBX system:** create `adapters/pbx_<name>.py`, implement `parse_filename(name) -> Dict`. Pass it to `Pipeline` in `cli.py` and `runner.py`.
 - **New storage backend:** implement the `StoragePort` protocol from `ports/storage.py`.
 - **New LLM:** implement the `LlmPort` protocol from `ports/llm.py`.
 
@@ -88,7 +187,7 @@ PBX_HOST=192.168.1.1 PBX_KEY_PATH=~/.ssh/pbx_key python src/cli.py sync
 
 ```bash
 # Run all tests inside the container
-docker compose run --rm whisper_poc pytest
+docker compose --profile batch run --rm batch pytest
 
 # Or locally with venv active
 pytest tests/
@@ -98,16 +197,4 @@ Type-check:
 
 ```bash
 mypy src/
-```
-
----
-
-## Build & Run
-
-```bash
-docker compose build
-docker compose up
-
-# Debug mode (attaches on port 5678)
-docker compose run --rm whisper_debug
 ```

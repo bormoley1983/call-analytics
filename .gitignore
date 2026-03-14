@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .venv/
+.vscode/
 
 # data & outputs (DO NOT COMMIT)
 calls_raw/
@@ -17,3 +18,6 @@ _hf_cache/
 
 # misc
 .DS_Store
+
+#config
+config/.env

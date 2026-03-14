@@ -12,23 +12,16 @@ services:
       - ./config:/work/config:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    env_file:
+      - config/.env
     environment:
+      # Override to ensure Docker host networking works
       - OLLAMA_URL=http://host.docker.internal:11434
-      #- OLLAMA_MODEL=qwen2.5:32b
-
-      #- DAYS=2026/01/01,2026/01/02,2026/01/03,2026/01/04,2026/01/05
-      #- PROCESS_LIMIT=30
-      - MIN_BYTES=20000
-      - MIN_SECONDS=1.0
-      
-      #- WHISPER_MODEL=large-v3-turbo
-      #- WHISPER_DEVICE=cuda
-      #- WHISPER_COMPUTE_TYPE=float16
-      #- WHISPER_BEAM_SIZE=5
     gpus: all
     command: ["python", "src/cli.py"]
 
   whisper_debug:
+    pull_policy: never
     image: call-analytics-base:cuda12
     working_dir: /work
     volumes:
@@ -36,19 +29,11 @@ services:
       - ./_hf_cache:/root/.cache/huggingface
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    env_file:
+      - config/.env
     environment:
+      # Override to ensure Docker host networking works
       - OLLAMA_URL=http://host.docker.internal:11434
-      #- OLLAMA_MODEL=qwen2.5:32b
-
-      #- DAYS=2026/01/01,2026/01/02,2026/01/03,2026/01/04,2026/01/05
-      #- PROCESS_LIMIT=30
-      #- MIN_BYTES=20000
-      #- MIN_SECONDS=1.0
-      
-      #- WHISPER_MODEL=large-v3-turbo
-      #- WHISPER_DEVICE=cuda
-      #- WHISPER_COMPUTE_TYPE=float16
-      #- WHISPER_BEAM_SIZE=5
     gpus: all
     ports:
       - "5678:5678"

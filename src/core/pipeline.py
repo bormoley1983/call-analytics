@@ -1,25 +1,30 @@
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
 from faster_whisper import WhisperModel
 from tqdm import tqdm
 
-from adapters.audio_ffmpeg import ffprobe_duration_seconds, normalize_audio
-from adapters.llm_ollama import ensure_transcript_uk, ollama_analyze
-from adapters.pbx_asterisk import parse_filename
-from adapters.storage_json import JsonStorage
+from adapters.reports_html import render_manager_report, render_overall_report
 from core.planner import discover_and_filter_files
 from core.reports import aggregate_report, aggregate_report_by_manager
 from core.rules import ensure_analysis_schema, sha12
 from core.transcription import transcribe
 from domain.config import AppConfig
+from ports.audio import AudioPort
+from ports.llm import LlmPort
+from ports.pbx import PbxPort
+from ports.storage import StoragePort
 
 
 class Pipeline:
-    def __init__(self, config: AppConfig, storage: JsonStorage):
+    def __init__(self, config: AppConfig, storage: StoragePort, audio: AudioPort, llm: LlmPort, pbx: PbxPort):
         self.config = config
         self.storage = storage
+        self.audio = audio
+        self.llm = llm
+        self.pbx = pbx
 
     def run(self) -> None:
         files_to_process = discover_and_filter_files(self.config)
@@ -46,17 +51,12 @@ class Pipeline:
         print("\n" + "="*80)
         print("PHASE 1: TRANSCRIPTION (Whisper)")
         print("="*80)
-        
-        model = WhisperModel(
-           self.config.whisper_model,
-            device=self.config.whisper_device,
-            compute_type=self.config.whisper_compute_type
 
-        )
+        model = None
         files_metadata: List[Dict[str, Any]] = []
 
         for src in tqdm(files, desc="Transcribing"):
-            meta = parse_filename(src.name)
+            meta = self.pbx.parse_filename(src.name)
             meta["source_file"] = src.name
             meta["source_path"] = str(src)
 
@@ -84,9 +84,9 @@ class Pipeline:
             an_path = self.storage.analysis_path(cid)
 
             if not norm_path.exists():
-                normalize_audio(src, norm_path)
+                self.audio.normalize(src, norm_path)
 
-            dur = ffprobe_duration_seconds(norm_path)
+            dur = self.audio.duration_seconds(norm_path)
             meta["audio_seconds"] = dur
 
             if dur < self.config.min_seconds:
@@ -99,6 +99,12 @@ class Pipeline:
             if (not self.config.force_retranscribe) and tr_path.exists():
                 transcript = self.storage.load_json(tr_path)
             else:
+                if model is None:
+                    model = WhisperModel(
+                       self.config.whisper_model,
+                        device=self.config.whisper_device,
+                        compute_type=self.config.whisper_compute_type
+                    )
                 transcript = transcribe(model, norm_path, self.config)
 
             # Add manager info to transcript
@@ -116,7 +122,17 @@ class Pipeline:
             # Ensure UA transcript fields
             changed = False
             try:
-                transcript, changed = ensure_transcript_uk(transcript, self.config)
+                segments = transcript.get("segments", [])
+                translated = self.llm.translate_segments_to_uk(segments)
+                if translated:
+                    transcript["text_uk"] = "\n".join(translated)
+                    transcript["segments_uk"] = [
+                        {"start": seg["start"], "end": seg["end"], "text": uk}
+                        for seg, uk in zip(segments, translated)
+                    ]
+                else:
+                    transcript.setdefault("text_uk", transcript.get("text", ""))
+                    transcript.setdefault("segments_uk", segments)
             except Exception as e:
                 transcript.setdefault("text_uk", transcript.get("text", ""))
                 transcript.setdefault("segments_uk", [])
@@ -132,10 +148,11 @@ class Pipeline:
             files_metadata.append(meta)
 
         # Free Whisper model from memory
-        del model
+        if model is not None:
+            del model
+            print("Whisper model released from memory.")
         transcribed_count = len([m for m in files_metadata if m.get('status') == 'transcribed'])
         print(f"\n✓ Transcription complete. Processed {transcribed_count} files.")
-        print("Whisper model released from memory.")
         
         return files_metadata
 
@@ -166,7 +183,7 @@ class Pipeline:
             else:
                 text_uk = (transcript.get("text_uk") or transcript.get("text") or "").strip()
                 try:
-                    analysis = ollama_analyze(meta, text_uk, self.config)
+                    analysis = self.llm.analyze(meta, text_uk)
                 except Exception as e:
                     analysis = ensure_analysis_schema({}, meta)
                     analysis["effective_call"] = False
@@ -219,11 +236,24 @@ class Pipeline:
 
         print("\n=== OVERALL SUMMARY ===")
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        
+        render_overall_report(report, self.config.out / "report.html")
+
         print("\n=== PER-MANAGER SUMMARY ===")
         print(json.dumps(manager_report, ensure_ascii=False, indent=2))
-        
+        render_manager_report(manager_report, self.config.out / "report_by_manager.html")
+
         print(f"\n✓ Reports saved:")
         print(f"  - {self.config.out / 'report.json'}")
         print(f"  - {self.config.out / 'report_by_manager.json'}")
+        
+        if os.getenv("POSTGRES_DSN"):
+            self.sync_to_postgres(per_call)
+
+
+    def sync_to_postgres(self, per_call: List[Dict[str, Any]]) -> None:
+        from adapters.storage_postgres import PostgresStorage
+        pg = PostgresStorage(os.getenv("POSTGRES_DSN", ""))
+        pg.connect()
+        pg.sync_per_call(per_call)
+        pg.close()
         

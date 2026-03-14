@@ -1,6 +1,10 @@
 from typing import Any, Dict
 
 
+class AsteriskPbx:
+    def parse_filename(self, name: str) -> Dict[str, Any]:
+        return parse_filename(name)
+
 def parse_filename(name: str) -> Dict[str, Any]:
     """Parse FreePBX filename format: dir-dst-src-YYYYMMDD-HHMMSS-uniqueid.wav"""
     base = name.rsplit(".", 1)[0] if "." in name else name

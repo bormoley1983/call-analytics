@@ -9,6 +9,8 @@ from domain.config import AppConfig
 # CONSTANTS
 # ----------------------------
 TRUNCATION_MESSAGE_UK = "\n\n[... транскрипт обрізано через обмеження довжини моделі ...]"
+VALID_INTENTS_UK = {"консультація", "скарга", "оформлення замовлення", "запит інформації", "інше"}
+VALID_OUTCOMES_UK = {"продаж", "консультація", "відмова", "переведення на іншого", "невідомо"}
 
 def sha12(s: str) -> str:
     """Generate 12-character hash for file identification."""
@@ -72,5 +74,29 @@ def ensure_analysis_schema(analysis: Dict[str, Any], call_meta: Dict[str, Any]) 
     for key, default_val in defaults.items():
         if key not in analysis:
             analysis[key] = default_val
-    
+
+    # ← insert here, after defaults are filled so fields are guaranteed to exist
+    try:
+        analysis["spam_probability"] = max(0.0, min(1.0, float(analysis["spam_probability"])))
+    except (TypeError, ValueError):
+        analysis["spam_probability"] = 0.0
+
+    ec = analysis["effective_call"]
+    if isinstance(ec, str):
+        analysis["effective_call"] = ec.lower() in ("true", "1", "yes", "так")
+    else:
+        analysis["effective_call"] = bool(ec)
+
+    if analysis["intent"] not in VALID_INTENTS_UK:
+        analysis["intent"] = "інше"
+
+    if analysis["outcome"] not in VALID_OUTCOMES_UK:
+        analysis["outcome"] = "невідомо"
+
+    if not isinstance(analysis["key_questions"], list):
+        analysis["key_questions"] = []
+
+    if not isinstance(analysis["objections"], list):
+        analysis["objections"] = []
+
     return analysis

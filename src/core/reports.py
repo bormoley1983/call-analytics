@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from domain.config import AppConfig
@@ -45,7 +45,7 @@ def aggregate_report(per_call: List[Dict[str, Any]], config: AppConfig) -> Dict[
                 questions[q_lower] = questions.get(q_lower, 0) + 1
     
     return {
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
         "total_calls": total_calls,
         "transcribed": transcribed,
         "skipped_too_small": skipped_small,
@@ -160,7 +160,7 @@ def aggregate_report_by_manager(per_call: List[Dict[str, Any]], config: AppConfi
         by_role[role].append(stats)
     
     return {
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
         "role_summary": role_summary,
         "by_role": {
             role: managers 

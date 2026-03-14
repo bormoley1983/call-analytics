@@ -2,6 +2,12 @@ import subprocess
 from pathlib import Path
 
 
+class FfmpegAudio:
+    def normalize(self, src: Path, dst: Path) -> None:
+        normalize_audio(src, dst)
+    def duration_seconds(self, path: Path) -> float:
+        return ffprobe_duration_seconds(path)
+
 def ffprobe_duration_seconds(path: Path) -> float:
     """Get audio duration using ffprobe."""
     cmd = [

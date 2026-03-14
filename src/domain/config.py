@@ -32,7 +32,7 @@ ANALYSIS_CONFIG = CONFIG_DIR / "analysis.yaml"
 # Environment Variables
 # ----------------------------
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:32b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:27b")
 
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3-turbo")
 DEVICE = os.getenv("WHISPER_DEVICE", "cuda")
@@ -115,28 +115,30 @@ class ManagerMapper:
             }
         
         # Check sales team
-        for sales_mgr in self.sales:
-            internal_exts = [str(ext) for ext in sales_mgr.get('internal_extensions', [])]
-            external_lines = [
-                self.normalize_number(num) 
-                for num in sales_mgr.get('external_lines', [])
-            ]
+        for pass_num in range(2):
+            for sales_mgr in self.sales:
+                internal_exts = [str(ext) for ext in sales_mgr.get('internal_extensions', [])]
+                external_lines = [
+                    self.normalize_number(num) 
+                    for num in sales_mgr.get('external_lines', [])
+                ]
+                
+                if direction == "incoming":
+                    ext_match = dst_number in internal_exts
+                    line_match = dst_norm in external_lines
+                elif direction == "outgoing":
+                    ext_match = src_number in internal_exts
+                    line_match = src_norm in external_lines
+                else:
+                    ext_match = line_match = False
+
+                if (pass_num == 0 and ext_match) or (pass_num == 1 and line_match):
+                    return {
+                        "name": sales_mgr['name'],
+                        "id": sales_mgr['id'],
+                        "role": "sales",
+                }
             
-            if direction == "incoming":
-                if dst_number in internal_exts or dst_norm in external_lines:
-                    return {
-                        "name": sales_mgr['name'],
-                        "id": sales_mgr['id'],
-                        "role": "sales"
-                    }
-            elif direction == "outgoing":
-                if src_number in internal_exts or src_norm in external_lines:
-                    return {
-                        "name": sales_mgr['name'],
-                        "id": sales_mgr['id'],
-                        "role": "sales"
-                    }
-        
         return self.default_manager
 
 

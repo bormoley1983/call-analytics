@@ -38,6 +38,9 @@ def discover_wav_files_from_specified_dirs(config: AppConfig) -> List[Path]:
 
     for d in day_list:
         day_path = config.calls_raw / d
+        if not day_path.resolve().is_relative_to(config.calls_raw.resolve()):
+            print(f"  Skipping unsafe path: {d}")
+            continue
         if day_path.exists():
             all_files.extend(day_path.glob("*.wav"))
 

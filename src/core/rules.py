@@ -1,9 +1,12 @@
 # skip/filters, brand corrections, etc.
 import hashlib
+import logging
 import re
 from typing import Any, Dict
 
 from domain.config import AppConfig
+
+logger = logging.getLogger(__name__)
 
 # ----------------------------
 # CONSTANTS
@@ -43,8 +46,11 @@ def truncate_text_for_analysis(text: str, config: AppConfig) -> str:
     
     if current_tokens <= available_tokens:
         return text
-    
-    print(f"Warning: Transcript too long ({current_tokens} tokens estimated). Truncating to {available_tokens} tokens.")
+
+    logger.warning(
+        "Transcript too long (%d tokens estimated). Truncating to %d tokens.",
+        current_tokens, available_tokens,
+    )
     
     truncated = text[:max_chars]
     

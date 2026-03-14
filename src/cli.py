@@ -15,22 +15,26 @@ Outputs:
   ./out/analysis/*.json
   ./out/report.json
 """
+import logging
 import os
 import sys
 
 from adapters.audio_ffmpeg import FfmpegAudio
 from adapters.llm_ollama import OllamaLlm
 from adapters.pbx_asterisk import AsteriskPbx
+from adapters.pbx_ssh import PbxSshDownloader
 from adapters.storage_json import JsonStorage
 from core.pipeline import Pipeline
 from domain.config import CALLS_RAW, load_app_config
+from logging_config import setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 def sync() -> None:
-    from adapters.pbx_ssh import PbxSshDownloader
     host = os.getenv("PBX_HOST")
     if not host:
-        print("Error: PBX_HOST environment variable is not set.")
+        logger.error("PBX_HOST environment variable is not set.")
         sys.exit(1)
 
     downloader = PbxSshDownloader(
@@ -40,9 +44,12 @@ def sync() -> None:
       remote_dir=os.getenv("PBX_REMOTE_DIR", "/var/spool/asterisk/monitor"),
     )
     downloader.connect()
-    new_files = downloader.download_new(CALLS_RAW / "incoming", on_download=print)
+    new_files = downloader.download_new(
+        CALLS_RAW / "incoming",
+        on_download=lambda f: logger.info("Downloaded: %s", f),
+    )
     downloader.close()
-    print(f"Downloaded {len(new_files)} new file(s).")
+    logger.info("Downloaded %d new file(s).", len(new_files))
 
 def main() -> None:
     """Main entry point for call analytics processing."""
@@ -65,11 +72,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    setup_logging()
     command = sys.argv[1] if len(sys.argv) > 1 else "run"
     if command == "sync":
         sync()
     elif command == "run":
         main()
     else:
-        print(f"Unknown command: {command}. Use 'run' or 'sync'.")
+        logger.error("Unknown command: %s. Use 'run' or 'sync'.", command)
         sys.exit(1)

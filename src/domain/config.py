@@ -4,6 +4,7 @@ Configuration management for call analytics.
 Loads settings from environment variables and YAML files.
 """
 
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ from typing import Any, Dict, List, Tuple
 
 import requests
 import yaml
+
+logger = logging.getLogger(__name__)
 
 # ----------------------------
 # Paths
@@ -74,7 +77,7 @@ class ManagerMapper:
                 self.sales = config.get('sales', {}).get('managers', [])
                 self.default_manager = config.get('default_manager', self.default_manager)
         else:
-            print(f"⚠ Warning: Manager config not found at {config_path}")
+            logger.warning("Manager config not found at %s", config_path)
     
     def normalize_number(self, number: str) -> str:
         """Remove all non-digit characters from phone number."""
@@ -201,10 +204,8 @@ def load_app_config() -> AppConfig:
     Load all configuration at startup.
     This is the main entry point for configuration loading.
     """
-    print("\n" + "="*80)
-    print("LOADING CONFIGURATION")
-    print("="*80)
-    
+    logger.info("Loading configuration")
+
     # Ensure config directory exists
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     
@@ -212,7 +213,7 @@ def load_app_config() -> AppConfig:
     try:
         context_window = get_ollama_model_context_window()
     except Exception as e:
-        print(f"⚠ Warning: Could not query Ollama, using default context: {e}")
+        logger.warning("Could not query Ollama, using default context: %s", e)
         context_window = 4096
     
     # Load analysis config
@@ -224,16 +225,17 @@ def load_app_config() -> AppConfig:
     # Load manager mapper
     manager_mapper = ManagerMapper(MANAGERS_CONFIG)
     
-    print(f"\n✓ Configuration loaded:")
-    print(f"  - Ollama model: {OLLAMA_MODEL}")
-    print(f"  - Context window: {context_window:,} tokens")
-    print(f"  - Brand corrections: {len(brand_corrections)} entries")
-    print(f"  - Managers configured: {len(manager_mapper.sales) + len(manager_mapper.management_dev.get('managers', []))}")
-    print(f"  - Whisper model: {WHISPER_MODEL} ({DEVICE}/{COMPUTE_TYPE})")
-    print(f"  - Processing limit: {PROCESS_LIMIT} files")
-    print(f"  - Force reanalyze: {FORCE_REANALYZE}")
-    print(f"  - Force retranscribe: {FORCE_RETRANSCRIBE}")
-    print(f"  - Force translate UK: {FORCE_TRANSLATE_UK}")
+    logger.info(
+        "Configuration loaded: model=%s context=%s tokens brand_corrections=%d "
+        "managers=%d whisper=%s(%s/%s) limit=%d reanalyze=%s retranscribe=%s translate_uk=%s",
+        OLLAMA_MODEL,
+        f"{context_window:,}",
+        len(brand_corrections),
+        len(manager_mapper.sales) + len(manager_mapper.management_dev.get("managers", [])),
+        WHISPER_MODEL, DEVICE, COMPUTE_TYPE,
+        PROCESS_LIMIT,
+        FORCE_REANALYZE, FORCE_RETRANSCRIBE, FORCE_TRANSLATE_UK,
+    )
     
     return AppConfig(
         # Paths
@@ -317,18 +319,17 @@ def get_ollama_model_context_window() -> int:
         for key in context_keys:
             if key in model_info:
                 ctx = int(model_info[key])
-                print(f"✓ Detected model context window: {ctx:,} tokens ({key})")
+                logger.info("Detected model context window: %s tokens (%s)", f"{ctx:,}", key)
                 return ctx
-        
-        print("Context window not found in model_info, using default 4096")
+
+        logger.warning("Context window not found in model_info, using default 4096")
         return 4096
-        
+
     except requests.exceptions.ConnectionError:
-        print(f"ERROR: Cannot connect to Ollama at {OLLAMA_URL}")
-        print("Make sure Ollama is running: 'ollama serve'")
+        logger.error("Cannot connect to Ollama at %s — make sure Ollama is running: 'ollama serve'", OLLAMA_URL)
         return 4096
     except Exception as e:
-        print(f"Warning: Could not query model info: {e}")
+        logger.warning("Could not query model info: %s", e)
         return 4096
 
 
@@ -354,15 +355,15 @@ def load_analysis_config() -> Dict[str, Any]:
     }
     
     if not ANALYSIS_CONFIG.exists():
-        print(f"⚠ Analysis config not found at {ANALYSIS_CONFIG}, using defaults")
+        logger.warning("Analysis config not found at %s, using defaults", ANALYSIS_CONFIG)
         return default_config
-    
+
     try:
         with open(ANALYSIS_CONFIG, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
             return config if config else default_config
     except Exception as e:
-        print(f"⚠ Warning: Could not load analysis config: {e}")
+        logger.warning("Could not load analysis config: %s", e)
         return default_config
 
 
@@ -378,9 +379,9 @@ def load_brand_corrections() -> Tuple[Dict[str, str], str]:
     default_prompt = "Розмова про продукцію компанії."
     
     if not BRANDS_CONFIG.exists():
-        print(f"⚠ Brands config not found at {BRANDS_CONFIG}, using defaults")
+        logger.warning("Brands config not found at %s, using defaults", BRANDS_CONFIG)
         return default_corrections, default_prompt
-    
+
     try:
         with open(BRANDS_CONFIG, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
@@ -388,5 +389,5 @@ def load_brand_corrections() -> Tuple[Dict[str, str], str]:
             prompt = config.get('initial_prompt', default_prompt)
             return corrections, prompt
     except Exception as e:
-        print(f"⚠ Warning: Could not load brands config: {e}")
+        logger.warning("Could not load brands config: %s", e)
         return default_corrections, default_prompt

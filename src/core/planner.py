@@ -1,10 +1,14 @@
 # decides what to process (incremental)
+import json
+import logging
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 from core.rules import sha12
 from domain.config import AppConfig
+
+logger = logging.getLogger(__name__)
 
 
 def discover_all_wav_files(config: AppConfig) -> List[Path]:
@@ -30,7 +34,7 @@ def discover_wav_files_from_specified_dirs(config: AppConfig) -> List[Path]:
     days_env = os.getenv("DAYS", "")
     
     if not days_env.strip():
-        print("DAYS env var not set or empty. Returning empty list.")
+        logger.debug("DAYS env var not set or empty. Returning empty list.")
         return []
     
     day_list = [d.strip().replace("\\", "/") for d in days_env.split(",") if d.strip()]
@@ -39,7 +43,7 @@ def discover_wav_files_from_specified_dirs(config: AppConfig) -> List[Path]:
     for d in day_list:
         day_path = config.calls_raw / d
         if not day_path.resolve().is_relative_to(config.calls_raw.resolve()):
-            print(f"  Skipping unsafe path: {d}")
+            logger.warning("Skipping unsafe path: %s", d)
             continue
         if day_path.exists():
             all_files.extend(day_path.glob("*.wav"))
@@ -47,9 +51,11 @@ def discover_wav_files_from_specified_dirs(config: AppConfig) -> List[Path]:
     all_files = sorted(all_files)
     
     if not all_files:
-        print("No WAV files found. Checked day folders under:", config.calls_raw)
-        for d in day_list:
-            print("  ", (config.calls_raw / d))
+        logger.warning(
+            "No WAV files found. Checked day folders under: %s; dirs checked: %s",
+            config.calls_raw,
+            [str(config.calls_raw / d) for d in day_list],
+        )
         return []
 
     return all_files
@@ -81,21 +87,54 @@ def discover_and_filter_files(config: AppConfig) -> List[Path]:
     days_env = os.getenv("DAYS", "").strip()
     
     if days_env:
-        print(f"Using DAYS filter: {days_env}")
+        logger.info("Using DAYS filter: %s", days_env)
         all_files = discover_wav_files_from_specified_dirs(config)
     else:
-        print("No DAYS filter specified, discovering all WAV files recursively")
+        logger.info("No DAYS filter specified, discovering all WAV files recursively")
         all_files = discover_all_wav_files(config)
 
-    print(f"Discovered {len(all_files)} total WAV files")
+    logger.info("Discovered %d total WAV file(s)", len(all_files))
 
     # Filter to unprocessed files (unless forcing)
     files_to_process = filter_unprocessed_files(all_files, config)
-    print(f"Found {len(files_to_process)} unprocessed files")
+    logger.info("Found %d unprocessed file(s)", len(files_to_process))
 
     # Apply limit
     if len(files_to_process) > config.process_limit:
-        print(f"Limiting to {config.process_limit} files (set PROCESS_LIMIT to change)")
+        logger.info("Limiting to %d file(s) (set PROCESS_LIMIT to change)", config.process_limit)
         files_to_process = files_to_process[:config.process_limit]
 
     return files_to_process
+
+def categorize_files(files: List[Path], config: AppConfig) -> Tuple[List[Path], List[Path]]:
+    """
+    Split files into:
+    - needs_pipeline: require transcription/translation (go through run_transcription_phase)
+    - analysis_only: already translated, only need run_analysis_phase
+    """
+    needs_pipeline: List[Path] = []
+    analysis_only: List[Path] = []
+
+    for src in files:
+        cid = sha12(src.name + str(src.stat().st_size))
+        tr_path = config.trans / f"{cid}.json"
+        an_path = config.analysis / f"{cid}.json"
+
+        if config.force_retranscribe or config.force_translate_uk:
+            needs_pipeline.append(src)
+            continue
+
+        if tr_path.exists():
+            try:
+                stage = json.loads(tr_path.read_text(encoding="utf-8")).get("_pipeline_stage", "")
+            except Exception:
+                stage = ""
+
+            if stage == "translated":
+                analysis_only.append(src)
+            else:
+                needs_pipeline.append(src)
+        else:
+            needs_pipeline.append(src)
+
+    return needs_pipeline, analysis_only

@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (Distance, FieldCondition, Filter, MatchValue,
+                                  PointStruct, VectorParams)
 
 COLLECTION = "call_transcripts"
 VECTOR_DIM = 1024  # match your embedding model output
@@ -42,14 +43,13 @@ class QdrantStorage:
         """Find calls semantically similar to a query."""
         query_filter = None
         if filter_manager:
-            from qdrant_client.models import FieldCondition, Filter, MatchValue
             query_filter = Filter(
                 must=[FieldCondition(key="manager_id", match=MatchValue(value=filter_manager))]
             )
-        results = self.client.search(
+        results = self.client.query_points(
             collection_name=COLLECTION,
             query_vector=query_embedding,
             limit=top_k,
             query_filter=query_filter,
-        )
-        return [{"score": r.score, **r.payload} for r in results]
+        ).points
+        return [{"score": r.score, **(r.payload or {})} for r in results]

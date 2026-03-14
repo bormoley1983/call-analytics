@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List
@@ -7,7 +8,8 @@ from faster_whisper import WhisperModel
 from tqdm import tqdm
 
 from adapters.reports_html import render_manager_report, render_overall_report
-from core.planner import discover_and_filter_files
+from adapters.storage_postgres import PostgresStorage
+from core.planner import categorize_files, discover_and_filter_files
 from core.reports import aggregate_report, aggregate_report_by_manager
 from core.rules import ensure_analysis_schema, sha12
 from core.transcription import transcribe
@@ -16,6 +18,8 @@ from ports.audio import AudioPort
 from ports.llm import LlmPort
 from ports.pbx import PbxPort
 from ports.storage import StoragePort
+
+logger = logging.getLogger(__name__)
 
 
 class Pipeline:
@@ -27,17 +31,54 @@ class Pipeline:
         self.pbx = pbx
 
     def run(self) -> None:
-        files_to_process = discover_and_filter_files(self.config)
-        if not files_to_process:
-            print("No files to process.")
+        all_files = discover_and_filter_files(self.config)
+        if not all_files:
+            logger.info("No files to process.")
             return
-        files_metadata = self.run_transcription_phase(files_to_process)
+        
+        needs_pipeline, analysis_only = categorize_files(all_files, self.config)
+        logger.info(
+            "%d file(s) need pipeline, %d file(s) need analysis only",
+            len(needs_pipeline), len(analysis_only),
+        )
+
+        files_metadata = self.run_transcription_phase(needs_pipeline)
+
+        # Inject analysis-only files directly — skip Whisper and translation entirely
+        for src in analysis_only:
+            meta = self._build_meta(src)
+            tr_path = Path(meta["tr_path"])
+            transcript = self.storage.load_json(tr_path)
+            meta["audio_seconds"] = transcript.get("call_meta", {}).get("audio_seconds") or \
+                                    self.audio.duration_seconds(self.config.norm / f"{meta['call_id']}.wav")
+            meta["status"] = "transcribed"
+            meta["stage"] = "translated"
+            files_metadata.append(meta)
+
         per_call = self.run_analysis_phase(files_metadata)
         self.generate_reports(per_call)
-    
-        print("\n" + "="*80)
-        print("✓ PROCESSING COMPLETE")
-        print("="*80)
+        logger.info("Processing complete.")
+
+    def _build_meta(self, src: Path) -> Dict[str, Any]:
+        meta = self.pbx.parse_filename(src.name)
+        meta["source_file"] = src.name
+        meta["source_path"] = str(src)
+        manager_info = self.config.manager_mapper.find_manager(
+            meta.get("src_number", ""),
+            meta.get("dst_number", ""),
+            meta.get("direction", "unknown"),
+        )
+        meta["manager_name"] = manager_info["name"]
+        meta["manager_id"] = manager_info["id"]
+        meta["role"] = manager_info.get("role", "unknown")
+
+        if src.stat().st_size >= self.config.min_bytes:
+            cid = sha12(src.name + str(src.stat().st_size))
+            meta["call_id"] = cid
+            meta["tr_path"] = str(self.storage.transcript_path(cid))
+            meta["an_path"] = str(self.storage.analysis_path(cid))
+
+        return meta
 
     def run_transcription_phase(self, files: List[Path]) -> List[Dict[str, Any]]:
         """
@@ -45,57 +86,38 @@ class Pipeline:
         Returns metadata for all files including skipped ones.
         """
         if not files:
-            print("No files to process.")
+            logger.info("No files to process.")
             return []
-        
-        print("\n" + "="*80)
-        print("PHASE 1: TRANSCRIPTION (Whisper)")
-        print("="*80)
+
+        logger.info("Phase 1: Transcription (Whisper)")
 
         model = None
         files_metadata: List[Dict[str, Any]] = []
 
         for src in tqdm(files, desc="Transcribing"):
-            meta = self.pbx.parse_filename(src.name)
-            meta["source_file"] = src.name
-            meta["source_path"] = str(src)
-
-            # Map to manager
-            manager_info = self.config.manager_mapper.find_manager(
-                meta.get("src_number", ""),
-                meta.get("dst_number", ""),
-                meta.get("direction", "unknown")
-            )
-            meta["manager_name"] = manager_info["name"]
-            meta["manager_id"] = manager_info["id"]
-            meta["role"] = manager_info.get("role", "unknown")
-
-            # Skip tiny files
-            if src.stat().st_size < self.config.min_bytes:
+            meta = self._build_meta(src)
+            if "call_id" not in meta:
                 meta["status"] = "skipped_too_small"
                 files_metadata.append(meta)
                 continue
 
-            cid = sha12(src.name + str(src.stat().st_size))
-            meta["call_id"] = cid
-
-            norm_path = self.config.norm / f"{cid}.wav"
-            tr_path = self.storage.transcript_path(cid)
-            an_path = self.storage.analysis_path(cid)
-
-            if not norm_path.exists():
-                self.audio.normalize(src, norm_path)
-
-            dur = self.audio.duration_seconds(norm_path)
+            dur = self.audio.duration_seconds(src)
             meta["audio_seconds"] = dur
 
             if dur < self.config.min_seconds:
                 meta["status"] = "skipped_too_short"
                 files_metadata.append(meta)
                 continue
+            
+            norm_path = self.config.norm / f"{meta['call_id']}.wav"
+            tr_path = Path(meta["tr_path"])
+
+            if not norm_path.exists():
+                self.audio.normalize(src, norm_path)
 
             # Transcribe
             transcript: Dict[str, Any]
+            newly_transcribed = False
             if (not self.config.force_retranscribe) and tr_path.exists():
                 transcript = self.storage.load_json(tr_path)
             else:
@@ -106,6 +128,7 @@ class Pipeline:
                         compute_type=self.config.whisper_compute_type
                     )
                 transcript = transcribe(model, norm_path, self.config)
+                newly_transcribed = True
 
             # Add manager info to transcript
             transcript["manager_name"] = meta["manager_name"]
@@ -119,40 +142,53 @@ class Pipeline:
                 "time": meta.get("time"),
             }
 
-            # Ensure UA transcript fields
-            changed = False
-            try:
-                segments = transcript.get("segments", [])
-                translated = self.llm.translate_segments_to_uk(segments)
-                if translated:
-                    transcript["text_uk"] = "\n".join(translated)
-                    transcript["segments_uk"] = [
-                        {"start": seg["start"], "end": seg["end"], "text": uk}
-                        for seg, uk in zip(segments, translated)
-                    ]
-                else:
-                    transcript.setdefault("text_uk", transcript.get("text", ""))
-                    transcript.setdefault("segments_uk", segments)
-            except Exception as e:
-                transcript.setdefault("text_uk", transcript.get("text", ""))
-                transcript.setdefault("segments_uk", [])
-                transcript.setdefault("translation_error", repr(e))
-                changed = True
-
-            if self.config.force_retranscribe or changed or (not tr_path.exists()):
+            # Save immediately after Whisper so a crash during translation
+            # doesn't require re-running the GPU transcription
+            if newly_transcribed or self.config.force_retranscribe:
+                transcript["_pipeline_stage"] = "transcribed"
                 self.storage.save_json(tr_path, transcript)
 
+            # Ensure UA transcript fields
+            completed_stage = transcript.get("_pipeline_stage", "transcribed")
+            need_translate = (
+                completed_stage != "translated"
+                or self.config.force_retranscribe
+                or self.config.force_translate_uk
+            )
+
+            if need_translate:
+                segments = transcript.get("segments", [])
+                try:
+                    translated = self.llm.translate_segments_to_uk(segments)
+                    if translated:
+                        transcript["text_uk"] = "\n".join(translated)
+                        transcript["segments_uk"] = [
+                            {"start": seg["start"], "end": seg["end"], "text": uk}
+                            for seg, uk in zip(segments, translated)
+                        ]
+                    else:
+                        transcript.setdefault("text_uk", transcript.get("text", ""))
+                        transcript.setdefault("segments_uk", segments)
+                    transcript["_pipeline_stage"] = "translated"
+
+                    self.storage.save_json(tr_path, transcript)
+                except Exception as e:
+                    transcript.setdefault("text_uk", transcript.get("text", ""))
+                    transcript.setdefault("segments_uk", [])
+                    transcript.setdefault("translation_error", repr(e))
+
+
+
+            meta["stage"] = transcript.get("_pipeline_stage", "transcribed")
             meta["status"] = "transcribed"
-            meta["tr_path"] = str(tr_path)
-            meta["an_path"] = str(an_path)
             files_metadata.append(meta)
 
         # Free Whisper model from memory
         if model is not None:
             del model
-            print("Whisper model released from memory.")
+            logger.info("Whisper model released from memory.")
         transcribed_count = len([m for m in files_metadata if m.get('status') == 'transcribed'])
-        print(f"\n✓ Transcription complete. Processed {transcribed_count} files.")
+        logger.info("Transcription complete. Processed %d file(s).", transcribed_count)
         
         return files_metadata
 
@@ -162,10 +198,8 @@ class Pipeline:
         Phase 2: Analysis with Ollama (different GPU usage pattern).
         Returns per-call results including analysis.
         """
-        print("\n" + "="*80)
-        print("PHASE 2: ANALYSIS (Ollama)")
-        print("="*80)
-        
+        logger.info("Phase 2: Analysis (Ollama)")
+
         per_call: List[Dict[str, Any]] = []
 
         for meta in tqdm([m for m in files_metadata if m.get("status") == "transcribed"], desc="Analyzing"):
@@ -215,16 +249,17 @@ class Pipeline:
             if meta.get("status") in ("skipped_too_small", "skipped_too_short"):
                 per_call.append({"meta": meta, "status": meta["status"]})
 
-        print(f"\n✓ Analysis complete. Processed {len([c for c in per_call if c.get('status') == 'processed'])} calls.")
-        
+        logger.info(
+            "Analysis complete. Processed %d call(s).",
+            len([c for c in per_call if c.get('status') == 'processed']),
+        )
+
         return per_call
 
 
     def generate_reports(self, per_call: List[Dict[str, Any]]) -> None:
         """Generate and save analysis reports."""
-        print("\n" + "="*80)
-        print("GENERATING REPORTS")
-        print("="*80)
+        logger.info("Generating reports")
         
         # Generate overall report
         report = aggregate_report(per_call, self.config)
@@ -234,24 +269,22 @@ class Pipeline:
         manager_report = aggregate_report_by_manager(per_call, self.config)
         (self.config.out / "report_by_manager.json").write_text(json.dumps(manager_report, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        print("\n=== OVERALL SUMMARY ===")
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        logger.debug("Overall summary:\n%s", json.dumps(report, ensure_ascii=False, indent=2))
         render_overall_report(report, self.config.out / "report.html")
 
-        print("\n=== PER-MANAGER SUMMARY ===")
-        print(json.dumps(manager_report, ensure_ascii=False, indent=2))
+        logger.debug("Per-manager summary:\n%s", json.dumps(manager_report, ensure_ascii=False, indent=2))
         render_manager_report(manager_report, self.config.out / "report_by_manager.html")
 
-        print(f"\n✓ Reports saved:")
-        print(f"  - {self.config.out / 'report.json'}")
-        print(f"  - {self.config.out / 'report_by_manager.json'}")
-        
+        logger.info(
+            "Reports saved: %s, %s",
+            self.config.out / "report.json",
+            self.config.out / "report_by_manager.json",
+        )
         if os.getenv("POSTGRES_DSN"):
             self.sync_to_postgres(per_call)
 
 
     def sync_to_postgres(self, per_call: List[Dict[str, Any]]) -> None:
-        from adapters.storage_postgres import PostgresStorage
         pg = PostgresStorage(os.getenv("POSTGRES_DSN", ""))
         pg.connect()
         pg.sync_per_call(per_call)

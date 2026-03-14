@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 import time
 from typing import Any, Dict, List, Tuple
@@ -7,6 +8,8 @@ import requests
 
 from core.rules import ensure_analysis_schema, truncate_text_for_analysis
 from domain.config import AppConfig
+
+logger = logging.getLogger(__name__)
 
 # ----------------------------
 # CONSTANTS
@@ -55,7 +58,10 @@ def _ollama_generate(prompt: str, config: AppConfig, temperature: float = 0.2, f
             last_err = e
             if attempt < config.ollama_retries - 1:
                 wait_time = 2 ** attempt
-                print(f"Ollama request failed (attempt {attempt+1}/{config.ollama_retries}), retrying in {wait_time}s...")
+                logger.warning(
+                    "Ollama request failed (attempt %d/%d), retrying in %ds: %s",
+                    attempt + 1, config.ollama_retries, wait_time, e,
+                )
                 time.sleep(wait_time)
 
     raise RuntimeError(f"Ollama request failed after {config.ollama_retries} retries: {last_err!r}")
@@ -103,10 +109,12 @@ def translate_segments_to_uk(segments: List[Dict[str, Any]], config: AppConfig) 
         if len(translated) == len(texts):
             return translated
 
-        print(f"Translation length mismatch: expected {len(texts)}, got {len(translated)}")
+        logger.warning(
+            "Translation length mismatch: expected %d, got %d", len(texts), len(translated)
+        )
         return None
     except Exception as e:
-        print(f"Translation error: {e}")
+        logger.warning("Translation error: %s", e)
         return None
 
 

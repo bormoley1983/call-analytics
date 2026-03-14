@@ -51,6 +51,16 @@ def sync() -> None:
     downloader.close()
     logger.info("Downloaded %d new file(s).", len(new_files))
 
+
+def migrate_storage() -> None:
+    # Delegate to dedicated migration module.
+    from migrate_storage import main as migrate_main
+
+    # Preserve sub-args: cli.py migrate-storage --source ... --target ...
+    sys.argv = [sys.argv[0], *sys.argv[2:]]
+    raise SystemExit(migrate_main())
+
+
 def main() -> None:
     """Main entry point for call analytics processing."""
     # Load configuration (single source of truth)
@@ -76,8 +86,10 @@ if __name__ == "__main__":
     command = sys.argv[1] if len(sys.argv) > 1 else "run"
     if command == "sync":
         sync()
+    elif command == "migrate-storage":
+        migrate_storage()
     elif command == "run":
         main()
     else:
-        logger.error("Unknown command: %s. Use 'run' or 'sync'.", command)
+        logger.error("Unknown command: %s. Use 'run', 'sync' or 'migrate-storage'.", command)
         sys.exit(1)

@@ -81,6 +81,7 @@ The API runs at `http://localhost:8000`. Interactive docs available at:
 |---|---|---|
 | `GET` | `/health` | Liveness check + Ollama status |
 | `POST` | `/jobs/sync` | Download new recordings from PBX via SFTP |
+| `POST` | `/jobs/sync-and-process` | Download missing recordings, then process only newly downloaded days |
 | `POST` | `/jobs/process` | Transcribe + analyse recordings |
 | `GET` | `/jobs` | List recent jobs |
 | `GET` | `/jobs/{job_id}` | Poll job status (`pending` → `running` → `done`/`failed`) |
@@ -104,6 +105,14 @@ curl http://localhost:8000/jobs/<job_id>
 
 # 4. Fetch results
 curl http://localhost:8000/reports/overall
+```
+
+Or use one combined job:
+
+```bash
+curl -X POST http://localhost:8000/jobs/sync-and-process \
+    -H "Content-Type: application/json" \
+    -d '{"limit": 0, "force_reanalyze": false, "force_retranscribe": false}'
 ```
 
 ### Scheduled nightly run (cron)
@@ -136,6 +145,9 @@ All variables are optional — defaults are shown. Set them in .env.
 | `FORCE_TRANSLATE_UK` | `0` | `1` to translate transcripts to Ukrainian |
 | `SPAM_PROBABILITY_THRESHOLD` | `0.7` | Calls above this are counted as spam |
 | `POSTGRES_DSN` | _(unset)_ | If set, syncs results to PostgreSQL after each run |
+
+Notes:
+- `limit=0` in `/jobs/process` and `/jobs/sync-and-process` means unlimited processing (no cap).
 
 ### Logging
 
@@ -237,6 +249,50 @@ POSTGRES_DSN=postgresql://user:pass@localhost/calls
 ```
 
 Two tables are created automatically: `transcripts` and `analyses`.
+
+### Storage Migration (JSON <-> PostgreSQL)
+
+The project includes a universal migration command for moving persisted data between supported storages.
+
+Supported backends:
+- `json`
+- `postgres`
+
+Supported entities:
+- `transcripts`
+- `analyses`
+- `both`
+
+Run migration from existing JSON files to PostgreSQL:
+
+```bash
+python src/cli.py migrate-storage \
+    --source json \
+    --target postgres \
+    --entities both \
+    --postgres-dsn "postgresql://user:pass@localhost/calls"
+```
+
+Dry-run example:
+
+```bash
+python src/cli.py migrate-storage \
+    --source json \
+    --target postgres \
+    --entities both \
+    --dry-run \
+    --postgres-dsn "postgresql://user:pass@localhost/calls"
+```
+
+Reverse migration (PostgreSQL back to JSON):
+
+```bash
+python src/cli.py migrate-storage \
+    --source postgres \
+    --target json \
+    --entities both \
+    --postgres-dsn "postgresql://user:pass@localhost/calls"
+```
 
 ---
 

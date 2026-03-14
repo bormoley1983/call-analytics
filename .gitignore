@@ -22,3 +22,4 @@ _hf_cache/
 #config
 config/.env
 config/ssh/*
+*DEVPLAN_*

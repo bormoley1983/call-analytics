@@ -167,6 +167,7 @@ class AppConfig:
     ollama_timeout: int
     ollama_retries: int
     ollama_token_overhead: int 
+    analysis_workers: int
     
     # Whisper settings
     whisper_model: str
@@ -254,6 +255,8 @@ def load_app_config() -> AppConfig:
         ollama_timeout=int(os.getenv("OLLAMA_GENERATION_TIMEOUT", "600")),
         ollama_retries=int(os.getenv("OLLAMA_RETRY_ATTEMPTS", "4")),
         ollama_token_overhead=int(os.getenv("OLLAMA_TOKEN_OVERHEAD", "1800")),
+        
+        analysis_workers=int(os.getenv("ANALYSIS_WORKERS", "1")),
         
         # Whisper settings
         whisper_model=WHISPER_MODEL,

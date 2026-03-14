@@ -1,6 +1,6 @@
 x-base: &base
   pull_policy: never
-  image: call-analytics-base:cuda12
+  image: call-analytics-base:cuda12.8.1-py312
   working_dir: /work
   volumes:
     - ./:/work

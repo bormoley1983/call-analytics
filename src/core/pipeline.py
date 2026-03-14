@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -72,8 +73,9 @@ class Pipeline:
         meta["manager_id"] = manager_info["id"]
         meta["role"] = manager_info.get("role", "unknown")
 
-        if src.stat().st_size >= self.config.min_bytes:
-            cid = sha12(src.name + str(src.stat().st_size))
+        st_size = src.stat().st_size
+        if st_size >= self.config.min_bytes:
+            cid = sha12(src.name + str(st_size))
             meta["call_id"] = cid
             meta["tr_path"] = str(self.storage.transcript_path(cid))
             meta["an_path"] = str(self.storage.analysis_path(cid))
@@ -194,23 +196,14 @@ class Pipeline:
 
 
     def run_analysis_phase(self, files_metadata: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Phase 2: Analysis with Ollama (different GPU usage pattern).
-        Returns per-call results including analysis.
-        """
         logger.info("Phase 2: Analysis (Ollama)")
-
         per_call: List[Dict[str, Any]] = []
+        to_analyze = [m for m in files_metadata if m.get("status") == "transcribed"]
 
-        for meta in tqdm([m for m in files_metadata if m.get("status") == "transcribed"], desc="Analyzing"):
+        def _analyze_one(meta: Dict[str, Any]) -> Dict[str, Any]:
             tr_path = Path(meta["tr_path"])
             an_path = Path(meta["an_path"])
-            
-            # Load transcript
             transcript = self.storage.load_json(tr_path)
-            
-            # Analyze
-            analysis: Dict[str, Any]
             if (not self.config.force_reanalyze) and an_path.exists():
                 analysis = self.storage.load_json(an_path)
                 analysis = ensure_analysis_schema(analysis, meta)
@@ -220,42 +213,50 @@ class Pipeline:
                     analysis = self.llm.analyze(meta, text_uk)
                 except Exception as e:
                     analysis = ensure_analysis_schema({}, meta)
-                    analysis["effective_call"] = False
-                    analysis["spam_probability"] = 1.0
-                    analysis["intent"] = "інше"
-                    analysis["outcome"] = "невідомо"
-                    analysis["summary"] = "Не вдалося отримати коректний JSON-аналіз від моделі."
-                    analysis["analysis_error"] = repr(e)
-
-            # Add manager info to analysis
-            analysis["manager_name"] = meta["manager_name"]
-            analysis["manager_id"] = meta["manager_id"]
-            analysis["role"] = meta["role"]
-            analysis["call_meta"] = {
-                "direction": meta.get("direction"),
-                "src_number": meta.get("src_number"),
-                "dst_number": meta.get("dst_number"),
-                "date": meta.get("date"),
-                "time": meta.get("time"),
-                "audio_seconds": meta.get("audio_seconds"),
-            }
-
-            # Always save normalized analysis
+                    analysis.update({
+                        "effective_call": False, "spam_probability": 1.0,
+                        "intent": "інше", "outcome": "невідомо",
+                        "summary": "Не вдалося отримати коректний JSON-аналіз від моделі.",
+                        "analysis_error": repr(e),
+                    })
+            analysis.update({
+                "manager_name": meta["manager_name"],
+                "manager_id": meta["manager_id"],
+                "role": meta["role"],
+                "call_meta": {
+                    "direction": meta.get("direction"),
+                    "src_number": meta.get("src_number"),
+                    "dst_number": meta.get("dst_number"),
+                    "date": meta.get("date"),
+                    "time": meta.get("time"),
+                    "audio_seconds": meta.get("audio_seconds"),
+                },
+            })
             self.storage.save_json(an_path, analysis)
-            per_call.append({"meta": meta, "analysis": analysis, "status": "processed"})
-        
-        # Add skipped files to per_call for report
+            return {"meta": meta, "analysis": analysis, "status": "processed"}
+
+        workers = self.config.analysis_workers
+        logger.info("Analysis workers: %d", workers)
+
+        if workers == 1:
+            for meta in tqdm(to_analyze, desc="Analyzing"):
+                per_call.append(_analyze_one(meta))
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(_analyze_one, m): m for m in to_analyze}
+                for fut in tqdm(as_completed(futures), total=len(futures), desc="Analyzing"):
+                    try:
+                        per_call.append(fut.result())
+                    except Exception as e:
+                        logger.error("Analysis failed for %s: %s", futures[fut].get("source_file"), e)
+
         for meta in files_metadata:
             if meta.get("status") in ("skipped_too_small", "skipped_too_short"):
                 per_call.append({"meta": meta, "status": meta["status"]})
 
-        logger.info(
-            "Analysis complete. Processed %d call(s).",
-            len([c for c in per_call if c.get('status') == 'processed']),
-        )
-
+        logger.info("Analysis complete. Processed %d call(s).",
+                    len([c for c in per_call if c.get("status") == "processed"]))
         return per_call
-
 
     def generate_reports(self, per_call: List[Dict[str, Any]]) -> None:
         """Generate and save analysis reports."""

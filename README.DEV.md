@@ -20,7 +20,8 @@ mypy is configured in `mypy.ini` with `mypy_path = src`.
 
 ```
 src/
-  cli.py               # Batch entry point — commands: run (default), sync
+  cli.py               # Batch entry point — commands: run (default), sync, migrate-storage
+  migrate_storage.py   # Universal storage migration tool (json <-> postgres)
   logging_config.py    # Centralised logging setup (LOG_LEVEL, LOG_FILE, etc.)
   api/
     app.py             # FastAPI app + router registration + lifespan
@@ -29,7 +30,7 @@ src/
     runner.py          # Runs Pipeline / PbxSshDownloader as background tasks
     routes/
       health.py        # GET /health
-      jobs.py          # POST /jobs/sync|process, GET /jobs, GET /jobs/{id}
+      jobs.py          # POST /jobs/sync|sync-and-process|process, GET /jobs, GET /jobs/{id}
       reports.py       # GET /reports/overall|manager/{id}
       managers.py      # GET /managers
   core/
@@ -111,6 +112,7 @@ Interactive docs:
 |---|---|---|
 | `GET` | `/health` | Liveness check + Ollama reachability |
 | `POST` | `/jobs/sync` | Download new recordings from PBX via SFTP |
+| `POST` | `/jobs/sync-and-process` | Download missing recordings, then process only newly downloaded days |
 | `POST` | `/jobs/process` | Transcribe + analyse (accepts `days`, `limit`, `force_reanalyze`, `force_retranscribe`) |
 | `GET` | `/jobs` | List recent jobs |
 | `GET` | `/jobs/{job_id}` | Poll status: `pending` → `running` → `done` / `failed` |
@@ -120,7 +122,9 @@ Interactive docs:
 
 ### Job concurrency
 
-Only one `process` job can run at a time. A second `POST /jobs/process` while one is running returns `409 Conflict`. `sync` jobs have no such restriction.
+Only one process-like job can run at a time (`process` or `sync-and-process`).
+A second `POST /jobs/process` or `POST /jobs/sync-and-process` while one is running returns `409 Conflict`.
+`sync` jobs have no such restriction.
 
 ---
 
@@ -132,6 +136,10 @@ docker compose --profile batch run --rm batch python src/cli.py run
 
 # Download new recordings from PBX via SFTP
 docker compose --profile batch run --rm batch python src/cli.py sync
+
+# Migrate stored data between backends
+docker compose --profile batch run --rm batch \
+  python src/cli.py migrate-storage --source json --target postgres --entities both --dry-run
 ```
 
 Or directly with venv active (for local dev):
@@ -139,13 +147,50 @@ Or directly with venv active (for local dev):
 ```bash
 python src/cli.py run
 PBX_HOST=192.168.1.1 PBX_KEY_PATH=~/.ssh/pbx_key python src/cli.py sync
+python src/cli.py migrate-storage --source json --target postgres --entities both --postgres-dsn "postgresql://user:pass@localhost/calls"
 ```
+
+### Storage migration command
+
+`migrate-storage` is intentionally backend-agnostic.
+
+Supported backends:
+- `json`
+- `postgres`
+
+Supported entities:
+- `transcripts`
+- `analyses`
+- `both`
+
+Examples:
+
+```bash
+# JSON -> Postgres
+python src/cli.py migrate-storage \
+  --source json --target postgres --entities both \
+  --postgres-dsn "postgresql://user:pass@localhost/calls"
+
+# Postgres -> JSON
+python src/cli.py migrate-storage \
+  --source postgres --target json --entities analyses \
+  --postgres-dsn "postgresql://user:pass@localhost/calls"
+
+# Safe preview without writes
+python src/cli.py migrate-storage \
+  --source json --target postgres --entities both --dry-run \
+  --postgres-dsn "postgresql://user:pass@localhost/calls"
+```
+
+Behavior flags:
+- `--dry-run`: read + count only, no writes.
+- `--stop-on-error`: abort on first malformed record/write failure.
 
 ---
 
 ## Pipeline Phases
 
-1. **Discovery** (`planner.py`) — finds `.wav` files under `calls_raw/`, optionally filtered by `DAYS` env var. Skips already-processed files unless `FORCE_RETRANSCRIBE` or `FORCE_REANALYZE` is set.
+1. **Discovery** (`planner.py`) — finds `.wav` files under `calls_raw/`, optionally filtered by `DAYS` env var. Skips already-processed files unless `FORCE_RETRANSCRIBE` or `FORCE_REANALYZE` is set. `PROCESS_LIMIT=0` means unlimited.
 2. **Transcription** (`transcription.py`) — faster-whisper with VAD, Ukrainian language, brand name corrections per segment.
 3. **Translation** (`llm_ollama.py`) — optional batched segment translation to Ukrainian via Ollama. Off by default (`FORCE_TRANSLATE_UK=0`).
 4. **Analysis** (`llm_ollama.py`) — Ollama generates structured JSON per call. Text truncated to fit context window. Output validated by `ensure_analysis_schema`.

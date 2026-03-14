@@ -1,10 +1,11 @@
-FROM pytorch/pytorch:2.9.1-cuda12.8-cudnn9-devel
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 python3-pip python-is-python3 ffmpeg curl \
   && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+RUN pip install --no-cache-dir --break-system-packages -r /tmp/requirements.txt
 
 ENV PYTHONUNBUFFERED=1
 WORKDIR /work

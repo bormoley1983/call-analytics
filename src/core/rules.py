@@ -4,9 +4,12 @@ import logging
 import re
 from typing import Any, Dict
 
+import tiktoken
+
 from domain.config import AppConfig
 
 logger = logging.getLogger(__name__)
+_enc = tiktoken.get_encoding("cl100k_base")  # closest public BPE to Qwen's tokenizer
 
 # ----------------------------
 # CONSTANTS
@@ -30,8 +33,7 @@ def correct_brand_names(text: str, corrections: Dict[str, str]) -> str:
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough estimation of tokens for Ukrainian/Cyrillic text (~2 chars per token)."""
-    return len(text) // 2
+    return len(_enc.encode(text))
 
 
 def truncate_text_for_analysis(text: str, config: AppConfig) -> str:

@@ -45,7 +45,7 @@ def sync() -> None:
     )
     downloader.connect()
     new_files = downloader.download_new(
-        CALLS_RAW / "incoming",
+        CALLS_RAW,
         on_download=lambda f: logger.info("Downloaded: %s", f),
     )
     downloader.close()

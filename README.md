@@ -160,12 +160,69 @@ docker compose logs -f api
 
 Set these in .env to enable the `/jobs/sync` endpoint:
 
+### Key-based PBX access
+
+Recommended setup is a dedicated read-only SFTP user with no interactive shell.
+
+Server-side setup on PBX:
+
+    sudo adduser --system --group --home /home/monitor_reader monitor_reader
+    sudo passwd -l monitor_reader
+
+    sudo mkdir -p /home/monitor_reader/.ssh
+    sudo chmod 700 /home/monitor_reader/.ssh
+    sudo chown monitor_reader:monitor_reader /home/monitor_reader/.ssh
+
+    sudo nano /home/monitor_reader/.ssh/authorized_keys
+    sudo chmod 600 /home/monitor_reader/.ssh/authorized_keys
+    sudo chown monitor_reader:monitor_reader /home/monitor_reader/.ssh/authorized_keys
+
+    sudo usermod -aG asterisk monitor_reader
+    sudo chmod 750 /var/spool/asterisk/monitor
+    sudo chmod -R g+rX /var/spool/asterisk/monitor
+
+Restrict the account to SFTP only in sshd_config:
+
+    Match User monitor_reader
+        ForceCommand internal-sftp
+        PasswordAuthentication no
+        PubkeyAuthentication yes
+        PermitTTY no
+        X11Forwarding no
+        AllowTcpForwarding no
+
+Then restart SSH:
+
+    sudo systemctl restart ssh
+
+Client-side key install and test:
+
+    ssh-copy-id -i pbx_ed25519.pub monitor_reader@192.168.10.202
+    sftp -i /home/admaccess/call-analytics/config/ssh/pbx_ed25519 monitor_reader@192.168.10.202
+
+Inside SFTP, verify access with:
+
+    ls /var/spool/asterisk/monitor
+
+Use this env configuration:
+
+    PBX_USER=monitor_reader
+    PBX_AUTH_MODE=key
+    PBX_PASSWORD=
+    PBX_KEY_PATH=/work/config/ssh/pbx_ed25519
+    PBX_KNOWN_HOSTS_PATH=/work/config/ssh/known_hosts
+    PBX_REMOTE_DIR=/var/spool/asterisk/monitor
+
 | Variable | Description |
 |---|---|
 | `PBX_HOST` | PBX hostname or IP |
 | `PBX_USER` | SSH user (default: `asterisk`) |
 | `PBX_KEY_PATH` | Path to SSH private key |
 | `PBX_REMOTE_DIR` | Remote recordings directory (default: `/var/spool/asterisk/monitor`) |
+| `PBX_AUTH_MODE` | auto | key | password  |
+| `PBX_PASSWORD` | used when auth mode is password  |
+| `PBX_PORT` | SSH port  |
+| `PBX_KNOWN_HOSTS_PATH` | known_hosts file path inside container  |
 
 The host key must already be in `~/.ssh/known_hosts`.
 

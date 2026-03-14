@@ -99,8 +99,8 @@ def discover_and_filter_files(config: AppConfig) -> List[Path]:
     files_to_process = filter_unprocessed_files(all_files, config)
     logger.info("Found %d unprocessed file(s)", len(files_to_process))
 
-    # Apply limit
-    if len(files_to_process) > config.process_limit:
+    # Apply limit (0 means unlimited)
+    if config.process_limit > 0 and len(files_to_process) > config.process_limit:
         logger.info("Limiting to %d file(s) (set PROCESS_LIMIT to change)", config.process_limit)
         files_to_process = files_to_process[:config.process_limit]
 

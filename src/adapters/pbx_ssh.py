@@ -1,7 +1,7 @@
 # src/adapters/pbx_ssh.py
 from __future__ import annotations
 
-import os
+import stat
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -21,6 +21,7 @@ class PbxSshDownloader:
         username: str = "asterisk",
         password: Optional[str] = None,
         key_path: Optional[str] = None,
+        known_hosts_path: Optional[str] = None,
         remote_dir: str = "/var/spool/asterisk/monitor",
     ):
         self.host = host
@@ -28,11 +29,16 @@ class PbxSshDownloader:
         self.username = username
         self.password = password
         self.key_path = key_path
+        self.known_hosts_path = known_hosts_path
         self.remote_dir = remote_dir
         self._client: Optional[paramiko.SSHClient] = None
 
     def connect(self) -> None:
         self._client = paramiko.SSHClient()
+        if self.known_hosts_path and Path(self.known_hosts_path).exists():
+            self._client.load_host_keys(self.known_hosts_path)
+        else:
+            self._client.load_system_host_keys()
         self._client.set_missing_host_key_policy(paramiko.RejectPolicy())  # secure default
 
         if self.key_path:
@@ -60,6 +66,27 @@ class PbxSshDownloader:
         if self._client:
             self._client.close()
 
+    def _iter_remote_files(self, sftp: paramiko.SFTPClient, remote_root: str) -> List[str]:
+        """
+        Recursively collect file paths under remote_root as POSIX-relative paths.
+        """
+        root = remote_root.rstrip("/")
+        stack: List[tuple[str, str]] = [("", root)]
+        files: List[str] = []
+
+        while stack:
+            rel_prefix, current_dir = stack.pop()
+            for entry in sftp.listdir_attr(current_dir):
+                rel_path = f"{rel_prefix}/{entry.filename}" if rel_prefix else entry.filename
+                remote_path = f"{current_dir}/{entry.filename}"
+                mode = entry.st_mode if entry.st_mode is not None else 0
+                if stat.S_ISDIR(mode):
+                    stack.append((rel_path, remote_path))
+                else:
+                    files.append(rel_path)
+
+        return files
+
     def download_new(
         self,
         local_dir: Path,
@@ -72,21 +99,23 @@ class PbxSshDownloader:
         """
         assert self._client, "Call connect() first"
         local_dir.mkdir(parents=True, exist_ok=True)
-        existing = {p.name for p in local_dir.iterdir() if p.is_file()}
 
         downloaded: List[Path] = []
         with self._client.open_sftp() as sftp:
-            for entry in sftp.listdir_attr(self.remote_dir):
-                name = entry.filename
-                if not any(name.lower().endswith(ext) for ext in extensions):
+            for rel_path in self._iter_remote_files(sftp, self.remote_dir):
+                name = Path(rel_path).name
+                if not any(name.lower().endswith(ext.lower()) for ext in extensions):
                     continue
-                if name in existing:
+
+                local_path = local_dir / rel_path
+                if local_path.exists():
                     continue
-                remote_path = f"{self.remote_dir}/{name}"
-                local_path = local_dir / name
+
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                remote_path = f"{self.remote_dir.rstrip('/')}/{rel_path}"
                 sftp.get(remote_path, str(local_path))
                 downloaded.append(local_path)
                 if on_download:
-                    on_download(name)
+                    on_download(rel_path)
 
         return downloaded

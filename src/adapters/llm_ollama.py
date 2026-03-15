@@ -39,7 +39,12 @@ def _ollama_generate(prompt: str, config: AppConfig, temperature: float = 0.2, f
         "model": config.ollama_model,
         "prompt": prompt,
         "stream": False,
-        "options": {"temperature": temperature},
+        "keep_alive": config.ollama_keep_alive,
+        "think": config.ollama_think,
+        "options": {
+            "temperature": temperature,
+            "num_ctx": config.ollama_context_window,
+        },
     }
     if force_json:
         payload["format"] = "json"
@@ -53,6 +58,17 @@ def _ollama_generate(prompt: str, config: AppConfig, temperature: float = 0.2, f
             )
             r.raise_for_status()
             data = r.json()
+            logger.debug(
+                "Ollama response metrics: model=%s prompt_eval_count=%s eval_count=%s "
+                "load_duration_s=%.2f prompt_eval_duration_s=%.2f eval_duration_s=%.2f total_duration_s=%.2f",
+                config.ollama_model,
+                data.get("prompt_eval_count"),
+                data.get("eval_count"),
+                data.get("load_duration", 0) / 1_000_000_000,
+                data.get("prompt_eval_duration", 0) / 1_000_000_000,
+                data.get("eval_duration", 0) / 1_000_000_000,
+                data.get("total_duration", 0) / 1_000_000_000,
+            )
             return data.get("response", "")
         except Exception as e:
             last_err = e
@@ -185,5 +201,4 @@ def ollama_analyze(call_meta: Dict[str, Any], transcript_text_uk: str, config: A
         analysis = _extract_json_object(raw)
 
     return ensure_analysis_schema(analysis, call_meta)
-
 

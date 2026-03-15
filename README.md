@@ -65,6 +65,9 @@ docker compose --profile debug-api up api_debug
 
 # Debug batch (attach debugger to port 5678)
 docker compose --profile debug-batch run --rm batch_debug
+
+#Logs output
+docker compose logs -f
 ```
 
 ---

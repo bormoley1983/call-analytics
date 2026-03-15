@@ -8,10 +8,12 @@ from adapters.llm_ollama import OllamaLlm
 from adapters.pbx_asterisk import AsteriskPbx
 from adapters.pbx_ssh import PbxSshDownloader
 from adapters.storage_json import JsonStorage
+from adapters.storage_postgres import PostgresStorage
 from api import job_store
 from api.schemas import JobStatus, ProcessRequest, SyncRequest
 from core.pipeline import Pipeline
 from domain.config import CALLS_RAW, load_app_config
+from ports.storage import StoragePort
 
 logger = logging.getLogger(__name__)
 
@@ -40,18 +42,27 @@ def _extract_downloaded_days(downloaded_files: list[Path], local_root: Path) -> 
             days.add(day)
     return sorted(days)
 
+def _parse_days(days: str | None) -> set[str] | None:
+    if not days:
+        return None
+    parsed = {d.strip().replace("\\", "/") for d in days.split(",") if d.strip()}
+    return parsed or None
+
 
 def _run_sync_once(req: SyncRequest) -> dict:
     downloader = PbxSshDownloader(
         host=os.environ["PBX_HOST"],
+        port=int(os.getenv("PBX_PORT", "22")),
         username=os.getenv("PBX_USER", "asterisk"),
+        password=os.getenv("PBX_PASSWORD"),
         key_path=os.getenv("PBX_KEY_PATH"),
         known_hosts_path=os.getenv("PBX_KNOWN_HOSTS_PATH"),
         remote_dir=os.getenv("PBX_REMOTE_DIR", "/var/spool/asterisk/monitor"),
     )
+    allowed_days = _parse_days(req.days)
     downloader.connect()
     try:
-        new_files = downloader.download_new(CALLS_RAW)
+        new_files = downloader.download_new(CALLS_RAW, allowed_days=allowed_days)
     finally:
         downloader.close()
 
@@ -65,13 +76,12 @@ def _run_sync_once(req: SyncRequest) -> dict:
 
 
 def _configure_process_env(req: ProcessRequest) -> None:
-    # Inject overrides into environment before loading config
     if req.days is not None:
         os.environ["DAYS"] = req.days
     else:
         os.environ.pop("DAYS", None)
 
-    if req.limit:  # None or 0 both mean "no limit" — let the default apply
+    if req.limit is not None:
         os.environ["PROCESS_LIMIT"] = str(req.limit)
     else:
         os.environ.pop("PROCESS_LIMIT", None)
@@ -81,13 +91,38 @@ def _configure_process_env(req: ProcessRequest) -> None:
 
 
 def _run_process_once(req: ProcessRequest) -> dict:
-    _configure_process_env(req)
-    config = load_app_config()
-    storage = JsonStorage(config.out, config.norm, config.trans, config.analysis)
-    storage.ensure_dirs()
-    pipeline = Pipeline(config=config, storage=storage, audio=FfmpegAudio(), llm=OllamaLlm(config), pbx=AsteriskPbx())
-    pipeline.run()
-    return {"ok": True}
+    env_keys = ["DAYS", "PROCESS_LIMIT", "FORCE_REANALYZE", "FORCE_RETRANSCRIBE"]
+    old_env = {k: os.environ.get(k) for k in env_keys}
+    try:
+        _configure_process_env(req)
+        config = load_app_config()
+        storage: StoragePort
+        if os.getenv("POSTGRES_DSN"):
+            logger.info("Postgres storage driver loaded")
+            storage = PostgresStorage(os.environ["POSTGRES_DSN"])
+        else:
+            logger.info("JSON storage driver loaded")
+            storage = JsonStorage(config.out, config.norm, config.trans, config.analysis)
+        
+        storage.ensure_ready()
+        try:
+            pipeline = Pipeline(
+                config=config,
+                storage=storage,
+                audio=FfmpegAudio(),
+                llm=OllamaLlm(config),
+                pbx=AsteriskPbx(),
+            )
+            pipeline.run()
+            return {"ok": True}
+        finally:
+            storage.close()
+    finally:
+        for k, v in old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def run_sync(job_id: str, req: SyncRequest) -> None:
@@ -134,24 +169,9 @@ def run_sync_and_process(job_id: str, req: ProcessRequest) -> None:
     job_store.update_job(job_id, status=JobStatus.running, started_at=datetime.now(timezone.utc))
     try:
         sync_result = _run_sync_once(SyncRequest())
-        downloaded_days: list[str] = sync_result.get("downloaded_days", [])
-
-        if downloaded_days:
-            scoped_req = ProcessRequest(
-                days=",".join(downloaded_days),
-                limit=req.limit,
-                force_reanalyze=req.force_reanalyze,
-                force_retranscribe=req.force_retranscribe,
-            )
-            process_result = _run_process_once(scoped_req)
-            process_result["days"] = downloaded_days
-        else:
-            process_result = {
-                "ok": True,
-                "skipped": True,
-                "reason": "No new files downloaded",
-                "days": [],
-            }
+        process_result = _run_process_once(req)
+        process_result["downloaded_days"] = sync_result.get("downloaded_days", [])
+        process_result["downloaded"] = sync_result.get("downloaded", 0)
 
         job_store.update_job(
             job_id,

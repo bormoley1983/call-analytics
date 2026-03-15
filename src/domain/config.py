@@ -36,6 +36,15 @@ ANALYSIS_CONFIG = CONFIG_DIR / "analysis.yaml"
 # ----------------------------
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:27b")
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "16384"))
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "0s").strip() or "0s"
+OLLAMA_THINK = os.getenv("OLLAMA_THINK", "0") == "1"
+OLLAMA_GENERATION_TIMEOUT = int(os.getenv("OLLAMA_GENERATION_TIMEOUT", "600"))
+OLLAMA_RETRY_ATTEMPTS = int(os.getenv("OLLAMA_RETRY_ATTEMPTS", "4"))
+OLLAMA_TOKEN_OVERHEAD = int(os.getenv("OLLAMA_TOKEN_OVERHEAD", "1800"))
+        
+ANALYSIS_WORKERS = int(os.getenv("ANALYSIS_WORKERS", "1"))
+SPAM_PROBABILITY_THRESHOLD = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
 
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3-turbo")
 DEVICE = os.getenv("WHISPER_DEVICE", "cuda")
@@ -44,11 +53,6 @@ WHISPER_BEAM_SIZE = int(os.getenv("WHISPER_BEAM_SIZE", "5"))
 
 MIN_BYTES = int(os.getenv("MIN_BYTES", "20000"))
 MIN_SECONDS = float(os.getenv("MIN_SECONDS", "1.0"))
-PROCESS_LIMIT = int(os.getenv("PROCESS_LIMIT", "30"))
-
-FORCE_REANALYZE = os.getenv("FORCE_REANALYZE", "0") == "1"
-FORCE_RETRANSCRIBE = os.getenv("FORCE_RETRANSCRIBE", "0") == "1"
-FORCE_TRANSLATE_UK = os.getenv("FORCE_TRANSLATE_UK", "0") == "1"
 
 MAX_SEGMENTS_TRANSLATE = int(os.getenv("MAX_SEGMENTS_TRANSLATE", "60"))
 MAX_CHARS_TRANSLATE = int(os.getenv("MAX_CHARS_TRANSLATE", "12000"))
@@ -164,6 +168,8 @@ class AppConfig:
     ollama_url: str
     ollama_model: str
     ollama_context_window: int
+    ollama_keep_alive: str
+    ollama_think: bool
     ollama_timeout: int
     ollama_retries: int
     ollama_token_overhead: int 
@@ -201,45 +207,50 @@ class AppConfig:
 
 
 def load_app_config() -> AppConfig:
-    """
-    Load all configuration at startup.
-    This is the main entry point for configuration loading.
-    """
     logger.info("Loading configuration")
 
-    # Ensure config directory exists
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     
-    # Load Ollama context (requires Ollama to be running)
     try:
-        context_window = get_ollama_model_context_window()
+        detected_context_window = get_ollama_model_context_window()
     except Exception as e:
         logger.warning("Could not query Ollama, using default context: %s", e)
-        context_window = 4096
+        detected_context_window = 4096
+
+    context_window = min(detected_context_window, OLLAMA_NUM_CTX)
     
-    # Load analysis config
     analysis_config = load_analysis_config()
-    
-    # Load brand corrections
     brand_corrections, whisper_prompt = load_brand_corrections()
-    
-    # Load manager mapper
     manager_mapper = ManagerMapper(MANAGERS_CONFIG)
+
+    # Read mutable flags at runtime so API request overrides are honored
+    process_limit = int(os.getenv("PROCESS_LIMIT", "30"))
+    force_reanalyze = os.getenv("FORCE_REANALYZE", "0") == "1"
+    force_retranscribe = os.getenv("FORCE_RETRANSCRIBE", "0") == "1"
+    force_translate_uk = os.getenv("FORCE_TRANSLATE_UK", "0") == "1"
+
+    analysis_workers = int(os.getenv("ANALYSIS_WORKERS", "1"))
+    spam_probability_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
     
     logger.info(
         "Configuration loaded: model=%s context=%s tokens brand_corrections=%d "
-        "managers=%d whisper=%s(%s/%s) limit=%d reanalyze=%s retranscribe=%s translate_uk=%s",
+        "managers=%d whisper=%s(%s/%s) limit=%d reanalyze=%s retranscribe=%s "
+        "translate_uk=%s detected_ctx=%s keep_alive=%s think=%s",
         OLLAMA_MODEL,
         f"{context_window:,}",
         len(brand_corrections),
         len(manager_mapper.sales) + len(manager_mapper.management_dev.get("managers", [])),
         WHISPER_MODEL, DEVICE, COMPUTE_TYPE,
-        PROCESS_LIMIT,
-        FORCE_REANALYZE, FORCE_RETRANSCRIBE, FORCE_TRANSLATE_UK,
+        process_limit,
+        force_reanalyze,
+        force_retranscribe,
+        force_translate_uk,
+        f"{detected_context_window:,}",
+        OLLAMA_KEEP_ALIVE,
+        OLLAMA_THINK,
     )
     
     return AppConfig(
-        # Paths
         root=ROOT,
         calls_raw=CALLS_RAW,
         out=OUT,
@@ -247,43 +258,30 @@ def load_app_config() -> AppConfig:
         trans=TRANS,
         analysis=ANALYSIS,
         config_dir=CONFIG_DIR,
-        
-        # Ollama settings
         ollama_url=OLLAMA_URL,
         ollama_model=OLLAMA_MODEL,
         ollama_context_window=context_window,
-        ollama_timeout=int(os.getenv("OLLAMA_GENERATION_TIMEOUT", "600")),
-        ollama_retries=int(os.getenv("OLLAMA_RETRY_ATTEMPTS", "4")),
-        ollama_token_overhead=int(os.getenv("OLLAMA_TOKEN_OVERHEAD", "1800")),
-        
-        analysis_workers=int(os.getenv("ANALYSIS_WORKERS", "1")),
-        
-        # Whisper settings
+        ollama_keep_alive=OLLAMA_KEEP_ALIVE,
+        ollama_think=OLLAMA_THINK,
+        ollama_timeout=OLLAMA_GENERATION_TIMEOUT,
+        ollama_retries=OLLAMA_RETRY_ATTEMPTS,
+        ollama_token_overhead=OLLAMA_TOKEN_OVERHEAD,
+        analysis_workers=analysis_workers,
         whisper_model=WHISPER_MODEL,
         whisper_device=DEVICE,
         whisper_compute_type=COMPUTE_TYPE,
         whisper_beam_size=WHISPER_BEAM_SIZE,
         whisper_initial_prompt=whisper_prompt,
-        
-        # Processing settings
         min_bytes=MIN_BYTES,
         min_seconds=MIN_SECONDS,
-        process_limit=PROCESS_LIMIT,
-        
-        # Control flags
-        force_reanalyze=FORCE_REANALYZE,
-        force_retranscribe=FORCE_RETRANSCRIBE,
-        force_translate_uk=FORCE_TRANSLATE_UK,
-        
-        # Translation limits
+        process_limit=process_limit,
+        force_reanalyze=force_reanalyze,
+        force_retranscribe=force_retranscribe,
+        force_translate_uk=force_translate_uk,
         max_segments_translate=MAX_SEGMENTS_TRANSLATE,
         max_chars_translate=MAX_CHARS_TRANSLATE,
         max_chars_analyze=MAX_CHARS_ANALYZE,
-        
-        # Thresholds
-        spam_probability_threshold=float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7")),
-        
-        # Analysis configuration
+        spam_probability_threshold=spam_probability_threshold,
         analysis_config=analysis_config,
         brand_corrections=brand_corrections,
         manager_mapper=manager_mapper,
@@ -310,11 +308,11 @@ def get_ollama_model_context_window() -> int:
         model_info = data.get("model_info", {})
         
         context_keys = [
-            "qwen3moe.context_length",
+            "qwen35.context_length", 
             "qwen3.context_length",
+            "qwen25.context_length",
             "qwen2.context_length",
             "llama.context_length",
-            "mistral.context_length",
             "num_ctx",
             "context_length"
         ]

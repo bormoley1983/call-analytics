@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 
-import psycopg2
+from psycopg2 import pool as pg_pool
+from psycopg2.extras import Json
 
 DDL = """
 CREATE TABLE IF NOT EXISTS transcripts (
     call_id     TEXT PRIMARY KEY,
+    pipeline_stage TEXT,
     data        JSONB NOT NULL,
     created_at  TIMESTAMPTZ DEFAULT now()
 );
@@ -25,82 +27,283 @@ CREATE TABLE IF NOT EXISTS analyses (
     summary         TEXT,
     audio_seconds   FLOAT,
     call_date       TEXT,
+    src_number       TEXT,
+    dst_number       TEXT,
+    key_questions    JSONB,
+    objections       JSONB,
+    analysis_error   TEXT,
     data            JSONB NOT NULL,
     created_at      TIMESTAMPTZ DEFAULT now()
 );
+
+ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS pipeline_stage TEXT;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS direction TEXT;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS manager_id TEXT;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS manager_name TEXT;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS role TEXT;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS spam_probability FLOAT;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS effective_call BOOLEAN;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS intent TEXT;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS outcome TEXT;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS summary TEXT;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS audio_seconds FLOAT;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS call_date TEXT;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS src_number TEXT;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS dst_number TEXT;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS key_questions JSONB;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS objections JSONB;
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS analysis_error TEXT;
 """
 
 
+def _jsonb(value: Any) -> Json:
+    return Json(value, dumps=lambda obj: json.dumps(obj, ensure_ascii=False))
+
+
+def _ensure_utf8_client_encoding(conn: Any) -> Any:
+    if getattr(conn, "encoding", "").upper() != "UTF8":
+        conn.set_client_encoding("UTF8")
+    return conn
+
+
+def _infer_transcript_stage(data: Dict[str, Any]) -> Optional[str]:
+    stage = data.get("_pipeline_stage")
+    if isinstance(stage, str) and stage:
+        return stage
+    if data.get("text_uk") or data.get("segments_uk"):
+        return "translated"
+    if data.get("text") or data.get("segments"):
+        return "transcribed"
+    return None
+
+
+def _transcript_row(call_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "call_id": call_id,
+        "pipeline_stage": _infer_transcript_stage(data),
+        "data": _jsonb(data),
+    }
+
+
+def _analysis_row(call_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    call_meta = data.get("call_meta") or {}
+    spam_probability = data.get("spam_probability", 0.0)
+    try:
+        spam_probability = float(spam_probability)
+    except (TypeError, ValueError):
+        spam_probability = 0.0
+
+    effective_call = data.get("effective_call")
+    if isinstance(effective_call, str):
+        effective_call = effective_call.strip().lower() in {"1", "true", "yes", "tak", "так"}
+    else:
+        effective_call = bool(effective_call)
+
+    return {
+        "call_id": call_id,
+        "direction": call_meta.get("direction"),
+        "manager_id": data.get("manager_id"),
+        "manager_name": data.get("manager_name"),
+        "role": data.get("role"),
+        "spam_probability": spam_probability,
+        "effective_call": effective_call,
+        "intent": data.get("intent"),
+        "outcome": data.get("outcome"),
+        "summary": data.get("summary", ""),
+        "audio_seconds": call_meta.get("audio_seconds"),
+        "call_date": call_meta.get("date"),
+        "src_number": call_meta.get("src_number"),
+        "dst_number": call_meta.get("dst_number"),
+        "key_questions": _jsonb(data.get("key_questions") or []),
+        "objections": _jsonb(data.get("objections") or []),
+        "analysis_error": data.get("analysis_error"),
+        "data": _jsonb(data),
+    }
+
+
 class PostgresStorage:
-    """Secondary storage layer — syncs processed call data to Postgres for reporting."""
+    """Secondary storage layer — syncs processed call data to Postgres for reporting.
 
-    def __init__(self, dsn: str):
+    Uses a ThreadedConnectionPool so multiple analysis workers can safely
+    read/write concurrently — a single psycopg2 connection is not thread-safe.
+    """
+
+    def __init__(self, dsn: str, max_connections: int = 10):
         self.dsn = dsn
-        self._conn: Optional[psycopg2.extensions.connection] = None
+        self.max_connections = max_connections
+        self._pool: Optional[pg_pool.ThreadedConnectionPool] = None
 
+    def _getconn(self):
+        assert self._pool
+        return _ensure_utf8_client_encoding(self._pool.getconn())
+
+    # --- lifecycle ---   
+     
+    def ensure_ready(self) -> None:
+        self._pool = pg_pool.ThreadedConnectionPool(1, self.max_connections, self.dsn)
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(DDL)
+            conn.commit()
+        finally:
+            self._pool.putconn(conn)     
+
+    # keep old name so runner.py callers work without changes
     def connect(self) -> None:
-        self._conn = psycopg2.connect(self.dsn)
-        with self._conn.cursor() as cur:
-            cur.execute(DDL)
-        self._conn.commit()
+        self.ensure_ready()
 
     def close(self) -> None:
-        if self._conn:
-            self._conn.close()
+        if self._pool:
+            self._pool.closeall()
+            self._pool = None
+
+    # --- StoragePort interface ---  
+     
+    def transcript_exists(self, call_id: str) -> bool:
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM transcripts WHERE call_id = %s", (call_id,))
+                return cur.fetchone() is not None
+        finally:
+            self._pool.putconn(conn)
+
+    def analysis_exists(self, call_id: str) -> bool:
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM analyses WHERE call_id = %s", (call_id,))
+                return cur.fetchone() is not None
+        finally:
+            self._pool.putconn(conn)
+
+    def load_transcript(self, call_id: str) -> Dict[str, Any]:
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pipeline_stage, data FROM transcripts WHERE call_id = %s",
+                    (call_id,),
+                )
+                row = cur.fetchone()
+        finally:
+            self._pool.putconn(conn)
+        if row is None:
+            raise KeyError(f"Transcript not found: {call_id}")
+        pipeline_stage, data = row
+        if pipeline_stage and "_pipeline_stage" not in data:
+            data["_pipeline_stage"] = pipeline_stage
+        elif "_pipeline_stage" not in data:
+            inferred = _infer_transcript_stage(data)
+            if inferred:
+                data["_pipeline_stage"] = inferred
+        return data  # psycopg2 deserialises JSONB columns to dict automatically
+
+    def load_analysis(self, call_id: str) -> Dict[str, Any]:
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT data FROM analyses WHERE call_id = %s", (call_id,))
+                row = cur.fetchone()
+        finally:
+            self._pool.putconn(conn)
+        if row is None:
+            raise KeyError(f"Analysis not found: {call_id}")
+        return row[0]
+
+    def save_transcript(self, call_id: str, data: Dict[str, Any]) -> None:
+        self.upsert_transcript(call_id, data)
+
+    def save_analysis(self, call_id: str, data: Dict[str, Any]) -> None:
+        self.upsert_analysis(call_id, data)          
+
+    # --- upsert helpers (also kept for sync_per_call / migration) ---
 
     def upsert_transcript(self, call_id: str, data: Dict[str, Any]) -> None:
-        assert self._conn
-        with self._conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO transcripts (call_id, data)
-                   VALUES (%s, %s)
-                   ON CONFLICT (call_id) DO UPDATE SET data = EXCLUDED.data""",
-                (call_id, json.dumps(data, ensure_ascii=False)),
-            )
-        self._conn.commit()
+        row = _transcript_row(call_id, data)
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO transcripts (call_id, pipeline_stage, data)
+                       VALUES (%s, %s, %s)
+                       ON CONFLICT (call_id) DO UPDATE SET
+                         pipeline_stage = EXCLUDED.pipeline_stage,
+                         data = EXCLUDED.data""",
+                    (row["call_id"], row["pipeline_stage"], row["data"]),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._pool.putconn(conn)
 
     def upsert_analysis(self, call_id: str, data: Dict[str, Any]) -> None:
-        assert self._conn
-        cm = data.get("call_meta", {})
-        with self._conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO analyses
-                     (call_id, direction, manager_id, manager_name, role,
-                      spam_probability, effective_call, intent, outcome,
-                      summary, audio_seconds, call_date, data)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT (call_id) DO UPDATE SET
-                     data = EXCLUDED.data,
-                     spam_probability = EXCLUDED.spam_probability,
-                     effective_call = EXCLUDED.effective_call,
-                     intent = EXCLUDED.intent,
-                     outcome = EXCLUDED.outcome""",
-                (
-                    call_id,
-                    cm.get("direction"),
-                    data.get("manager_id"),
-                    data.get("manager_name"),
-                    data.get("role"),
-                    data.get("spam_probability", 0.0),
-                    bool(data.get("effective_call")),
-                    data.get("intent"),
-                    data.get("outcome"),
-                    data.get("summary", ""),
-                    cm.get("audio_seconds"),
-                    cm.get("date"),
-                    json.dumps(data, ensure_ascii=False),
-                ),
-            )
-        self._conn.commit()
+        row = _analysis_row(call_id, data)
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO analyses
+                         (call_id, direction, manager_id, manager_name, role,
+                          spam_probability, effective_call, intent, outcome,
+                          summary, audio_seconds, call_date, src_number,
+                          dst_number, key_questions, objections, analysis_error, data)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT (call_id) DO UPDATE SET
+                         direction        = EXCLUDED.direction,
+                         manager_id       = EXCLUDED.manager_id,
+                         manager_name     = EXCLUDED.manager_name,
+                         role             = EXCLUDED.role,
+                         data             = EXCLUDED.data,
+                         spam_probability = EXCLUDED.spam_probability,
+                         effective_call   = EXCLUDED.effective_call,
+                         intent           = EXCLUDED.intent,
+                         outcome          = EXCLUDED.outcome,
+                         summary          = EXCLUDED.summary,
+                         audio_seconds    = EXCLUDED.audio_seconds,
+                         call_date        = EXCLUDED.call_date,
+                         src_number       = EXCLUDED.src_number,
+                         dst_number       = EXCLUDED.dst_number,
+                         key_questions    = EXCLUDED.key_questions,
+                         objections       = EXCLUDED.objections,
+                         analysis_error   = EXCLUDED.analysis_error""",
+                    (
+                        row["call_id"],
+                        row["direction"],
+                        row["manager_id"],
+                        row["manager_name"],
+                        row["role"],
+                        row["spam_probability"],
+                        row["effective_call"],
+                        row["intent"],
+                        row["outcome"],
+                        row["summary"],
+                        row["audio_seconds"],
+                        row["call_date"],
+                        row["src_number"],
+                        row["dst_number"],
+                        row["key_questions"],
+                        row["objections"],
+                        row["analysis_error"],
+                        row["data"],
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._pool.putconn(conn)
 
     def sync_per_call(self, per_call: list) -> None:
         """Bulk-sync a pipeline's per_call results into Postgres."""
         for item in per_call:
             if item.get("status") != "processed":
                 continue
-            meta = item.get("meta", {})
-            call_id = meta.get("call_id")
+            call_id = item.get("meta", {}).get("call_id")
             if not call_id:
                 continue
-            analysis = item.get("analysis", {})
-            self.upsert_analysis(call_id, analysis)
+            self.upsert_analysis(call_id, item.get("analysis", {}))

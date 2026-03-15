@@ -7,8 +7,20 @@ from typing import Dict, List, Optional, Tuple
 
 from core.rules import sha12
 from domain.config import AppConfig
+from ports.storage import StoragePort
 
 logger = logging.getLogger(__name__)
+
+
+def infer_transcript_stage(transcript: Dict[str, object]) -> str:
+    stage = transcript.get("_pipeline_stage")
+    if isinstance(stage, str) and stage:
+        return stage
+    if transcript.get("text_uk") or transcript.get("segments_uk"):
+        return "translated"
+    if transcript.get("text") or transcript.get("segments"):
+        return "transcribed"
+    return ""
 
 
 def _stat_cache(files: List[Path]) -> Dict[Path, os.stat_result]:
@@ -76,26 +88,24 @@ def discover_wav_files_from_specified_dirs(config: AppConfig, stat_cache: Dict[P
     return sorted(all_files)
 
 
-def filter_unprocessed_files(files: List[Path], config: AppConfig, stat_cache: Dict[Path, os.stat_result]) -> List[Path]:
+def filter_unprocessed_files(files: List[Path], config: AppConfig, stat_cache: Dict[Path, os.stat_result], storage: StoragePort,) -> List[Path]:
     """
     Filter out files that have already been processed.
     A file is considered processed if both transcript and analysis exist.
     """
+
     unprocessed = []
     for src in files:
         st = stat_cache.get(src) or src.stat()
         cid = sha12(src.name + str(st.st_size))
-        tr_path = config.trans / f"{cid}.json"
-        an_path = config.analysis / f"{cid}.json"
         if config.force_retranscribe or config.force_reanalyze:
             unprocessed.append(src)
-        elif not (tr_path.exists() and an_path.exists()):
+        elif not (storage.transcript_exists(cid) and storage.analysis_exists(cid)):
             unprocessed.append(src)
-    
     return unprocessed
 
 
-def discover_and_filter_files(config: AppConfig) -> List[Path]:
+def discover_and_filter_files(config: AppConfig, storage: StoragePort) -> List[Path]:
     """Discover and filter WAV files based on DAYS env var and processing status."""
     days_env = os.getenv("DAYS", "").strip()
     stat_cache: Dict[Path, os.stat_result] = {}
@@ -110,7 +120,7 @@ def discover_and_filter_files(config: AppConfig) -> List[Path]:
     logger.info("Discovered %d total WAV file(s)", len(all_files))
 
     # Filter to unprocessed files (unless forcing)
-    files_to_process = filter_unprocessed_files(all_files, config, stat_cache)
+    files_to_process = filter_unprocessed_files(all_files, config, stat_cache, storage)
     logger.info("Found %d unprocessed file(s)", len(files_to_process))
 
     # Apply limit (0 means unlimited)
@@ -120,7 +130,7 @@ def discover_and_filter_files(config: AppConfig) -> List[Path]:
 
     return files_to_process
 
-def categorize_files(files: List[Path], config: AppConfig, stat_cache: Optional[Dict[Path, os.stat_result]] = None) -> Tuple[List[Path], List[Path]]:
+def categorize_files(files: List[Path], config: AppConfig, storage: StoragePort, stat_cache: Optional[Dict[Path, os.stat_result]] = None) -> Tuple[List[Path], List[Path]]:
     """
     Split files into:
     - needs_pipeline: require transcription/translation (go through run_transcription_phase)
@@ -136,19 +146,16 @@ def categorize_files(files: List[Path], config: AppConfig, stat_cache: Optional[
     for src in files:
         st = stat_cache.get(src) or src.stat()
         cid = sha12(src.name + str(st.st_size))
-        tr_path = config.trans / f"{cid}.json"
-        # an_path = config.analysis / f"{cid}.json"
 
         if config.force_retranscribe or config.force_translate_uk:
             needs_pipeline.append(src)
             continue
 
-        if tr_path.exists():
+        if storage.transcript_exists(cid):
             try:
-                stage = json.loads(tr_path.read_text(encoding="utf-8")).get("_pipeline_stage", "")
+                stage = infer_transcript_stage(storage.load_transcript(cid))
             except Exception:
                 stage = ""
-
             if stage == "translated":
                 analysis_only.append(src)
             else:

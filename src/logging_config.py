@@ -21,6 +21,31 @@ import sys
 
 _DEFAULT_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
 _DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+_LIBRARY_DEFAULT_LEVELS = {
+    "urllib3": "WARNING",
+    "httpcore": "WARNING",
+    "httpx": "WARNING",
+    "paramiko": "WARNING",
+    "ctranslate2": "WARNING",
+    "faster_whisper": "INFO",
+}
+
+
+def _level_from_name(name: str, fallback: int) -> int:
+    return getattr(logging, name.upper(), fallback)
+
+
+def _configure_library_levels() -> None:
+    default_level_name = os.getenv("LOG_LEVEL_LIBRARIES", "").upper()
+    default_level = _level_from_name(default_level_name, logging.NOTSET) if default_level_name else None
+
+    for logger_name, level_name in _LIBRARY_DEFAULT_LEVELS.items():
+        env_name = f"LOG_LEVEL_{logger_name.upper().replace('.', '_')}"
+        resolved_name = os.getenv(env_name, default_level_name or level_name)
+        resolved_level = default_level if default_level is not None and env_name not in os.environ else None
+        logging.getLogger(logger_name).setLevel(
+            resolved_level if resolved_level is not None else _level_from_name(resolved_name, logging.INFO)
+        )
 
 
 def setup_logging() -> None:
@@ -52,3 +77,4 @@ def setup_logging() -> None:
         handlers=handlers,
         force=True,
     )
+    _configure_library_levels()

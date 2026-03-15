@@ -4,6 +4,10 @@ from typing import Any, Dict, List
 from domain.config import AppConfig
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def aggregate_report(per_call: List[Dict[str, Any]], config: AppConfig) -> Dict[str, Any]:
     """Aggregate overall statistics from all calls."""
     processed = [c for c in per_call if c.get("status") == "processed"]
@@ -45,7 +49,7 @@ def aggregate_report(per_call: List[Dict[str, Any]], config: AppConfig) -> Dict[
                 questions[q_lower] = questions.get(q_lower, 0) + 1
     
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
+        "generated_at": _utc_now_iso(),
         "total_calls": total_calls,
         "transcribed": transcribed,
         "skipped_too_small": skipped_small,
@@ -105,7 +109,8 @@ def aggregate_report_by_manager(per_call: List[Dict[str, Any]], config: AppConfi
         stats["total_calls"] += 1
         
         # Direction
-        direction = analysis.get("direction", "unknown")
+        call_meta = analysis.get("call_meta") or {}
+        direction = call_meta.get("direction") or meta.get("direction") or "unknown"
         if direction == "incoming":
             stats["incoming"] += 1
         elif direction == "outgoing":
@@ -160,7 +165,7 @@ def aggregate_report_by_manager(per_call: List[Dict[str, Any]], config: AppConfi
         by_role[role].append(stats)
     
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
+        "generated_at": _utc_now_iso(),
         "role_summary": role_summary,
         "by_role": {
             role: managers 

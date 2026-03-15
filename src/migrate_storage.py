@@ -133,13 +133,13 @@ def migrate_entities(
         seen = 0
 
         for rec in source.iter_records(entity):
-            seen = 1
+            seen += 1
             try:
                 if not dry_run:
                     target.upsert(rec)
-                copied = 1
+                copied += 1
             except Exception:
-                failed = 1
+                failed += 1
                 if stop_on_error:
                     raise
 

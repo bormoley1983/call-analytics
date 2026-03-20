@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from api.routes import health, jobs, keywords, managers, reports
+from api.routes import health, jobs, keywords, keywords_ai, keywords_generation, managers, reports
 from logging_config import setup_logging
 
 description = """
@@ -13,9 +13,17 @@ Internal API for Call Analytics.
 2. `POST /jobs/process` (or `POST /jobs/sync-and-process`) to run transcription and analysis.
 3. Poll `GET /jobs/{job_id}` until `status` becomes `done` or `failed`.
 4. Read aggregated analytics from `/reports/*`.
-5. For keyword drill-down endpoints (`/reports/keywords/{keyword_id}/...`) with Postgres storage:
-   - `POST /keywords/sync`
-   - `POST /keywords/materialize`
+5. With Postgres storage, keyword data is refreshed automatically after successful processing jobs.
+6. Manual keyword maintenance remains available:
+   - `POST /keywords/refresh` for the normal manual flow
+   - `POST /keywords/sync` and `POST /keywords/materialize` as low-level maintenance endpoints
+7. Optional keyword discovery flow from existing analyses:
+   - `POST /keywords/generation/candidates`
+   - `POST /keywords/generation/publish`
+8. Optional AI catalog analysis flow:
+   - `POST /keywords/catalog/analysis`
+   - `GET /keywords/catalog/analyses`
+   - `GET /keywords/catalog/analyses/{analysis_id}`
 
 ## Defaults And Runtime Behavior
 - Report source:
@@ -40,6 +48,8 @@ tags_metadata = [
     {"name": "jobs", "description": "Trigger and monitor async synchronization/processing jobs."},
     {"name": "reports", "description": "Fetch aggregated analytics and drill-down call reports."},
     {"name": "keywords", "description": "Manage keyword catalog and materialized keyword matches."},
+    {"name": "keywords-ai", "description": "AI-assisted analysis of the keyword catalog with grouping and cleanup suggestions."},
+    {"name": "keywords-generation", "description": "Generate keyword candidates from analyses and publish them."},
     {"name": "managers", "description": "List configured managers and their extensions."},
 ]
 
@@ -59,4 +69,6 @@ app.include_router(health.router)
 app.include_router(jobs.router)
 app.include_router(reports.router)
 app.include_router(keywords.router)
+app.include_router(keywords_ai.router)
+app.include_router(keywords_generation.router)
 app.include_router(managers.router)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 
+from psycopg2 import extensions as pg_extensions
 from psycopg2 import pool as pg_pool
 from psycopg2.extras import Json
 
@@ -70,6 +71,30 @@ CREATE TABLE IF NOT EXISTS keyword_materialization_state (
     stored_rows          INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS keyword_ai_analyses (
+    analysis_id                     TEXT PRIMARY KEY,
+    keyword_source                  TEXT NOT NULL,
+    reporting_source                TEXT,
+    ai_model                        TEXT,
+    ai_summary                      TEXT NOT NULL DEFAULT '',
+    analyzed_keywords               INTEGER NOT NULL DEFAULT 0,
+    total_candidates_before_limit   INTEGER NOT NULL DEFAULT 0,
+    truncated                       BOOLEAN NOT NULL DEFAULT FALSE,
+    request_data                    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    analysis_input                  JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ai_analysis                     JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS keyword_ai_analysis_items (
+    analysis_id  TEXT NOT NULL REFERENCES keyword_ai_analyses(analysis_id) ON DELETE CASCADE,
+    item_type    TEXT NOT NULL,
+    item_key     TEXT NOT NULL,
+    data         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (analysis_id, item_type, item_key)
+);
+
 ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS pipeline_stage TEXT;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS direction TEXT;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS manager_id TEXT;
@@ -98,6 +123,18 @@ ALTER TABLE keyword_materialization_state ADD COLUMN IF NOT EXISTS last_material
 ALTER TABLE keyword_materialization_state ADD COLUMN IF NOT EXISTS processed_calls INTEGER;
 ALTER TABLE keyword_materialization_state ADD COLUMN IF NOT EXISTS matched_calls INTEGER;
 ALTER TABLE keyword_materialization_state ADD COLUMN IF NOT EXISTS stored_rows INTEGER;
+ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS keyword_source TEXT;
+ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS reporting_source TEXT;
+ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS ai_model TEXT;
+ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS ai_summary TEXT;
+ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS analyzed_keywords INTEGER;
+ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS total_candidates_before_limit INTEGER;
+ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS truncated BOOLEAN;
+ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS request_data JSONB;
+ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS analysis_input JSONB;
+ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS ai_analysis JSONB;
+ALTER TABLE keyword_ai_analysis_items ADD COLUMN IF NOT EXISTS data JSONB;
+ALTER TABLE keyword_ai_analysis_items ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_analyses_call_date ON analyses(call_date);
 CREATE INDEX IF NOT EXISTS idx_analyses_manager_id ON analyses(manager_id);
@@ -108,6 +145,8 @@ CREATE INDEX IF NOT EXISTS idx_analyses_direction ON analyses(direction);
 CREATE INDEX IF NOT EXISTS idx_call_keywords_keyword_id ON call_keywords(keyword_id);
 CREATE INDEX IF NOT EXISTS idx_call_keywords_call_id ON call_keywords(call_id);
 CREATE INDEX IF NOT EXISTS idx_call_keywords_keyword_call ON call_keywords(keyword_id, call_id);
+CREATE INDEX IF NOT EXISTS idx_keyword_ai_analyses_created_at ON keyword_ai_analyses(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_keyword_ai_analysis_items_analysis_id ON keyword_ai_analysis_items(analysis_id);
 """
 
 
@@ -188,9 +227,16 @@ class PostgresStorage:
         self.max_connections = max_connections
         self._pool: Optional[pg_pool.ThreadedConnectionPool] = None
 
-    def _getconn(self):
-        assert self._pool
-        return _ensure_utf8_client_encoding(self._pool.getconn())
+    def _require_pool(self) -> pg_pool.ThreadedConnectionPool:
+        if self._pool is None:
+            raise RuntimeError("PostgresStorage is not initialized. Call ensure_ready() first.")
+        return self._pool
+
+    def _getconn(self) -> pg_extensions.connection:
+        return _ensure_utf8_client_encoding(self._require_pool().getconn())
+
+    def _putconn(self, conn: pg_extensions.connection) -> None:
+        self._require_pool().putconn(conn)
 
     # --- lifecycle ---   
      
@@ -202,11 +248,7 @@ class PostgresStorage:
                 cur.execute(DDL)
             conn.commit()
         finally:
-            self._pool.putconn(conn)     
-
-    # keep old name so runner.py callers work without changes
-    def connect(self) -> None:
-        self.ensure_ready()
+            self._putconn(conn)
 
     def close(self) -> None:
         if self._pool:
@@ -222,7 +264,7 @@ class PostgresStorage:
                 cur.execute("SELECT 1 FROM transcripts WHERE call_id = %s", (call_id,))
                 return cur.fetchone() is not None
         finally:
-            self._pool.putconn(conn)
+            self._putconn(conn)
 
     def analysis_exists(self, call_id: str) -> bool:
         conn = self._getconn()
@@ -231,7 +273,7 @@ class PostgresStorage:
                 cur.execute("SELECT 1 FROM analyses WHERE call_id = %s", (call_id,))
                 return cur.fetchone() is not None
         finally:
-            self._pool.putconn(conn)
+            self._putconn(conn)
 
     def load_transcript(self, call_id: str) -> Dict[str, Any]:
         conn = self._getconn()
@@ -243,7 +285,7 @@ class PostgresStorage:
                 )
                 row = cur.fetchone()
         finally:
-            self._pool.putconn(conn)
+            self._putconn(conn)
         if row is None:
             raise KeyError(f"Transcript not found: {call_id}")
         pipeline_stage, data = row
@@ -262,7 +304,7 @@ class PostgresStorage:
                 cur.execute("SELECT data FROM analyses WHERE call_id = %s", (call_id,))
                 row = cur.fetchone()
         finally:
-            self._pool.putconn(conn)
+            self._putconn(conn)
         if row is None:
             raise KeyError(f"Analysis not found: {call_id}")
         return row[0]
@@ -293,7 +335,7 @@ class PostgresStorage:
             conn.rollback()
             raise
         finally:
-            self._pool.putconn(conn)
+            self._putconn(conn)
 
     def upsert_analysis(self, call_id: str, data: Dict[str, Any]) -> None:
         row = _analysis_row(call_id, data)
@@ -351,7 +393,7 @@ class PostgresStorage:
             conn.rollback()
             raise
         finally:
-            self._pool.putconn(conn)
+            self._putconn(conn)
 
     def sync_per_call(self, per_call: list) -> None:
         """Bulk-sync a pipeline's per_call results into Postgres."""

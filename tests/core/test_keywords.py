@@ -5,13 +5,13 @@ import yaml
 import pytest
 from fastapi import HTTPException
 
-from src.adapters.reporting_json import JsonReportingSource
-from src.adapters.reporting_postgres import PostgresReportingSource
-from src.api.routes import keywords as keyword_routes
-from src.api.routes import reports as report_routes
-from src.adapters.keywords_postgres import PostgresKeywordSource
-from src.adapters.keywords_yaml import YamlKeywordSource
-from src.api.schemas import (
+from adapters.reporting_json import JsonReportingSource
+from adapters.reporting_postgres import PostgresReportingSource
+from api.routes import keywords as keyword_routes
+from api.routes import reports as report_routes
+from adapters.keywords_postgres import PostgresKeywordSource
+from adapters.keywords_yaml import YamlKeywordSource
+from api.schemas import (
     KeywordCallsSortQuery,
     KeywordManagersSortQuery,
     KeywordsSortQuery,
@@ -20,11 +20,11 @@ from src.api.schemas import (
     PaginationQuery,
     ReportFiltersQuery,
 )
-from src.core.keywords_materialize import materialize_call_keywords
-from src.core.keywords_service import build_keywords_report, list_keywords
-from src.core.keywords_sync import sync_keywords_to_postgres
-from src.domain.keywords import KeywordDefinition
-from src.domain.reporting import ReportFilters
+from core.keywords_materialize import materialize_call_keywords
+from core.keywords_service import build_keywords_report, list_keywords
+from core.keywords_sync import sync_keywords_to_postgres
+from domain.keywords import KeywordDefinition
+from domain.reporting import ReportFilters
 
 
 def _write_analysis(base, call_id, **overrides):
@@ -70,6 +70,10 @@ def _write_keywords(path):
         },
     ]
     path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def _write_invalid_keywords(path):
+    path.write_text("keywords: [", encoding="utf-8")
 
 
 def test_list_keywords_from_yaml_source(tmp_path):
@@ -132,6 +136,38 @@ def test_keyword_routes_use_storage_backed_sources(monkeypatch, tmp_path):
     assert catalog["total_keywords"] == 2
     assert report["keywords_with_matches"] >= 1
     assert detail["keyword_id"] == "delivery"
+
+
+def test_keywords_catalog_fails_loudly_on_invalid_yaml(monkeypatch, tmp_path):
+    keywords_path = tmp_path / "keywords.yaml"
+    _write_invalid_keywords(keywords_path)
+
+    monkeypatch.delenv("POSTGRES_DSN", raising=False)
+    monkeypatch.setattr(keyword_routes, "KEYWORDS_CONFIG", keywords_path)
+
+    with pytest.raises(HTTPException) as exc:
+        keyword_routes.keywords_catalog()
+
+    assert exc.value.status_code == 500
+    assert "Invalid keyword YAML" in exc.value.detail
+
+
+def test_keywords_report_fails_loudly_on_invalid_yaml(monkeypatch, tmp_path):
+    analysis_dir = tmp_path / "analysis"
+    analysis_dir.mkdir()
+    _write_analysis(analysis_dir, "call-1")
+    keywords_path = tmp_path / "keywords.yaml"
+    _write_invalid_keywords(keywords_path)
+
+    monkeypatch.delenv("POSTGRES_DSN", raising=False)
+    monkeypatch.setattr(report_routes, "KEYWORDS_CONFIG", keywords_path)
+    monkeypatch.setattr(report_routes, "_get_reporting_source", lambda: JsonReportingSource(analysis_dir))
+
+    with pytest.raises(HTTPException) as exc:
+        report_routes.keywords_report(ReportFiltersQuery(), KeywordsSortQuery())
+
+    assert exc.value.status_code == 500
+    assert "Invalid keyword YAML" in exc.value.detail
 
 
 class FakeWritableKeywordSource:
@@ -306,8 +342,9 @@ def test_keyword_sync_route_uses_yaml_and_writable_sources(monkeypatch, tmp_path
     _write_keywords(keywords_path)
     postgres_source = FakeWritableKeywordSource()
 
-    monkeypatch.setattr(keyword_routes, "_get_yaml_keyword_source", lambda: YamlKeywordSource(keywords_path))
+    monkeypatch.setattr(keyword_routes, "_get_yaml_keyword_source", lambda strict=False: YamlKeywordSource(keywords_path, strict=strict))
     monkeypatch.setattr(keyword_routes, "_get_writable_keyword_source", lambda: postgres_source)
+    monkeypatch.setattr(keyword_routes, "_append_keyword_ai_analysis", lambda result, trigger: result)
 
     response = keyword_routes.sync_keywords(KeywordSyncRequest(prune_missing=False))
 
@@ -316,11 +353,53 @@ def test_keyword_sync_route_uses_yaml_and_writable_sources(monkeypatch, tmp_path
     assert sorted(postgres_source.items) == ["delivery", "refund"]
 
 
+def test_keyword_refresh_route_runs_sync_and_materialize(monkeypatch, tmp_path):
+    keywords_path = tmp_path / "keywords.yaml"
+    _write_keywords(keywords_path)
+    postgres_source = FakeWritableKeywordSource()
+    reporting_source = FakeReportingSource(
+        [
+            type(
+                "Record",
+                (),
+                {
+                    "call_id": "call-1",
+                    "summary": "delivery and refund discussion",
+                    "key_questions": ["Where is delivery?"],
+                    "objections": [],
+                    "manager_id": "sales_001",
+                    "spam_probability": 0.1,
+                    "effective_call": True,
+                    "intent": "консультація",
+                    "outcome": "продаж",
+                },
+            )()
+        ]
+    )
+
+    monkeypatch.setattr(keyword_routes, "_get_yaml_keyword_source", lambda strict=False: YamlKeywordSource(keywords_path, strict=strict))
+    monkeypatch.setattr(keyword_routes, "_get_writable_keyword_source", lambda: postgres_source)
+    monkeypatch.setattr(keyword_routes, "_get_postgres_reporting_source", lambda: reporting_source)
+    monkeypatch.setattr(keyword_routes, "_append_keyword_ai_analysis", lambda result, trigger: result)
+
+    response = keyword_routes.refresh_keywords(KeywordSyncRequest(prune_missing=False))
+
+    assert response["sync"]["synced"] == 2
+    assert response["materialize"]["processed_calls"] == 1
+    assert response["materialize"]["matched_calls"] == 1
+    assert postgres_source.materialized_state is True
+
+
 def test_keyword_sync_route_rejects_missing_yaml(monkeypatch, tmp_path):
     postgres_source = FakeWritableKeywordSource()
 
-    monkeypatch.setattr(keyword_routes, "_get_yaml_keyword_source", lambda: YamlKeywordSource(tmp_path / "missing.yaml"))
+    monkeypatch.setattr(
+        keyword_routes,
+        "_get_yaml_keyword_source",
+        lambda strict=False: YamlKeywordSource(tmp_path / "missing.yaml", strict=strict),
+    )
     monkeypatch.setattr(keyword_routes, "_get_writable_keyword_source", lambda: postgres_source)
+    monkeypatch.setattr(keyword_routes, "_append_keyword_ai_analysis", lambda result, trigger: result)
 
     with pytest.raises(HTTPException) as exc:
         keyword_routes.sync_keywords(KeywordSyncRequest(prune_missing=True))
@@ -368,7 +447,12 @@ def test_materialize_call_keywords_persists_matches():
         ]
     )
 
-    response = materialize_call_keywords(FakeReportingSource(records), keyword_source, keyword_source)
+    response = materialize_call_keywords(
+        FakeReportingSource(records),
+        keyword_source,
+        keyword_source,
+        state_store=keyword_source,
+    )
 
     assert response["processed_calls"] == 1
     assert response["matched_calls"] == 1
@@ -432,7 +516,12 @@ def test_materialize_call_keywords_does_not_mutate_analysis_records():
         ]
     )
 
-    materialize_call_keywords(FakeReportingSourceFromAnalyses(analyses), keyword_source, keyword_source)
+    materialize_call_keywords(
+        FakeReportingSourceFromAnalyses(analyses),
+        keyword_source,
+        keyword_source,
+        state_store=keyword_source,
+    )
 
     assert analyses == analyses_before
 

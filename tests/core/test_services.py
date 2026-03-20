@@ -2,10 +2,10 @@ import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
-from src.api import runner
-from src.api.schemas import ProcessRequest
-from src.core import pipeline, reports, rules, transcription
-from src.domain import config
+from api import runner
+from api.schemas import ProcessRequest, SyncRequest
+from core import pipeline, reports, rules, transcription
+from domain import config
 
 
 def test_pipeline_class_exists():
@@ -112,3 +112,134 @@ def test_pipeline_run_generates_snapshots_only_after_sync(monkeypatch):
     pl.run()
 
     assert events == ["sync", "reports"]
+
+
+def test_run_keyword_refresh_once_skips_without_postgres(monkeypatch):
+    monkeypatch.delenv("POSTGRES_DSN", raising=False)
+
+    assert runner._run_keyword_refresh_once() is None
+
+
+def test_run_keyword_refresh_once_skips_when_disabled(monkeypatch):
+    monkeypatch.setenv("POSTGRES_DSN", "postgresql://example")
+    monkeypatch.setenv("AUTO_REFRESH_KEYWORDS", "0")
+
+    assert runner._run_keyword_refresh_once() is None
+
+
+def test_run_process_once_includes_keywords_refresh(monkeypatch):
+    monkeypatch.setenv("POSTGRES_DSN", "postgresql://example")
+    monkeypatch.delenv("AUTO_REFRESH_KEYWORDS", raising=False)
+
+    class FakeStorage:
+        def ensure_ready(self):
+            return None
+
+        def close(self):
+            return None
+
+    class FakePipeline:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr(runner, "load_app_config", lambda: SimpleNamespace(out=Path("."), norm=Path("."), trans=Path("."), analysis=Path(".")))
+    monkeypatch.setattr(runner, "PostgresStorage", lambda dsn: FakeStorage())
+    monkeypatch.setattr(runner, "Pipeline", FakePipeline)
+    monkeypatch.setattr(runner, "OllamaLlm", lambda config: object())
+    monkeypatch.setattr(runner, "FfmpegAudio", lambda: object())
+    monkeypatch.setattr(runner, "AsteriskPbx", lambda: object())
+    monkeypatch.setattr(runner, "_run_keyword_refresh_once", lambda prune_missing=False: {"sync": {"synced": 2}})
+    monkeypatch.setattr(runner, "_run_keyword_ai_analysis_once", lambda trigger: {"analysis_history": {"analysis_id": "a1"}})
+
+    result = runner._run_process_once(
+        ProcessRequest(days=None, limit=1, force_reanalyze=False, force_retranscribe=False)
+    )
+
+    assert result["ok"] is True
+    assert result["keywords_refresh"]["sync"]["synced"] == 2
+    assert result["keyword_ai_analysis"]["analysis_history"]["analysis_id"] == "a1"
+
+
+def test_run_process_once_keeps_success_when_keywords_refresh_fails(monkeypatch):
+    monkeypatch.setenv("POSTGRES_DSN", "postgresql://example")
+    monkeypatch.delenv("AUTO_REFRESH_KEYWORDS", raising=False)
+
+    class FakeStorage:
+        def ensure_ready(self):
+            return None
+
+        def close(self):
+            return None
+
+    class FakePipeline:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr(runner, "load_app_config", lambda: SimpleNamespace(out=Path("."), norm=Path("."), trans=Path("."), analysis=Path(".")))
+    monkeypatch.setattr(runner, "PostgresStorage", lambda dsn: FakeStorage())
+    monkeypatch.setattr(runner, "Pipeline", FakePipeline)
+    monkeypatch.setattr(runner, "OllamaLlm", lambda config: object())
+    monkeypatch.setattr(runner, "FfmpegAudio", lambda: object())
+    monkeypatch.setattr(runner, "AsteriskPbx", lambda: object())
+    monkeypatch.setattr(runner, "_run_keyword_refresh_once", lambda prune_missing=False: (_ for _ in ()).throw(RuntimeError("refresh failed")))
+    monkeypatch.setattr(runner, "_run_keyword_ai_analysis_once", lambda trigger: None)
+
+    result = runner._run_process_once(
+        ProcessRequest(days=None, limit=1, force_reanalyze=False, force_retranscribe=False)
+    )
+
+    assert result["ok"] is True
+    assert result["keywords_refresh_error"] == "refresh failed"
+
+
+def test_auto_keyword_ai_analysis_enabled_uses_analysis_env(monkeypatch):
+    monkeypatch.setenv("AUTO_RUN_AI_KEYWORD_ANALYSIS", "0")
+
+    assert runner._auto_keyword_ai_analysis_enabled() is False
+
+
+def test_run_sync_does_not_trigger_keyword_ai_analysis(monkeypatch):
+    updates = []
+
+    monkeypatch.setattr(runner.job_store, "update_job", lambda job_id, **kwargs: updates.append(kwargs))
+    monkeypatch.setattr(runner, "_run_sync_once", lambda req: {"downloaded": 2, "downloaded_days": ["2026/03/20"]})
+    monkeypatch.setattr(
+        runner,
+        "_run_keyword_ai_analysis_once",
+        lambda trigger: (_ for _ in ()).throw(AssertionError("sync should not trigger AI analysis")),
+    )
+
+    runner.run_sync("job-1", SyncRequest(days="2026/03/20"))
+
+    assert updates[-1]["status"] == runner.JobStatus.done
+    assert updates[-1]["result"]["downloaded"] == 2
+    assert "keyword_ai_analysis" not in updates[-1]["result"]
+
+
+def test_run_sync_and_process_uses_requested_days_for_sync(monkeypatch):
+    updates = []
+    captured = {}
+
+    monkeypatch.setattr(runner.job_store, "update_job", lambda job_id, **kwargs: updates.append(kwargs))
+
+    def fake_sync(req):
+        captured["days"] = req.days
+        return {"downloaded": 1, "downloaded_days": ["2026/03/19"]}
+
+    monkeypatch.setattr(runner, "_run_sync_once", fake_sync)
+    monkeypatch.setattr(runner, "_run_process_once", lambda req: {"ok": True})
+
+    runner.run_sync_and_process(
+        "job-2",
+        ProcessRequest(days="2026/03/19", limit=1, force_reanalyze=False, force_retranscribe=False),
+    )
+
+    assert captured["days"] == "2026/03/19"
+    assert updates[-1]["status"] == runner.JobStatus.done
+    assert updates[-1]["result"]["process"]["downloaded"] == 1

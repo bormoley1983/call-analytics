@@ -1,8 +1,8 @@
 import pytest
 from types import SimpleNamespace
 
-from src.adapters import audio_ffmpeg, storage_json, storage_postgres
-from src.adapters import llm_ollama
+from adapters import audio_ffmpeg, storage_json, storage_postgres
+from adapters import llm_ollama
 
 
 def test_ffprobe_duration_seconds_exists():

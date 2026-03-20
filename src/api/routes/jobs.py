@@ -34,6 +34,7 @@ def trigger_sync(req: SyncRequest, background_tasks: BackgroundTasks):
     summary="Start process job",
     description=(
         "Queues a background processing job (transcription + analysis).\n\n"
+        "When `POSTGRES_DSN` is configured, keyword refresh runs automatically after successful processing.\n\n"
         "Only one process-like job can run at a time.\n\n"
         "**Defaults**\n"
         "- `days=null` -> process all unfinished calls\n"
@@ -69,7 +70,8 @@ def trigger_process(req: ProcessRequest, background_tasks: BackgroundTasks):
     summary="Start sync and process chain",
     description=(
         "Queues one background job that first syncs PBX records and then processes them.\n\n"
-        "Uses the same request defaults as `/jobs/process`."
+        "Uses the same request defaults as `/jobs/process`.\n\n"
+        "When `POSTGRES_DSN` is configured, keyword refresh runs automatically after successful processing."
     ),
     responses={
         409: {

@@ -1,15 +1,15 @@
 import json
 
-from src.adapters.reporting_json import JsonReportingSource
-from src.api.routes import reports as report_routes
-from src.api.schemas import CustomersSortQuery, ManagersSortQuery, ReportFiltersQuery
-from src.core.reporting_service import (
+from adapters.reporting_json import JsonReportingSource
+from api.routes import reports as report_routes
+from api.schemas import CustomersSortQuery, ManagersSortQuery, ReportFiltersQuery
+from core.reporting_service import (
     build_customer_followup_report,
     build_customers_report,
     build_managers_report,
     build_overall_report,
 )
-from src.domain.reporting import ReportFilters
+from domain.reporting import ReportFilters
 
 
 def _write_analysis(base, call_id, **overrides):
@@ -86,6 +86,22 @@ def test_overall_route_uses_storage_backed_filters(monkeypatch, tmp_path):
     assert response["filters"]["manager_id"] == "sales_001"
 
 
+def test_overall_route_includes_keyword_ai_analysis(monkeypatch, tmp_path):
+    _write_analysis(tmp_path, "call-1")
+
+    monkeypatch.setattr(report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path))
+    monkeypatch.setattr(
+        report_routes,
+        "_build_keyword_ai_analysis_payload",
+        lambda keyword_id=None: {"analysis_id": "analysis-1", "keyword_id": keyword_id},
+    )
+
+    response = report_routes.overall_report(ReportFiltersQuery())
+
+    assert response["keyword_ai_analysis"]["analysis_id"] == "analysis-1"
+    assert response["keyword_ai_analysis"]["keyword_id"] is None
+
+
 def test_build_managers_report_from_json_source(tmp_path):
     _write_analysis(tmp_path, "call-1", manager_id="sales_001", manager_name="Manager 1")
     _write_analysis(
@@ -141,6 +157,50 @@ def test_manager_routes_use_storage_backed_report(monkeypatch, tmp_path):
     assert managers_response["total_managers"] == 2
     assert manager_response["manager_id"] == "sales_001"
     assert manager_response["total_calls"] == 1
+
+
+def test_build_keyword_ai_analysis_payload_filters_groups(monkeypatch):
+    monkeypatch.setattr(
+        report_routes,
+        "_get_latest_keyword_ai_analysis",
+        lambda: {
+            "analysis_id": "analysis-1",
+            "created_at": "2026-03-20T12:00:00+00:00",
+            "ai_analysis": {
+                "summary": "summary",
+                "groups": [
+                    {
+                        "group_label": "Delivery",
+                        "theme": "shipping",
+                        "keywords": ["delivery", "shipment"],
+                        "primary_keyword_id": "delivery",
+                        "suggested_category": "logistics",
+                        "suggested_shared_terms": ["delivery"],
+                        "suggested_actions": [],
+                        "rationale": "similar",
+                    },
+                    {
+                        "group_label": "Refund",
+                        "theme": "payments",
+                        "keywords": ["refund"],
+                        "primary_keyword_id": "refund",
+                        "suggested_category": "payments",
+                        "suggested_shared_terms": ["refund"],
+                        "suggested_actions": [],
+                        "rationale": "similar",
+                    },
+                ],
+                "global_recommendations": ["recommendation"],
+            },
+        },
+    )
+
+    response = report_routes._build_keyword_ai_analysis_payload("delivery")
+
+    assert response["analysis_id"] == "analysis-1"
+    assert response["groups_total"] == 2
+    assert response["groups_returned"] == 1
+    assert response["groups"][0]["primary_keyword_id"] == "delivery"
 
 
 def test_managers_report_supports_sorting(monkeypatch, tmp_path):

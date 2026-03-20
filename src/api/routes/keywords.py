@@ -1,6 +1,7 @@
+import logging
 import os
 import re
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, status
 
@@ -8,6 +9,8 @@ from adapters.keywords_postgres import PostgresKeywordSource
 from adapters.reporting_postgres import PostgresReportingSource
 from adapters.keywords_yaml import YamlKeywordSource
 from api.schemas import KeywordSyncRequest, KeywordUpsertRequest
+from core.keywords_ai_runtime import run_keyword_ai_analysis_once
+from core.keywords_refresh import refresh_keywords_data
 from core.keywords_service import list_keywords
 from core.keywords_materialize import materialize_call_keywords
 from core.keywords_sync import sync_keywords_to_postgres
@@ -15,6 +18,7 @@ from domain.config import KEYWORDS_CONFIG
 from domain.keywords import KeywordDefinition
 
 router = APIRouter(prefix="/keywords", tags=["keywords"])
+logger = logging.getLogger(__name__)
 
 _SAFE_ID = re.compile(r"^[\w\-]+$")
 _SAFE_ID_PATTERN = r"^[\w\-]+$"
@@ -24,16 +28,35 @@ def _get_keyword_source():
     dsn = os.getenv("POSTGRES_DSN")
     if dsn:
         return PostgresKeywordSource(dsn)
-    return YamlKeywordSource(KEYWORDS_CONFIG)
+    source = YamlKeywordSource(KEYWORDS_CONFIG, strict=True)
+    try:
+        list(source.list_keywords())
+    except (FileNotFoundError, ValueError) as exc:
+        source.close()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+    return source
 
 
-def _get_yaml_keyword_source() -> YamlKeywordSource:
-    return YamlKeywordSource(KEYWORDS_CONFIG)
+def _get_yaml_keyword_source(*, strict: bool = False) -> YamlKeywordSource:
+    return YamlKeywordSource(KEYWORDS_CONFIG, strict=strict)
+
+
+def _append_keyword_ai_analysis(result: dict[str, Any], *, trigger: str) -> dict[str, Any]:
+    try:
+        keyword_ai_analysis = run_keyword_ai_analysis_once(trigger)
+    except Exception as exc:
+        logger.exception("AI keyword analysis failed after %s", trigger)
+        result["keyword_ai_analysis_error"] = str(exc)
+    else:
+        if keyword_ai_analysis is not None:
+            result["keyword_ai_analysis"] = keyword_ai_analysis
+    return result
 
 
 def _get_writable_keyword_source() -> PostgresKeywordSource:
     dsn = os.getenv("POSTGRES_DSN")
     if not dsn:
+        logger.warning("Keyword write endpoint called without POSTGRES_DSN in process environment")
         raise HTTPException(
             status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
             detail="Keyword catalog is read-only without POSTGRES_DSN",
@@ -44,6 +67,7 @@ def _get_writable_keyword_source() -> PostgresKeywordSource:
 def _get_postgres_reporting_source() -> PostgresReportingSource:
     dsn = os.getenv("POSTGRES_DSN")
     if not dsn:
+        logger.warning("Keyword materialization endpoint called without POSTGRES_DSN in process environment")
         raise HTTPException(
             status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
             detail="Keyword materialization requires POSTGRES_DSN",
@@ -70,12 +94,58 @@ def keywords_catalog():
 
 
 @router.post(
+    "/refresh",
+    summary="Refresh keywords for reporting",
+    description=(
+        "Runs the full keyword refresh flow in Postgres.\n\n"
+        "This endpoint:\n"
+        "- syncs keyword definitions from YAML into Postgres\n"
+        "- materializes keyword-to-call matches from existing analyses\n\n"
+        "Use this as the main manual keyword preparation endpoint. Normally this also runs automatically "
+        "after successful processing jobs when `POSTGRES_DSN` is configured."
+    ),
+    responses={
+        400: {
+            "description": "Invalid keyword source data.",
+            "content": {"application/json": {"example": {"detail": "Invalid keyword source data"}}},
+        },
+        405: {
+            "description": "Refresh requires Postgres.",
+            "content": {
+                "application/json": {"example": {"detail": "Keyword materialization requires POSTGRES_DSN"}}
+            },
+        },
+    },
+)
+def refresh_keywords(req: KeywordSyncRequest | None = None):
+    options = req or KeywordSyncRequest()
+    postgres_source = _get_writable_keyword_source()
+    yaml_source = _get_yaml_keyword_source(strict=True)
+    reporting_source = _get_postgres_reporting_source()
+    try:
+        try:
+            result = refresh_keywords_data(
+                yaml_source=yaml_source,
+                postgres_source=postgres_source,
+                reporting_source=reporting_source,
+                prune_missing=options.prune_missing,
+            )
+            return _append_keyword_ai_analysis(result, trigger="keywords-refresh")
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        reporting_source.close()
+        yaml_source.close()
+        postgres_source.close()
+
+
+@router.post(
     "/sync",
     summary="Sync YAML keywords to Postgres",
     description=(
         "Copies keyword definitions from YAML config into Postgres.\n\n"
         "**Default**: `prune_missing=false` (existing Postgres-only rows are kept).\n\n"
-        "Use this before `POST /keywords/materialize` when report drill-down should use new definitions."
+        "Low-level maintenance endpoint. For normal manual use prefer `POST /keywords/refresh`."
     ),
     responses={
         400: {
@@ -92,14 +162,15 @@ def keywords_catalog():
 )
 def sync_keywords(req: KeywordSyncRequest):
     postgres_source = _get_writable_keyword_source()
-    yaml_source = _get_yaml_keyword_source()
+    yaml_source = _get_yaml_keyword_source(strict=True)
     try:
         try:
-            return sync_keywords_to_postgres(
+            result = sync_keywords_to_postgres(
                 yaml_source=yaml_source,
                 postgres_source=postgres_source,
                 prune_missing=req.prune_missing,
             )
+            return _append_keyword_ai_analysis(result, trigger="keywords-sync")
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
@@ -112,7 +183,8 @@ def sync_keywords(req: KeywordSyncRequest):
     summary="Materialize keyword matches",
     description=(
         "Builds/refreshes materialized keyword-to-call matches in Postgres.\n\n"
-        "Required for report drill-down endpoints under `/reports/keywords/{keyword_id}/...`."
+        "Required for report drill-down endpoints under `/reports/keywords/{keyword_id}/...`.\n\n"
+        "Low-level maintenance endpoint. For normal manual use prefer `POST /keywords/refresh`."
     ),
     responses={
         405: {
@@ -127,11 +199,13 @@ def materialize_keywords():
     reporting_source = _get_postgres_reporting_source()
     keyword_source = _get_writable_keyword_source()
     try:
-        return materialize_call_keywords(
+        result = materialize_call_keywords(
             reporting_source=reporting_source,
             keyword_source=keyword_source,
             keyword_store=keyword_source,
+            state_store=keyword_source,
         )
+        return _append_keyword_ai_analysis(result, trigger="keywords-materialize")
     finally:
         reporting_source.close()
         keyword_source.close()
@@ -157,7 +231,7 @@ def keyword_detail(
         Path(
             description="Keyword identifier (letters, digits, underscore, dash).",
             pattern=_SAFE_ID_PATTERN,
-            example="delivery",
+            examples=["delivery"],
         ),
     ]
 ):
@@ -248,7 +322,7 @@ def update_keyword(
         Path(
             description="Keyword identifier (letters, digits, underscore, dash).",
             pattern=_SAFE_ID_PATTERN,
-            example="delivery",
+            examples=["delivery"],
         ),
     ],
     req: KeywordUpsertRequest,
@@ -312,7 +386,7 @@ def delete_keyword(
         Path(
             description="Keyword identifier (letters, digits, underscore, dash).",
             pattern=_SAFE_ID_PATTERN,
-            example="delivery",
+            examples=["delivery"],
         ),
     ]
 ):

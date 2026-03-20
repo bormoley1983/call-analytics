@@ -421,7 +421,7 @@ class Pipeline:
             return
         logger.info("Syncing processed results to Postgres")
         pg = PostgresStorage(dsn)
-        pg.connect()
+        pg.ensure_ready()
         try:
             synced = 0
             for item in per_call:

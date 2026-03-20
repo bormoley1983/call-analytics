@@ -23,6 +23,17 @@ class Record:
     data: Dict[str, Any]
 
 
+def _read_json_file(path: Path) -> Dict[str, Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Failed to read JSON file: {path}: {exc}") from exc
+
+
+def _write_json_file(path: Path, data: Dict[str, Any]) -> None:
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 class JsonBackend:
     def __init__(self, out_dir: Path, transcripts_dir: Path, analyses_dir: Path):
         self.out_dir = out_dir
@@ -40,17 +51,14 @@ class JsonBackend:
             return
         for path in sorted(base.glob("*.json")):
             call_id = path.stem
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except Exception as exc:
-                raise RuntimeError(f"Failed to read JSON file: {path}: {exc}") from exc
+            data = _read_json_file(path)
             yield Record(entity=entity, call_id=call_id, data=data)
 
     def upsert(self, record: Record) -> None:
         base = self.transcripts_dir if record.entity == "transcripts" else self.analyses_dir
         base.mkdir(parents=True, exist_ok=True)
         out = base / f"{record.call_id}.json"
-        out.write_text(json.dumps(record.data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(out, record.data)
 
 
 class PostgresBackend:
@@ -60,7 +68,7 @@ class PostgresBackend:
         self._conn: psycopg2.extensions.connection | None = None
 
     def ensure_ready(self) -> None:
-        self.pg.connect()
+        self.pg.ensure_ready()
         # PostgresStorage already opened one connection; keep it for writes.
         # Open a dedicated read connection for iterating source records.
         self._conn = psycopg2.connect(self.dsn)

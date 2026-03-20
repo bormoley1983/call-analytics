@@ -55,11 +55,3 @@ class JsonStorage:
         self.analysis_path(call_id).write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-
-    # --- legacy helpers kept for migrate_storage.py ---
-
-    def load_json(self, path: Path) -> Dict[str, Any]:
-        return json.loads(path.read_text(encoding="utf-8"))
-
-    def save_json(self, path: Path, data: Dict[str, Any]) -> None:
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

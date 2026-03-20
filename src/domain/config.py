@@ -16,6 +16,51 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
+
+def _load_env_defaults() -> None:
+    """
+    Load env defaults from config/.env when process env is missing keys.
+
+    This keeps explicit exported variables authoritative and provides a safe
+    fallback for launches that do not source env files (for example plain
+    `uvicorn api.app:app` runs).
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates = [
+        repo_root / "config" / ".env",
+        Path.cwd() / "config" / ".env",
+        Path.cwd() / ".env",
+    ]
+    env_path = next((path for path in candidates if path.exists()), None)
+    if env_path is None:
+        return
+
+    try:
+        with env_path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[7:].strip()
+                if "=" not in line:
+                    continue
+
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key:
+                    continue
+
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                    value = value[1:-1]
+                os.environ.setdefault(key, value)
+    except OSError as exc:
+        logger.warning("Could not load env defaults from %s: %s", env_path, exc)
+
+
+_load_env_defaults()
+
 # ----------------------------
 # Paths
 # ----------------------------

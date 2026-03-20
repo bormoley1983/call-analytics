@@ -2,19 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from ports.keywords import KeywordSource
+from ports.keywords import KeywordCatalogStore, KeywordSource
 
 
 def sync_keywords_to_postgres(
     yaml_source: KeywordSource,
-    postgres_source: Any,
+    postgres_source: KeywordCatalogStore,
     prune_missing: bool = False,
 ) -> dict[str, Any]:
-    loader = getattr(yaml_source, "load_keywords", None)
-    if callable(loader):
-        yaml_keywords = list(loader(strict=True))
-    else:
-        yaml_keywords = list(yaml_source.list_keywords())
+    yaml_keywords = list(yaml_source.list_keywords())
     existing = {keyword.keyword_id: keyword for keyword in postgres_source.list_keywords()}
 
     synced_ids: list[str] = []

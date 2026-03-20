@@ -20,6 +20,52 @@ TRANSLATION_PROMPT_TEMPLATE = """Переклади наступні фрагм�
 
 Поверни ТІЛЬКИ переклад у такому ж форматі (номер. текст), без додаткових пояснень."""
 
+KEYWORD_CATALOG_ANALYSIS_PROMPT_TEMPLATE = """You are analyzing a call analytics keyword catalog.
+
+Your task is to group overlapping or closely related keywords and suggest safe, reversible cleanup actions.
+
+Rules:
+- Use only the provided keywords as evidence.
+- Do not invent unsupported categories or aliases.
+- Prefer conservative merge suggestions.
+- Keep current `keyword_id` values whenever possible.
+- If a keyword looks too generic, stale, or redundant, explain why.
+- Return only JSON.
+
+Return a JSON object with this structure:
+{{
+  "summary": "short summary",
+  "groups": [
+    {{
+      "group_label": "human readable group name",
+      "theme": "short theme",
+      "keywords": ["keyword_id"],
+      "primary_keyword_id": "keyword_id",
+      "suggested_category": "category",
+      "suggested_shared_terms": ["term"],
+      "suggested_actions": [
+        {{
+          "type": "keep|merge|rename|expand_aliases|deactivate",
+          "keyword_id": "keyword_id",
+          "target_keyword_id": "keyword_id or empty",
+          "suggested_label": "new label or empty",
+          "suggested_terms": ["term"],
+          "reason": "brief explanation"
+        }}
+      ],
+      "rationale": "brief explanation"
+    }}
+  ],
+  "ungrouped_keyword_ids": ["keyword_id"],
+  "global_recommendations": ["recommendation"]
+}}
+
+Maximum groups: {max_groups}
+
+Analysis payload:
+{analysis_payload_json}
+"""
+
 class OllamaLlm:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -29,6 +75,9 @@ class OllamaLlm:
         
     def analyze(self, call_meta: Dict[str, Any], transcript_text_uk: str) -> Dict[str, Any]:
         return ollama_analyze(call_meta, transcript_text_uk, self.config)
+
+    def analyze_keyword_catalog(self, analysis_payload: Dict[str, Any], max_groups: int = 20) -> Dict[str, Any]:
+        return ollama_analyze_keyword_catalog(analysis_payload, self.config, max_groups=max_groups)
 
 
 def _ollama_generate(prompt: str, config: AppConfig, temperature: float = 0.2, force_json: bool = False) -> str:
@@ -202,3 +251,70 @@ def ollama_analyze(call_meta: Dict[str, Any], transcript_text_uk: str, config: A
 
     return ensure_analysis_schema(analysis, call_meta)
 
+
+def _normalize_string_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    result: List[str] = []
+    for item in value:
+        normalized = str(item).strip()
+        if normalized:
+            result.append(normalized)
+    return result
+
+
+def ollama_analyze_keyword_catalog(
+    analysis_payload: Dict[str, Any],
+    config: AppConfig,
+    max_groups: int = 20,
+) -> Dict[str, Any]:
+    prompt = KEYWORD_CATALOG_ANALYSIS_PROMPT_TEMPLATE.format(
+        max_groups=max_groups,
+        analysis_payload_json=json.dumps(analysis_payload, ensure_ascii=False, indent=2),
+    )
+    raw = _ollama_generate(prompt, config, temperature=0.2, force_json=True)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        data = _extract_json_object(raw)
+
+    if not isinstance(data, dict):
+        raise ValueError("Keyword catalog analysis response must be a JSON object")
+
+    groups: List[Dict[str, Any]] = []
+    for item in data.get("groups", []):
+        if not isinstance(item, dict):
+            continue
+        actions: List[Dict[str, Any]] = []
+        for action in item.get("suggested_actions", []):
+            if not isinstance(action, dict):
+                continue
+            actions.append(
+                {
+                    "type": str(action.get("type", "")).strip(),
+                    "keyword_id": str(action.get("keyword_id", "")).strip(),
+                    "target_keyword_id": str(action.get("target_keyword_id", "")).strip(),
+                    "suggested_label": str(action.get("suggested_label", "")).strip(),
+                    "suggested_terms": _normalize_string_list(action.get("suggested_terms")),
+                    "reason": str(action.get("reason", "")).strip(),
+                }
+            )
+        groups.append(
+            {
+                "group_label": str(item.get("group_label", "")).strip(),
+                "theme": str(item.get("theme", "")).strip(),
+                "keywords": _normalize_string_list(item.get("keywords")),
+                "primary_keyword_id": str(item.get("primary_keyword_id", "")).strip(),
+                "suggested_category": str(item.get("suggested_category", "")).strip(),
+                "suggested_shared_terms": _normalize_string_list(item.get("suggested_shared_terms")),
+                "suggested_actions": actions,
+                "rationale": str(item.get("rationale", "")).strip(),
+            }
+        )
+
+    return {
+        "summary": str(data.get("summary", "")).strip(),
+        "groups": groups,
+        "ungrouped_keyword_ids": _normalize_string_list(data.get("ungrouped_keyword_ids")),
+        "global_recommendations": _normalize_string_list(data.get("global_recommendations")),
+    }

@@ -1,312 +1,251 @@
 # Call Analytics
 
-Processes FreePBX/Asterisk call recordings: normalizes audio, transcribes with Whisper, analyzes with Ollama LLM, and generates reports (JSON + HTML).
+Production-first call analytics for FreePBX/Asterisk recordings.
 
-## Requirements
+The production flow is built around:
+- PostgreSQL as the system of record
+- Whisper for transcription
+- Ollama for call analysis and keyword AI analysis
+- FastAPI for jobs, reporting, keyword management, and drill-down APIs
 
-- Docker + NVIDIA container toolkit (GPU required)
-- Ollama running on the host with a model loaded (default: `qwen3.5:27b`)
+JSON artifacts still exist for local development, migration, and optional snapshot exports, but they are not the production source of truth.
+
+## Production Requirements
+
+- Docker and Docker Compose
+- NVIDIA Container Toolkit and a working GPU runtime
+- Ollama reachable from the containers, with the required model loaded
+- External PostgreSQL database reachable from the API container
+- Valid config files under `config/`
+
+Required production inputs:
+- `config/.env`
+- `config/managers.yaml`
+- `config/brands.yaml`
+- `config/analysis.yaml`
+- `config/keywords.yaml`
+- `POSTGRES_DSN` in `config/.env`
+
+If `config/keywords.yaml` does not exist yet:
+
+```bash
+cp config/keywords.yaml.example config/keywords.yaml
+```
 
 ## Quick Start
 
-### 1. Prepare config files
+### 1. Prepare configuration
 
 ```bash
-cp managers.yaml.example managers.yaml
-cp brands.yaml.example brands.yaml
-cp analysis.yaml.example analysis.yaml
+cp config/.env.example config/.env
+cp config/managers.yaml.example config/managers.yaml
+cp config/brands.yaml.example config/brands.yaml
+cp config/analysis.yaml.example config/analysis.yaml
+cp config/keywords.yaml.example config/keywords.yaml
 ```
 
-Edit each file for your company's managers, brand names, and analysis prompt.
+Set at least these values in `config/.env`:
 
-### 2. Place recordings
-
-Call recordings must follow FreePBX naming convention:
-
-```
-calls_raw/YYYY/MM/DD/<dir>-<dst>-<src>-<YYYYMMDD>-<HHMMSS>-<uniqueid>.wav
+```env
+POSTGRES_DSN=postgresql://user:pass@host:5432/call_analytics
+OLLAMA_URL=http://host.docker.internal:11434
+OLLAMA_MODEL=qwen3.5:27b
 ```
 
-### 3. Build and run
+Optional PBX sync variables are described below.
+
+### 2. Build and run the API
 
 ```bash
 docker compose build
-docker compose up -d
+docker compose up -d api
 ```
 
-The API starts automatically. Outputs are written to out:
-- report.json / report.html — overall summary
-- report_by_manager.json / report_by_manager.html — per-manager breakdown
-- `out/transcripts/<call_id>.json` — raw transcripts
-- `out/analysis/<call_id>.json` — per-call analysis
+The API is available at:
+- `http://localhost:8000/docs`
+- `http://localhost:8000/redoc`
 
----
+## Production Flow
 
-## Container Services
+### Preferred daily flow
 
-| Service | Profile | Port | Description |
-|---|---|---|---|
-| `api` | _(default)_ | `127.0.0.1:8000` | REST API — always-on, `restart: unless-stopped` |
-| `api_debug` | `debug-api` | `127.0.0.1:8000` + `5679` | API with debugpy attached |
-| `batch` | `batch` | — | One-shot CLI processing run |
-| `batch_debug` | `debug-batch` | `127.0.0.1:5678` | CLI run with debugpy attached |
+1. Optional: sync fresh recordings from PBX.
+2. Run processing.
+3. Wait for the job to finish.
+4. Read `/reports/*`.
 
-All services share the same `call-analytics-base:cuda12` image built from Dockerfile.base.
+Examples:
 
 ```bash
-# Start API (default)
-docker compose up -d
+# Optional PBX sync only
+curl -X POST http://localhost:8000/jobs/sync \
+  -H "Content-Type: application/json" \
+  -d '{"days": "2026/03/19,2026/03/20"}'
 
-# Run a one-shot batch job
-docker compose --profile batch run --rm batch
-
-# Debug API (attach debugger to port 5679)
-docker compose --profile debug-api up api_debug
-
-# Debug batch (attach debugger to port 5678)
-docker compose --profile debug-batch run --rm batch_debug
-
-#Logs output
-docker compose logs -f
-```
-
----
-
-## REST API
-
-The API runs at `http://localhost:8000`. Interactive docs available at:
-- **Swagger UI**: `http://localhost:8000/docs`
-- **ReDoc**: `http://localhost:8000/redoc`
-
-### Endpoints
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | Liveness check + Ollama status |
-| `POST` | `/jobs/sync` | Download new recordings from PBX via SFTP |
-| `POST` | `/jobs/sync-and-process` | Download missing recordings, then process only newly downloaded days |
-| `POST` | `/jobs/process` | Transcribe + analyse recordings |
-| `GET` | `/jobs` | List recent jobs |
-| `GET` | `/jobs/{job_id}` | Poll job status (`pending` → `running` → `done`/`failed`) |
-| `GET` | `/reports/overall` | Aggregated report |
-| `GET` | `/reports/manager/{manager_id}` | Per-manager report |
-| `GET` | `/managers` | List configured managers and their extensions |
-
-### Typical workflow
-
-```bash
-# 1. Download new recordings from PBX
-curl -X POST http://localhost:8000/jobs/sync
-
-# 2. Trigger processing (optionally scope to specific days)
+# Process existing raw data already present under calls_raw/
 curl -X POST http://localhost:8000/jobs/process \
   -H "Content-Type: application/json" \
-  -d '{"days": "2026/03/13,2026/03/14", "limit": 50}'
+  -d '{"days": "2026/03/19,2026/03/20", "limit": 30}'
 
-# 3. Poll until done
-curl http://localhost:8000/jobs/<job_id>
-
-# 4. Fetch results
-curl http://localhost:8000/reports/overall
+# Or do both in one job
+curl -X POST http://localhost:8000/jobs/sync-and-process \
+  -H "Content-Type: application/json" \
+  -d '{"days": "2026/03/19,2026/03/20", "limit": 30}'
 ```
 
-Or use one combined job:
+Important behavior:
+- `POST /jobs/sync` downloads files only. It does not run AI keyword analysis.
+- `POST /jobs/process` runs transcription and analysis, stores results in Postgres, then automatically:
+  - refreshes keywords
+  - runs AI keyword catalog analysis
+- `POST /jobs/sync-and-process` now uses the same `days` scope for both sync and processing.
+- If `days` is omitted, `/jobs/sync-and-process` performs a full sync and then processes all eligible data.
+
+### Poll the job
 
 ```bash
-curl -X POST http://localhost:8000/jobs/sync-and-process \
-    -H "Content-Type: application/json" \
-    -d '{"limit": 0, "force_reanalyze": false, "force_retranscribe": false}'
+curl http://localhost:8000/jobs/<job_id>
 ```
 
-### Scheduled nightly run (cron)
+A successful process-like job may include these sections in `result`:
+- `keywords_refresh`
+- `keyword_ai_analysis`
 
-```cron
-0 22 * * * curl -sS -X POST http://localhost:8000/jobs/sync && sleep 60 && curl -sS -X POST http://localhost:8000/jobs/process
+## Reports
+
+Main production reports:
+- `GET /reports/overall`
+- `GET /reports/managers`
+- `GET /reports/manager/{manager_id}`
+- `GET /reports/customers`
+- `GET /reports/customers/{customer_phone}`
+- `GET /reports/keywords`
+- `GET /reports/keywords/{keyword_id}`
+- `GET /reports/keywords/{keyword_id}/calls`
+- `GET /reports/keywords/{keyword_id}/trend`
+- `GET /reports/keywords/{keyword_id}/managers`
+
+All report responses now include a top-level `keyword_ai_analysis` field when a persisted AI keyword analysis exists in Postgres.
+
+Example shape:
+
+```json
+{
+  "total_calls": 3301,
+  "effective_calls": 1820,
+  "keyword_ai_analysis": {
+    "analysis_id": "11111111-1111-1111-1111-111111111111",
+    "created_at": "2026-03-20T12:00:00+00:00",
+    "summary": "Top logistics and refund groups are overlapping.",
+    "global_recommendations": [
+      "Merge weak duplicate aliases."
+    ],
+    "groups_total": 4,
+    "groups_returned": 4,
+    "groups": [
+      {
+        "group_label": "Delivery / Shipment",
+        "theme": "logistics overlap",
+        "keywords": ["delivery", "shipment"],
+        "primary_keyword_id": "delivery",
+        "suggested_category": "logistics",
+        "suggested_shared_terms": ["delivery", "shipment"],
+        "suggested_actions": [],
+        "rationale": "These keywords are strongly overlapping."
+      }
+    ]
+  }
+}
 ```
 
----
+For keyword-specific endpoints, `keyword_ai_analysis.groups` is filtered down to groups relevant to that keyword.
+
+## Keyword Operations
+
+### Normal manual maintenance flow
+
+Use the combined refresh endpoint:
+
+```bash
+curl -X POST http://localhost:8000/keywords/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"prune_missing": false}'
+```
+
+This endpoint:
+- syncs `config/keywords.yaml` into Postgres
+- materializes keyword matches from existing analyses
+- runs AI keyword analysis at the end
+
+### Low-level maintenance endpoints
+
+Available for admin/debugging use:
+- `POST /keywords/sync`
+- `POST /keywords/materialize`
+
+These also trigger AI keyword analysis after they complete successfully.
+
+### Keyword discovery and AI catalog analysis
+
+Optional admin flows:
+- `POST /keywords/generation/candidates`
+- `POST /keywords/generation/publish`
+- `POST /keywords/catalog/analysis`
+- `GET /keywords/catalog/analyses`
+- `GET /keywords/catalog/analyses/{analysis_id}`
 
 ## Configuration
 
-### Environment Variables
+### Core runtime
 
-All variables are optional — defaults are shown. Set them in .env.
-
-| Variable | Default | Description |
+| Variable | Default | Production note |
 |---|---|---|
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `qwen3.5:27b` | Model to use for analysis |
-| `WHISPER_MODEL` | `large-v3-turbo` | faster-whisper model |
-| `WHISPER_DEVICE` | `cuda` | `cuda` or `cpu` |
-| `WHISPER_COMPUTE_TYPE` | `float16` | `float16`, `int8`, etc. |
-| `DAYS` | _(all)_ | Comma-separated `YYYY/MM/DD` — process specific days only |
-| `PROCESS_LIMIT` | `30` | Max files per run |
-| `MIN_BYTES` | `20000` | Skip files smaller than this |
-| `MIN_SECONDS` | `1.0` | Skip calls shorter than this |
-| `FORCE_RETRANSCRIBE` | `0` | `1` to re-transcribe already processed files |
-| `FORCE_REANALYZE` | `0` | `1` to re-analyze already analyzed files |
-| `FORCE_TRANSLATE_UK` | `0` | `1` to translate transcripts to Ukrainian |
-| `SPAM_PROBABILITY_THRESHOLD` | `0.7` | Calls above this are counted as spam |
-| `POSTGRES_DSN` | _(unset)_ | If set, syncs results to PostgreSQL after each run |
+| `POSTGRES_DSN` | unset | Required in production |
+| `OLLAMA_URL` | `http://localhost:11434` | Must be reachable from container |
+| `OLLAMA_MODEL` | `qwen3.5:27b` | Main analysis and keyword AI model |
+| `SPAM_PROBABILITY_THRESHOLD` | `0.7` | Used in reports and keyword analysis |
+| `AUTO_REFRESH_KEYWORDS` | `1` | Auto-refresh after successful processing |
+| `AUTO_RUN_AI_KEYWORD_ANALYSIS` | `1` | Auto-run keyword catalog AI analysis after process-like flows |
+| `GENERATE_REPORT_SNAPSHOTS` | `0` | Optional JSON/HTML snapshot export, not production source of truth |
+| `PROCESS_LIMIT` | `30` | `0` means unlimited |
+| `DAYS` | all eligible | Used by processing flow |
 
-Notes:
-- `limit=0` in `/jobs/process` and `/jobs/sync-and-process` means unlimited processing (no cap).
+### PBX sync
 
-### Logging
+Optional variables for `POST /jobs/sync` and `POST /jobs/sync-and-process`:
+- `PBX_HOST`
+- `PBX_PORT`
+- `PBX_USER`
+- `PBX_PASSWORD`
+- `PBX_KEY_PATH`
+- `PBX_KNOWN_HOSTS_PATH`
+- `PBX_REMOTE_DIR`
 
-All logs go to stdout. Set these in .env to adjust behaviour:
+The API expects recordings in FreePBX-style paths:
 
-| Variable | Default | Description |
-|---|---|---|
-| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `LOG_FORMAT` | `%(asctime)s %(levelname)-8s %(name)s: %(message)s` | Python logging format string |
-| `LOG_FILE` | _(unset)_ | Path to a rotating log file (in addition to stdout) |
-| `LOG_MAX_BYTES` | `10485760` | Max bytes per log file before rotation (10 MiB) |
-| `LOG_BACKUP_COUNT` | `5` | Number of rotated log files to keep |
-
-```bash
-# View live API logs
-docker compose logs -f api
+```text
+calls_raw/YYYY/MM/DD/<dir>-<dst>-<src>-<YYYYMMDD>-<HHMMSS>-<uniqueid>.wav
 ```
 
----
+## Production Notes
 
-## PBX Auto-Download (optional)
+- Production should always run with `POSTGRES_DSN` configured.
+- Invalid or missing keyword YAML now fails loudly in admin/reporting flows instead of silently appearing as an empty catalog.
+- Keyword drill-down endpoints require materialized Postgres keyword data.
+- Snapshot files in `out/` are optional exports only.
 
-Set these in .env to enable the `/jobs/sync` endpoint:
+## Legacy JSON Mode
 
-### Key-based PBX access
+JSON storage and JSON/YAML read paths remain in the repository for:
+- local development
+- migration from older deployments
+- optional snapshot exports
+- compatibility testing
 
-Recommended setup is a dedicated read-only SFTP user with no interactive shell.
+They are not the recommended production mode.
 
-Server-side setup on PBX:
+If you still have historical JSON data, migrate it into Postgres before using the production reporting flow.
 
-    sudo adduser --system --group --home /home/monitor_reader monitor_reader
-    sudo passwd -l monitor_reader
+## Development and Testing
 
-    sudo mkdir -p /home/monitor_reader/.ssh
-    sudo chmod 700 /home/monitor_reader/.ssh
-    sudo chown monitor_reader:monitor_reader /home/monitor_reader/.ssh
-
-    sudo nano /home/monitor_reader/.ssh/authorized_keys
-    sudo chmod 600 /home/monitor_reader/.ssh/authorized_keys
-    sudo chown monitor_reader:monitor_reader /home/monitor_reader/.ssh/authorized_keys
-
-    sudo usermod -aG asterisk monitor_reader
-    sudo chmod 750 /var/spool/asterisk/monitor
-    sudo chmod -R g+rX /var/spool/asterisk/monitor
-
-Restrict the account to SFTP only in sshd_config:
-
-    Match User monitor_reader
-        ForceCommand internal-sftp
-        PasswordAuthentication no
-        PubkeyAuthentication yes
-        PermitTTY no
-        X11Forwarding no
-        AllowTcpForwarding no
-
-Then restart SSH:
-
-    sudo systemctl restart ssh
-
-Client-side key install and test:
-
-    ssh-copy-id -i pbx_ed25519.pub monitor_reader@192.168.10.202
-    sftp -i /home/admaccess/call-analytics/config/ssh/pbx_ed25519 monitor_reader@192.168.10.202
-
-Inside SFTP, verify access with:
-
-    ls /var/spool/asterisk/monitor
-
-Use this env configuration:
-
-    PBX_USER=monitor_reader
-    PBX_AUTH_MODE=key
-    PBX_PASSWORD=
-    PBX_KEY_PATH=/work/config/ssh/pbx_ed25519
-    PBX_KNOWN_HOSTS_PATH=/work/config/ssh/known_hosts
-    PBX_REMOTE_DIR=/var/spool/asterisk/monitor
-
-| Variable | Description |
-|---|---|
-| `PBX_HOST` | PBX hostname or IP |
-| `PBX_USER` | SSH user (default: `asterisk`) |
-| `PBX_KEY_PATH` | Path to SSH private key |
-| `PBX_REMOTE_DIR` | Remote recordings directory (default: `/var/spool/asterisk/monitor`) |
-| `PBX_AUTH_MODE` | auto | key | password  |
-| `PBX_PASSWORD` | used when auth mode is password  |
-| `PBX_PORT` | SSH port  |
-| `PBX_KNOWN_HOSTS_PATH` | known_hosts file path inside container  |
-
-The host key must already be in `~/.ssh/known_hosts`.
-
----
-
-## PostgreSQL Integration (optional)
-
-Set `POSTGRES_DSN` to automatically sync results after each run:
-
-```
-POSTGRES_DSN=postgresql://user:pass@localhost/calls
-```
-
-Two tables are created automatically: `transcripts` and `analyses`.
-
-### Storage Migration (JSON <-> PostgreSQL)
-
-The project includes a universal migration command for moving persisted data between supported storages.
-
-Supported backends:
-- `json`
-- `postgres`
-
-Supported entities:
-- `transcripts`
-- `analyses`
-- `both`
-
-Run migration from existing JSON files to PostgreSQL:
-
-```bash
-python src/cli.py migrate-storage \
-    --source json \
-    --target postgres \
-    --entities both \
-    --postgres-dsn "postgresql://user:pass@localhost/calls"
-```
-
-Dry-run example:
-
-```bash
-python src/cli.py migrate-storage \
-    --source json \
-    --target postgres \
-    --entities both \
-    --dry-run \
-    --postgres-dsn "postgresql://user:pass@localhost/calls"
-```
-
-Reverse migration (PostgreSQL back to JSON):
-
-```bash
-python src/cli.py migrate-storage \
-    --source postgres \
-    --target json \
-    --entities both \
-    --postgres-dsn "postgresql://user:pass@localhost/calls"
-```
-
----
-
-## Troubleshooting
-
-**Ollama not reachable** — Ollama runs on the host; the container connects via `host.docker.internal:11434`. Make sure Ollama is running and the model is pulled before starting.
-
-**No files processed** — Check that recordings exist under `calls_raw/YYYY/MM/DD/` and are larger than `MIN_BYTES`.
-
-**CUDA out of memory** — Reduce `WHISPER_MODEL` (e.g. `medium`) or switch `WHISPER_COMPUTE_TYPE` to `int8`.
-
-```bash
-docker compose logs -f api
-```
+Developer-oriented setup and architecture notes live in [README.DEV.md](README.DEV.md).

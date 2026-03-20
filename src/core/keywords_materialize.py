@@ -4,7 +4,7 @@ from typing import Any
 
 from domain.keywords import KeywordDefinition
 from domain.reporting import ReportCallRecord, ReportFilters
-from ports.keywords import KeywordSource
+from ports.keywords import KeywordMatchStore, KeywordSource, MaterializationStateStore
 from ports.reporting import ReportingSource
 
 
@@ -49,7 +49,8 @@ def _match_keyword(record: ReportCallRecord, keyword: KeywordDefinition) -> list
 def materialize_call_keywords(
     reporting_source: ReportingSource,
     keyword_source: KeywordSource,
-    keyword_store: Any,
+    keyword_store: KeywordMatchStore,
+    state_store: MaterializationStateStore | None = None,
 ) -> dict[str, Any]:
     keywords = [keyword for keyword in keyword_source.list_keywords() if keyword.is_active and keyword.terms]
     processed_calls = 0
@@ -76,9 +77,8 @@ def materialize_call_keywords(
             stored_rows += len(materialized_rows)
         keyword_store.replace_call_keyword_matches(record.call_id, materialized_rows)
 
-    mark_completed = getattr(keyword_store, "mark_materialization_completed", None)
-    if callable(mark_completed):
-        mark_completed(processed_calls, matched_calls, stored_rows)
+    if state_store is not None:
+        state_store.mark_materialization_completed(processed_calls, matched_calls, stored_rows)
 
     return {
         "processed_calls": processed_calls,

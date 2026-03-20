@@ -1,9 +1,10 @@
 import os
 import re
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 
+from adapters.keyword_ai_analysis_postgres import PostgresKeywordAiAnalysisStore
 from adapters.keywords_postgres import PostgresKeywordSource
 from adapters.keywords_yaml import YamlKeywordSource
 from adapters.reporting_json import JsonReportingSource
@@ -63,7 +64,82 @@ def _get_keyword_source():
     dsn = os.getenv("POSTGRES_DSN")
     if dsn:
         return PostgresKeywordSource(dsn)
-    return YamlKeywordSource(KEYWORDS_CONFIG)
+    source = YamlKeywordSource(KEYWORDS_CONFIG, strict=True)
+    try:
+        list(source.list_keywords())
+    except (FileNotFoundError, ValueError) as exc:
+        source.close()
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return source
+
+
+def _get_latest_keyword_ai_analysis() -> dict[str, Any] | None:
+    dsn = os.getenv("POSTGRES_DSN")
+    if not dsn:
+        return None
+    store = PostgresKeywordAiAnalysisStore(dsn)
+    try:
+        return store.get_latest_analysis()
+    finally:
+        store.close()
+
+
+def _compact_keyword_ai_group(group: dict[str, Any]) -> dict[str, Any]:
+    raw_keywords = group.get("keywords", [])
+    raw_shared_terms = group.get("suggested_shared_terms", [])
+    raw_actions = group.get("suggested_actions", [])
+    return {
+        "group_label": group.get("group_label"),
+        "theme": group.get("theme"),
+        "keywords": [str(item).strip() for item in raw_keywords if str(item).strip()] if isinstance(raw_keywords, list) else [],
+        "primary_keyword_id": group.get("primary_keyword_id"),
+        "suggested_category": group.get("suggested_category"),
+        "suggested_shared_terms": [str(item).strip() for item in raw_shared_terms if str(item).strip()] if isinstance(raw_shared_terms, list) else [],
+        "suggested_actions": [item for item in raw_actions if isinstance(item, dict)] if isinstance(raw_actions, list) else [],
+        "rationale": group.get("rationale"),
+    }
+
+
+def _group_matches_keyword(group: dict[str, Any], keyword_id: str) -> bool:
+    primary_keyword_id = str(group.get("primary_keyword_id") or "").strip()
+    if primary_keyword_id == keyword_id:
+        return True
+    return keyword_id in {str(item).strip() for item in group.get("keywords", []) if str(item).strip()}
+
+
+def _build_keyword_ai_analysis_payload(keyword_id: str | None = None) -> dict[str, Any] | None:
+    analysis = _get_latest_keyword_ai_analysis()
+    if analysis is None:
+        return None
+
+    ai_analysis = analysis.get("ai_analysis")
+    if not isinstance(ai_analysis, dict):
+        ai_analysis = {}
+
+    raw_groups = ai_analysis.get("groups", [])
+    groups = [group for group in raw_groups if isinstance(group, dict)] if isinstance(raw_groups, list) else []
+    if keyword_id is None:
+        selected_groups = groups[:5]
+    else:
+        selected_groups = [group for group in groups if _group_matches_keyword(group, keyword_id)]
+
+    raw_recommendations = ai_analysis.get("global_recommendations", [])
+    recommendations = [str(item).strip() for item in raw_recommendations if str(item).strip()] if isinstance(raw_recommendations, list) else []
+
+    return {
+        "analysis_id": analysis.get("analysis_id"),
+        "created_at": analysis.get("created_at"),
+        "summary": ai_analysis.get("summary"),
+        "global_recommendations": recommendations,
+        "groups_total": len(groups),
+        "groups_returned": len(selected_groups),
+        "groups": [_compact_keyword_ai_group(group) for group in selected_groups],
+    }
+
+
+def _attach_keyword_ai_analysis(payload: dict[str, Any], *, keyword_id: str | None = None) -> dict[str, Any]:
+    payload["keyword_ai_analysis"] = _build_keyword_ai_analysis_payload(keyword_id)
+    return payload
 
 
 def _get_materialized_keyword_source() -> PostgresKeywordSource:
@@ -98,9 +174,10 @@ def overall_report(query: Annotated[ReportFiltersQuery, Depends()]):
     source = _get_reporting_source()
     spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
     try:
-        return build_overall_report(source, filters, spam_threshold)
+        data = build_overall_report(source, filters, spam_threshold)
     finally:
         source.close()
+    return _attach_keyword_ai_analysis(data)
 
 
 @router.get(
@@ -127,9 +204,10 @@ def managers_report(
     source = _get_reporting_source()
     spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
     try:
-        return build_managers_report(source, filters, spam_threshold, sorting.sort_by.value, sorting.order.value)
+        data = build_managers_report(source, filters, spam_threshold, sorting.sort_by.value, sorting.order.value)
     finally:
         source.close()
+    return _attach_keyword_ai_analysis(data)
 
 
 @router.get(
@@ -156,9 +234,10 @@ def customers_report(
     source = _get_reporting_source()
     spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
     try:
-        return build_customers_report(source, filters, spam_threshold, sorting.sort_by.value, sorting.order.value)
+        data = build_customers_report(source, filters, spam_threshold, sorting.sort_by.value, sorting.order.value)
     finally:
         source.close()
+    return _attach_keyword_ai_analysis(data)
 
 
 @router.get(
@@ -187,7 +266,7 @@ def customer_report(
         str,
         Path(
             description="Customer phone in any readable format. Non-digit characters are ignored.",
-            example="+38 (067) 123-45-67",
+            examples=["+38 (067) 123-45-67"],
         ),
     ],
     query: Annotated[ReportFiltersQuery, Depends()],
@@ -206,7 +285,7 @@ def customer_report(
 
     if data is None:
         raise HTTPException(status_code=404, detail="Customer report not found")
-    return data
+    return _attach_keyword_ai_analysis(data)
 
 
 @router.get(
@@ -236,7 +315,7 @@ def manager_report(
         Path(
             description="Manager identifier (letters, digits, underscore, dash).",
             pattern=_SAFE_ID_PATTERN,
-            example="petrenko_aa",
+            examples=["petrenko_aa"],
         ),
     ],
     query: Annotated[ReportFiltersQuery, Depends()],
@@ -264,7 +343,7 @@ def manager_report(
         source.close()
     for manager in data.get("all_managers", []):
         if manager.get("manager_id") == manager_id:
-            return manager
+            return _attach_keyword_ai_analysis(manager)
 
     raise HTTPException(status_code=404, detail="Manager report not found")
 
@@ -301,23 +380,25 @@ def keywords_report(
             and isinstance(keyword_source, PostgresKeywordSource)
             and keyword_source.is_materialized()
         ):
-            return keyword_source.build_materialized_keywords_report(
+            data = keyword_source.build_materialized_keywords_report(
                 filters,
                 spam_threshold,
                 sorting.sort_by.value,
                 sorting.order.value,
             )
-        return build_keywords_report(
-            reporting_source,
-            keyword_source,
-            filters,
-            spam_threshold,
-            sorting.sort_by.value,
-            sorting.order.value,
-        )
+        else:
+            data = build_keywords_report(
+                reporting_source,
+                keyword_source,
+                filters,
+                spam_threshold,
+                sorting.sort_by.value,
+                sorting.order.value,
+            )
     finally:
         reporting_source.close()
         keyword_source.close()
+    return _attach_keyword_ai_analysis(data)
 
 
 @router.get(
@@ -347,7 +428,7 @@ def keyword_detail_report(
         Path(
             description="Keyword identifier (letters, digits, underscore, dash).",
             pattern=_SAFE_ID_PATTERN,
-            example="delivery",
+            examples=["delivery"],
         ),
     ],
     query: Annotated[ReportFiltersQuery, Depends()],
@@ -374,7 +455,7 @@ def keyword_detail_report(
 
     for keyword in data.get("keywords", []):
         if keyword.get("keyword_id") == keyword_id:
-            return keyword
+            return _attach_keyword_ai_analysis(keyword, keyword_id=keyword_id)
 
     raise HTTPException(status_code=404, detail="Keyword report not found")
 
@@ -386,7 +467,7 @@ def keyword_detail_report(
         "Returns paginated call list where the selected keyword was matched.\n\n"
         "**Requirements**\n"
         "- `POSTGRES_DSN` must be configured.\n"
-        "- Keyword matches must be materialized (`POST /keywords/materialize`).\n\n"
+        "- Keyword data must be refreshed (`POST /keywords/refresh`) or produced by a successful processing job.\n\n"
         "**Defaults**\n"
         "- `limit=50`, `offset=0`\n"
         "- `sort_by=call_date`, `order=desc`\n\n"
@@ -423,7 +504,7 @@ def keyword_calls_report(
         Path(
             description="Keyword identifier (letters, digits, underscore, dash).",
             pattern=_SAFE_ID_PATTERN,
-            example="delivery",
+            examples=["delivery"],
         ),
     ],
     query: Annotated[ReportFiltersQuery, Depends()],
@@ -439,7 +520,7 @@ def keyword_calls_report(
         raise HTTPException(status_code=404, detail="Keyword report not found")
     spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
     try:
-        return source.build_keyword_calls_report(
+        data = source.build_keyword_calls_report(
             keyword_id=keyword_id,
             filters=filters,
             spam_threshold=spam_threshold,
@@ -450,6 +531,7 @@ def keyword_calls_report(
         )
     finally:
         source.close()
+    return _attach_keyword_ai_analysis(data, keyword_id=keyword_id)
 
 
 @router.get(
@@ -459,7 +541,7 @@ def keyword_calls_report(
         "Returns trend points for the selected keyword over dates in the filtered range.\n\n"
         "**Requirements**\n"
         "- `POSTGRES_DSN` must be configured.\n"
-        "- Keyword matches must be materialized (`POST /keywords/materialize`).\n\n"
+        "- Keyword data must be refreshed (`POST /keywords/refresh`) or produced by a successful processing job.\n\n"
         "**Example**\n"
         "`GET /reports/keywords/delivery/trend?date_from=2026-03-01&date_to=2026-03-20`"
     ),
@@ -493,7 +575,7 @@ def keyword_trend_report(
         Path(
             description="Keyword identifier (letters, digits, underscore, dash).",
             pattern=_SAFE_ID_PATTERN,
-            example="delivery",
+            examples=["delivery"],
         ),
     ],
     query: Annotated[ReportFiltersQuery, Depends()],
@@ -507,9 +589,10 @@ def keyword_trend_report(
         raise HTTPException(status_code=404, detail="Keyword report not found")
     spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
     try:
-        return source.build_keyword_trend_report(keyword_id=keyword_id, filters=filters, spam_threshold=spam_threshold)
+        data = source.build_keyword_trend_report(keyword_id=keyword_id, filters=filters, spam_threshold=spam_threshold)
     finally:
         source.close()
+    return _attach_keyword_ai_analysis(data, keyword_id=keyword_id)
 
 
 @router.get(
@@ -519,7 +602,7 @@ def keyword_trend_report(
         "Returns manager-level breakdown for one keyword.\n\n"
         "**Requirements**\n"
         "- `POSTGRES_DSN` must be configured.\n"
-        "- Keyword matches must be materialized (`POST /keywords/materialize`).\n\n"
+        "- Keyword data must be refreshed (`POST /keywords/refresh`) or produced by a successful processing job.\n\n"
         "**Defaults**\n"
         "- `sort_by=matched_calls`\n"
         "- `order=desc`\n\n"
@@ -556,7 +639,7 @@ def keyword_managers_report(
         Path(
             description="Keyword identifier (letters, digits, underscore, dash).",
             pattern=_SAFE_ID_PATTERN,
-            example="delivery",
+            examples=["delivery"],
         ),
     ],
     query: Annotated[ReportFiltersQuery, Depends()],
@@ -571,7 +654,7 @@ def keyword_managers_report(
         raise HTTPException(status_code=404, detail="Keyword report not found")
     spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
     try:
-        return source.build_keyword_managers_report(
+        data = source.build_keyword_managers_report(
             keyword_id=keyword_id,
             filters=filters,
             spam_threshold=spam_threshold,
@@ -580,3 +663,4 @@ def keyword_managers_report(
         )
     finally:
         source.close()
+    return _attach_keyword_ai_analysis(data, keyword_id=keyword_id)

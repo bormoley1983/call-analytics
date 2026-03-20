@@ -89,9 +89,14 @@ def _configure_process_env(req: ProcessRequest) -> None:
     os.environ["FORCE_REANALYZE"] = "1" if req.force_reanalyze else "0"
     os.environ["FORCE_RETRANSCRIBE"] = "1" if req.force_retranscribe else "0"
 
+    if req.generate_report_snapshots is None:
+        os.environ.pop("GENERATE_REPORT_SNAPSHOTS", None)
+    else:
+        os.environ["GENERATE_REPORT_SNAPSHOTS"] = "1" if req.generate_report_snapshots else "0"
+
 
 def _run_process_once(req: ProcessRequest) -> dict:
-    env_keys = ["DAYS", "PROCESS_LIMIT", "FORCE_REANALYZE", "FORCE_RETRANSCRIBE"]
+    env_keys = ["DAYS", "PROCESS_LIMIT", "FORCE_REANALYZE", "FORCE_RETRANSCRIBE", "GENERATE_REPORT_SNAPSHOTS"]
     old_env = {k: os.environ.get(k) for k in env_keys}
     try:
         _configure_process_env(req)

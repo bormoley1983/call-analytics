@@ -5,7 +5,7 @@ Local Call Analytics PoC (FreePBX/Asterisk recordings)
 - Transcribe with faster-whisper (GPU)
 - Translate transcript to Ukrainian (UA) via Ollama (optional but enabled by default)
 - Analyze calls with Ollama (UA-only JSON schema)
-- Aggregate report.json
+- Optionally aggregate report snapshots (when `GENERATE_REPORT_SNAPSHOTS=1`)
 
 Folder layout expected:
   ./calls_raw/YYYY/MM/DD/*.wav
@@ -13,7 +13,7 @@ Outputs:
   ./out/normalized/*.wav
   ./out/transcripts/*.json
   ./out/analysis/*.json
-  ./out/report.json
+  ./out/report.json (optional snapshot)
 """
 import logging
 import os

@@ -24,7 +24,7 @@ services:
       - OLLAMA_URL=http://host.docker.internal:11434
       - PYTHONPATH=/work/src
     ports:
-      - "127.0.0.1:8000:8000"
+      - "8000:8000"
     command: ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped
 
@@ -35,8 +35,8 @@ services:
       - OLLAMA_URL=http://host.docker.internal:11434
       - PYTHONPATH=/work/src
     ports:
-      - "127.0.0.1:8000:8000"
-      - "127.0.0.1:5679:5679"
+      - "8000:8000"
+      - "5679:5679"
     command:
       - python
       - -Xfrozen_modules=off
@@ -67,7 +67,7 @@ services:
       - ./_hf_cache:/root/.cache/huggingface
       # no config:ro — debug may need write access
     ports:
-      - "127.0.0.1:5678:5678"
+      - "5678:5678"
     command:
       - python
       - -Xfrozen_modules=off

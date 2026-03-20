@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from api.routes import health, jobs, managers, reports
+from api.routes import health, jobs, keywords, managers, reports
 from logging_config import setup_logging
 
 description = """
@@ -19,6 +19,7 @@ tags_metadata = [
     {"name": "health", "description": "Liveness and dependency checks."},
     {"name": "jobs", "description": "Trigger and monitor async jobs."},
     {"name": "reports", "description": "Fetch aggregated call reports."},
+    {"name": "keywords", "description": "List keyword definitions used for reporting and mapping."},
     {"name": "managers", "description": "List configured managers and their extensions."},
 ]
 
@@ -37,4 +38,5 @@ app = FastAPI(
 app.include_router(health.router)
 app.include_router(jobs.router)
 app.include_router(reports.router)
+app.include_router(keywords.router)
 app.include_router(managers.router)

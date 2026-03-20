@@ -29,6 +29,7 @@ CONFIG_DIR = ROOT / "config"
 MANAGERS_CONFIG = CONFIG_DIR / "managers.yaml"
 BRANDS_CONFIG = CONFIG_DIR / "brands.yaml"
 ANALYSIS_CONFIG = CONFIG_DIR / "analysis.yaml"
+KEYWORDS_CONFIG = CONFIG_DIR / "keywords.yaml"
 
 
 # ----------------------------
@@ -191,6 +192,7 @@ class AppConfig:
     force_reanalyze: bool
     force_retranscribe: bool
     force_translate_uk: bool
+    generate_report_snapshots: bool
     
     # Translation limits
     max_segments_translate: int
@@ -228,6 +230,7 @@ def load_app_config() -> AppConfig:
     force_reanalyze = os.getenv("FORCE_REANALYZE", "0") == "1"
     force_retranscribe = os.getenv("FORCE_RETRANSCRIBE", "0") == "1"
     force_translate_uk = os.getenv("FORCE_TRANSLATE_UK", "0") == "1"
+    generate_report_snapshots = os.getenv("GENERATE_REPORT_SNAPSHOTS", "0") == "1"
 
     analysis_workers = int(os.getenv("ANALYSIS_WORKERS", "1"))
     spam_probability_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
@@ -235,7 +238,7 @@ def load_app_config() -> AppConfig:
     logger.info(
         "Configuration loaded: model=%s context=%s tokens brand_corrections=%d "
         "managers=%d whisper=%s(%s/%s) limit=%d reanalyze=%s retranscribe=%s "
-        "translate_uk=%s detected_ctx=%s keep_alive=%s think=%s",
+        "translate_uk=%s report_snapshots=%s detected_ctx=%s keep_alive=%s think=%s",
         OLLAMA_MODEL,
         f"{context_window:,}",
         len(brand_corrections),
@@ -245,6 +248,7 @@ def load_app_config() -> AppConfig:
         force_reanalyze,
         force_retranscribe,
         force_translate_uk,
+        generate_report_snapshots,
         f"{detected_context_window:,}",
         OLLAMA_KEEP_ALIVE,
         OLLAMA_THINK,
@@ -278,6 +282,7 @@ def load_app_config() -> AppConfig:
         force_reanalyze=force_reanalyze,
         force_retranscribe=force_retranscribe,
         force_translate_uk=force_translate_uk,
+        generate_report_snapshots=generate_report_snapshots,
         max_segments_translate=MAX_SEGMENTS_TRANSLATE,
         max_chars_translate=MAX_CHARS_TRANSLATE,
         max_chars_analyze=MAX_CHARS_ANALYZE,

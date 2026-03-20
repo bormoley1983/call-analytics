@@ -1,0 +1,22 @@
+- keyword_id: delivery
+  label: Delivery
+  category: logistics
+  terms:
+    - delivery
+    - order
+  match_fields:
+    - summary
+    - key_questions
+    - objections
+  is_active: true
+
+- keyword_id: refund
+  label: Refund
+  category: payments
+  terms:
+    - refund
+    - return
+  match_fields:
+    - summary
+    - key_questions
+  is_active: true

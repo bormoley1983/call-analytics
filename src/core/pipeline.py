@@ -81,7 +81,11 @@ class Pipeline:
             )
 
         per_call = self.run_analysis_phase(files_metadata)
-        self.generate_reports(per_call)
+        self.sync_to_postgres(per_call)
+        if self.config.generate_report_snapshots:
+            self.generate_reports(per_call)
+        else:
+            logger.info("Snapshot report generation is disabled; skipping report artifacts.")
         logger.info("Processing complete in %.2fs.", time.perf_counter() - started_at)
 
     def _build_meta(self, src: Path) -> Dict[str, Any]:
@@ -407,8 +411,6 @@ class Pipeline:
             self.config.out / "report.json",
             self.config.out / "report_by_manager.json",
         )
-        if os.getenv("POSTGRES_DSN"):
-            self.sync_to_postgres(per_call)
 
 
     def sync_to_postgres(self, per_call: List[Dict[str, Any]]) -> None:

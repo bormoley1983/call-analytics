@@ -36,6 +36,40 @@ CREATE TABLE IF NOT EXISTS analyses (
     created_at      TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS keywords (
+    keyword_id    TEXT PRIMARY KEY,
+    label         TEXT NOT NULL,
+    category      TEXT NOT NULL DEFAULT 'general',
+    match_fields  JSONB NOT NULL DEFAULT '["summary","key_questions","objections"]'::jsonb,
+    is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS keyword_aliases (
+    keyword_id    TEXT NOT NULL REFERENCES keywords(keyword_id) ON DELETE CASCADE,
+    phrase        TEXT NOT NULL,
+    created_at    TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (keyword_id, phrase)
+);
+
+CREATE TABLE IF NOT EXISTS call_keywords (
+    call_id          TEXT NOT NULL REFERENCES analyses(call_id) ON DELETE CASCADE,
+    keyword_id       TEXT NOT NULL REFERENCES keywords(keyword_id) ON DELETE CASCADE,
+    match_count      INTEGER NOT NULL DEFAULT 0,
+    matched_fields   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    matched_terms    JSONB NOT NULL DEFAULT '[]'::jsonb,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (call_id, keyword_id)
+);
+
+CREATE TABLE IF NOT EXISTS keyword_materialization_state (
+    state_key            TEXT PRIMARY KEY,
+    last_materialized_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    processed_calls      INTEGER NOT NULL DEFAULT 0,
+    matched_calls        INTEGER NOT NULL DEFAULT 0,
+    stored_rows          INTEGER NOT NULL DEFAULT 0
+);
+
 ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS pipeline_stage TEXT;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS direction TEXT;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS manager_id TEXT;
@@ -53,6 +87,27 @@ ALTER TABLE analyses ADD COLUMN IF NOT EXISTS dst_number TEXT;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS key_questions JSONB;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS objections JSONB;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS analysis_error TEXT;
+ALTER TABLE keywords ADD COLUMN IF NOT EXISTS category TEXT;
+ALTER TABLE keywords ADD COLUMN IF NOT EXISTS match_fields JSONB;
+ALTER TABLE keywords ADD COLUMN IF NOT EXISTS is_active BOOLEAN;
+ALTER TABLE call_keywords ADD COLUMN IF NOT EXISTS match_count INTEGER;
+ALTER TABLE call_keywords ADD COLUMN IF NOT EXISTS matched_fields JSONB;
+ALTER TABLE call_keywords ADD COLUMN IF NOT EXISTS matched_terms JSONB;
+ALTER TABLE call_keywords ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
+ALTER TABLE keyword_materialization_state ADD COLUMN IF NOT EXISTS last_materialized_at TIMESTAMPTZ;
+ALTER TABLE keyword_materialization_state ADD COLUMN IF NOT EXISTS processed_calls INTEGER;
+ALTER TABLE keyword_materialization_state ADD COLUMN IF NOT EXISTS matched_calls INTEGER;
+ALTER TABLE keyword_materialization_state ADD COLUMN IF NOT EXISTS stored_rows INTEGER;
+
+CREATE INDEX IF NOT EXISTS idx_analyses_call_date ON analyses(call_date);
+CREATE INDEX IF NOT EXISTS idx_analyses_manager_id ON analyses(manager_id);
+CREATE INDEX IF NOT EXISTS idx_analyses_role ON analyses(role);
+CREATE INDEX IF NOT EXISTS idx_analyses_intent ON analyses(intent);
+CREATE INDEX IF NOT EXISTS idx_analyses_outcome ON analyses(outcome);
+CREATE INDEX IF NOT EXISTS idx_analyses_direction ON analyses(direction);
+CREATE INDEX IF NOT EXISTS idx_call_keywords_keyword_id ON call_keywords(keyword_id);
+CREATE INDEX IF NOT EXISTS idx_call_keywords_call_id ON call_keywords(call_id);
+CREATE INDEX IF NOT EXISTS idx_call_keywords_keyword_call ON call_keywords(keyword_id, call_id);
 """
 
 

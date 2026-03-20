@@ -10,7 +10,14 @@ router = APIRouter(prefix="/managers", tags=["managers"])
 def _get_mapper():
     return load_app_config().manager_mapper
 
-@router.get("")
+@router.get(
+    "",
+    summary="List configured managers",
+    description=(
+        "Returns manager definitions from app configuration (management + sales), "
+        "including internal extensions and external lines."
+    ),
+)
 def list_managers():
     mapper = _get_mapper()
     managers = []

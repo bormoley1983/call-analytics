@@ -1,7 +1,8 @@
 import os
 import re
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Path, status
 
 from adapters.keywords_postgres import PostgresKeywordSource
 from adapters.reporting_postgres import PostgresReportingSource
@@ -16,6 +17,7 @@ from domain.keywords import KeywordDefinition
 router = APIRouter(prefix="/keywords", tags=["keywords"])
 
 _SAFE_ID = re.compile(r"^[\w\-]+$")
+_SAFE_ID_PATTERN = r"^[\w\-]+$"
 
 
 def _get_keyword_source():
@@ -49,7 +51,16 @@ def _get_postgres_reporting_source() -> PostgresReportingSource:
     return PostgresReportingSource(dsn)
 
 
-@router.get("")
+@router.get(
+    "",
+    summary="List keyword catalog",
+    description=(
+        "Returns keyword definitions used for reporting.\n\n"
+        "Read source is selected automatically:\n"
+        "- Postgres when `POSTGRES_DSN` is configured\n"
+        "- YAML file otherwise"
+    ),
+)
 def keywords_catalog():
     source = _get_keyword_source()
     try:
@@ -58,7 +69,27 @@ def keywords_catalog():
         source.close()
 
 
-@router.post("/sync")
+@router.post(
+    "/sync",
+    summary="Sync YAML keywords to Postgres",
+    description=(
+        "Copies keyword definitions from YAML config into Postgres.\n\n"
+        "**Default**: `prune_missing=false` (existing Postgres-only rows are kept).\n\n"
+        "Use this before `POST /keywords/materialize` when report drill-down should use new definitions."
+    ),
+    responses={
+        400: {
+            "description": "Invalid sync source data.",
+            "content": {"application/json": {"example": {"detail": "Invalid keyword source data"}}},
+        },
+        405: {
+            "description": "Write operations require Postgres.",
+            "content": {
+                "application/json": {"example": {"detail": "Keyword catalog is read-only without POSTGRES_DSN"}}
+            },
+        },
+    },
+)
 def sync_keywords(req: KeywordSyncRequest):
     postgres_source = _get_writable_keyword_source()
     yaml_source = _get_yaml_keyword_source()
@@ -76,7 +107,22 @@ def sync_keywords(req: KeywordSyncRequest):
         postgres_source.close()
 
 
-@router.post("/materialize")
+@router.post(
+    "/materialize",
+    summary="Materialize keyword matches",
+    description=(
+        "Builds/refreshes materialized keyword-to-call matches in Postgres.\n\n"
+        "Required for report drill-down endpoints under `/reports/keywords/{keyword_id}/...`."
+    ),
+    responses={
+        405: {
+            "description": "Materialization requires Postgres.",
+            "content": {
+                "application/json": {"example": {"detail": "Keyword materialization requires POSTGRES_DSN"}}
+            },
+        }
+    },
+)
 def materialize_keywords():
     reporting_source = _get_postgres_reporting_source()
     keyword_source = _get_writable_keyword_source()
@@ -91,8 +137,30 @@ def materialize_keywords():
         keyword_source.close()
 
 
-@router.get("/{keyword_id}")
-def keyword_detail(keyword_id: str):
+@router.get(
+    "/{keyword_id}",
+    summary="Get keyword by id",
+    responses={
+        400: {
+            "description": "Invalid keyword id format.",
+            "content": {"application/json": {"example": {"detail": "Invalid keyword_id"}}},
+        },
+        404: {
+            "description": "Keyword not found.",
+            "content": {"application/json": {"example": {"detail": "Keyword not found"}}},
+        },
+    },
+)
+def keyword_detail(
+    keyword_id: Annotated[
+        str,
+        Path(
+            description="Keyword identifier (letters, digits, underscore, dash).",
+            pattern=_SAFE_ID_PATTERN,
+            example="delivery",
+        ),
+    ]
+):
     if not _SAFE_ID.match(keyword_id):
         raise HTTPException(status_code=400, detail="Invalid keyword_id")
     source = _get_keyword_source()
@@ -105,7 +173,24 @@ def keyword_detail(keyword_id: str):
     raise HTTPException(status_code=404, detail="Keyword not found")
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    summary="Create keyword",
+    description="Creates a new keyword definition in Postgres.",
+    responses={
+        405: {
+            "description": "Create requires Postgres.",
+            "content": {
+                "application/json": {"example": {"detail": "Keyword catalog is read-only without POSTGRES_DSN"}}
+            },
+        },
+        409: {
+            "description": "Keyword already exists.",
+            "content": {"application/json": {"example": {"detail": "Keyword already exists"}}},
+        },
+    },
+)
 def create_keyword(req: KeywordUpsertRequest):
     source = _get_writable_keyword_source()
     try:
@@ -134,8 +219,40 @@ def create_keyword(req: KeywordUpsertRequest):
         source.close()
 
 
-@router.put("/{keyword_id}")
-def update_keyword(keyword_id: str, req: KeywordUpsertRequest):
+@router.put(
+    "/{keyword_id}",
+    summary="Update keyword",
+    description="Updates an existing keyword in Postgres. Path id must match body `keyword_id`.",
+    responses={
+        400: {
+            "description": "Invalid id or path/body mismatch.",
+            "content": {
+                "application/json": {"example": {"detail": "Path keyword_id must match request body"}}
+            },
+        },
+        404: {
+            "description": "Keyword not found.",
+            "content": {"application/json": {"example": {"detail": "Keyword not found"}}},
+        },
+        405: {
+            "description": "Update requires Postgres.",
+            "content": {
+                "application/json": {"example": {"detail": "Keyword catalog is read-only without POSTGRES_DSN"}}
+            },
+        },
+    },
+)
+def update_keyword(
+    keyword_id: Annotated[
+        str,
+        Path(
+            description="Keyword identifier (letters, digits, underscore, dash).",
+            pattern=_SAFE_ID_PATTERN,
+            example="delivery",
+        ),
+    ],
+    req: KeywordUpsertRequest,
+):
     if not _SAFE_ID.match(keyword_id):
         raise HTTPException(status_code=400, detail="Invalid keyword_id")
     if req.keyword_id != keyword_id:
@@ -167,8 +284,38 @@ def update_keyword(keyword_id: str, req: KeywordUpsertRequest):
         source.close()
 
 
-@router.delete("/{keyword_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_keyword(keyword_id: str):
+@router.delete(
+    "/{keyword_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete keyword",
+    description="Deletes a keyword definition from Postgres.",
+    responses={
+        400: {
+            "description": "Invalid keyword id format.",
+            "content": {"application/json": {"example": {"detail": "Invalid keyword_id"}}},
+        },
+        404: {
+            "description": "Keyword not found.",
+            "content": {"application/json": {"example": {"detail": "Keyword not found"}}},
+        },
+        405: {
+            "description": "Delete requires Postgres.",
+            "content": {
+                "application/json": {"example": {"detail": "Keyword catalog is read-only without POSTGRES_DSN"}}
+            },
+        },
+    },
+)
+def delete_keyword(
+    keyword_id: Annotated[
+        str,
+        Path(
+            description="Keyword identifier (letters, digits, underscore, dash).",
+            pattern=_SAFE_ID_PATTERN,
+            example="delivery",
+        ),
+    ]
+):
     if not _SAFE_ID.match(keyword_id):
         raise HTTPException(status_code=400, detail="Invalid keyword_id")
     source = _get_writable_keyword_source()

@@ -41,8 +41,16 @@ class ProcessRequest(BaseModel):
         description="Optional max number of calls to process. Use 0 for unlimited, or leave empty for the configured default.",
         examples=[0, 30],
     )
-    force_reanalyze: bool = False
-    force_retranscribe: bool = False
+    force_reanalyze: bool = Field(
+        default=False,
+        description="When true, run analysis again even if analysis artifacts already exist.",
+        examples=[False],
+    )
+    force_retranscribe: bool = Field(
+        default=False,
+        description="When true, run transcription again even if transcript artifacts already exist.",
+        examples=[False],
+    )
     generate_report_snapshots: Optional[bool] = Field(
         default=None,
         description="Optional override for writing snapshot report files during processing.",
@@ -67,14 +75,20 @@ class SyncRequest(BaseModel):
         return _normalize_days(value)
 
 class JobResponse(BaseModel):
-    job_id: str
-    type: str                           # "sync" | "process"
-    status: JobStatus
-    created_at: datetime
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
-    result: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
+    job_id: str = Field(description="Unique job identifier.", examples=["job_20260320_101530_a1b2"])
+    type: str = Field(
+        description="Job type, for example `sync`, `process`, or `sync-and-process`.",
+        examples=["process"],
+    )
+    status: JobStatus = Field(description="Current job execution status.")
+    created_at: datetime = Field(description="UTC timestamp when the job was created.")
+    started_at: Optional[datetime] = Field(default=None, description="UTC timestamp when execution started.")
+    finished_at: Optional[datetime] = Field(default=None, description="UTC timestamp when execution finished.")
+    result: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional result payload returned by the completed job.",
+    )
+    error: Optional[str] = Field(default=None, description="Error details when `status=failed`.")
 
 
 class ReportFiltersQuery(BaseModel):
@@ -88,13 +102,41 @@ class ReportFiltersQuery(BaseModel):
         description="Inclusive report end date in YYYY-MM-DD format.",
         examples=["2024-11-30"],
     )
-    manager_id: Optional[str] = None
-    role: Optional[str] = None
-    direction: Optional[str] = None
-    intent: Optional[str] = None
-    outcome: Optional[str] = None
-    spam_only: bool = False
-    effective_only: bool = False
+    manager_id: Optional[str] = Field(
+        default=None,
+        description="Filter by exact manager identifier.",
+        examples=["petrenko_aa"],
+    )
+    role: Optional[str] = Field(
+        default=None,
+        description="Filter by exact manager role.",
+        examples=["sales"],
+    )
+    direction: Optional[str] = Field(
+        default=None,
+        description="Filter by call direction.",
+        examples=["incoming"],
+    )
+    intent: Optional[str] = Field(
+        default=None,
+        description="Filter by exact call intent label from analysis.",
+        examples=["order_status"],
+    )
+    outcome: Optional[str] = Field(
+        default=None,
+        description="Filter by exact outcome label from analysis.",
+        examples=["success"],
+    )
+    spam_only: bool = Field(
+        default=False,
+        description="When true, include only calls with spam probability >= threshold (default threshold is 0.7).",
+        examples=[False],
+    )
+    effective_only: bool = Field(
+        default=False,
+        description="When true, include only calls marked as effective.",
+        examples=[False],
+    )
 
     @field_validator("manager_id", "role", "direction", "intent", "outcome", mode="before")
     @classmethod
@@ -163,8 +205,19 @@ class KeywordSyncRequest(BaseModel):
 
 
 class PaginationQuery(BaseModel):
-    limit: int = Field(default=50, ge=1, le=500)
-    offset: int = Field(default=0, ge=0)
+    limit: int = Field(
+        default=50,
+        ge=1,
+        le=500,
+        description="Page size for paginated report items.",
+        examples=[50],
+    )
+    offset: int = Field(
+        default=0,
+        ge=0,
+        description="Zero-based offset for paginated report items.",
+        examples=[0],
+    )
 
 
 class ManagerSortBy(str, Enum):
@@ -207,25 +260,40 @@ class CustomerSortBy(str, Enum):
 
 
 class ManagersSortQuery(BaseModel):
-    sort_by: ManagerSortBy = ManagerSortBy.total_calls
-    order: SortOrder = SortOrder.desc
+    sort_by: ManagerSortBy = Field(
+        default=ManagerSortBy.total_calls,
+        description="Manager report sorting field.",
+    )
+    order: SortOrder = Field(default=SortOrder.desc, description="Sort direction.")
 
 
 class KeywordsSortQuery(BaseModel):
-    sort_by: KeywordSortBy = KeywordSortBy.matched_calls
-    order: SortOrder = SortOrder.desc
+    sort_by: KeywordSortBy = Field(
+        default=KeywordSortBy.matched_calls,
+        description="Keyword report sorting field.",
+    )
+    order: SortOrder = Field(default=SortOrder.desc, description="Sort direction.")
 
 
 class KeywordCallsSortQuery(BaseModel):
-    sort_by: KeywordCallSortBy = KeywordCallSortBy.call_date
-    order: SortOrder = SortOrder.desc
+    sort_by: KeywordCallSortBy = Field(
+        default=KeywordCallSortBy.call_date,
+        description="Keyword calls report sorting field.",
+    )
+    order: SortOrder = Field(default=SortOrder.desc, description="Sort direction.")
 
 
 class KeywordManagersSortQuery(BaseModel):
-    sort_by: KeywordManagersSortBy = KeywordManagersSortBy.matched_calls
-    order: SortOrder = SortOrder.desc
+    sort_by: KeywordManagersSortBy = Field(
+        default=KeywordManagersSortBy.matched_calls,
+        description="Keyword managers report sorting field.",
+    )
+    order: SortOrder = Field(default=SortOrder.desc, description="Sort direction.")
 
 
 class CustomersSortQuery(BaseModel):
-    sort_by: CustomerSortBy = CustomerSortBy.total_calls
-    order: SortOrder = SortOrder.desc
+    sort_by: CustomerSortBy = Field(
+        default=CustomerSortBy.total_calls,
+        description="Customers report sorting field.",
+    )
+    order: SortOrder = Field(default=SortOrder.desc, description="Sort direction.")

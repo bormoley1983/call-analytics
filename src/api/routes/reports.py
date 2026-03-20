@@ -2,7 +2,7 @@ import os
 import re
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
 
 from adapters.keywords_postgres import PostgresKeywordSource
 from adapters.keywords_yaml import YamlKeywordSource
@@ -30,6 +30,12 @@ from domain.reporting import ReportFilters
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 _SAFE_ID = re.compile(r"^[\w\-]+$")
+_SAFE_ID_PATTERN = r"^[\w\-]+$"
+
+_SOURCE_AND_THRESHOLD_NOTE = (
+    "Data source is selected automatically: Postgres when `POSTGRES_DSN` is configured, "
+    "otherwise JSON/YAML files. Spam metrics use `SPAM_PROBABILITY_THRESHOLD` (default `0.7`)."
+)
 
 
 def _build_filters(query: ReportFiltersQuery) -> ReportFilters:
@@ -71,7 +77,22 @@ def _get_materialized_keyword_source() -> PostgresKeywordSource:
     return source
 
 
-@router.get("/overall")
+@router.get(
+    "/overall",
+    summary="Overall KPI report",
+    description=(
+        "Returns aggregate KPI counters for all calls that match filters.\n\n"
+        "**Defaults**\n"
+        "- When filters are omitted, the whole dataset is used.\n"
+        "- `spam_only=false`, `effective_only=false`.\n"
+        f"- {_SOURCE_AND_THRESHOLD_NOTE}\n\n"
+        "**Example**\n"
+        "`GET /reports/overall?date_from=2026-03-01&date_to=2026-03-31&spam_only=true`"
+    ),
+    responses={
+        200: {"description": "Overall report with totals, top intents/outcomes/questions, and active filter echo."},
+    },
+)
 def overall_report(query: Annotated[ReportFiltersQuery, Depends()]):
     filters = _build_filters(query)
     source = _get_reporting_source()
@@ -82,7 +103,22 @@ def overall_report(query: Annotated[ReportFiltersQuery, Depends()]):
         source.close()
 
 
-@router.get("/managers")
+@router.get(
+    "/managers",
+    summary="Managers performance report",
+    description=(
+        "Returns per-manager stats plus grouped views by role.\n\n"
+        "**Defaults**\n"
+        "- `sort_by=total_calls`\n"
+        "- `order=desc`\n"
+        f"- {_SOURCE_AND_THRESHOLD_NOTE}\n\n"
+        "**Example**\n"
+        "`GET /reports/managers?role=sales&sort_by=effective_calls&order=desc`"
+    ),
+    responses={
+        200: {"description": "Manager aggregates under `all_managers` and `by_role`."},
+    },
+)
 def managers_report(
     query: Annotated[ReportFiltersQuery, Depends()],
     sorting: Annotated[ManagersSortQuery, Depends()],
@@ -96,7 +132,22 @@ def managers_report(
         source.close()
 
 
-@router.get("/customers")
+@router.get(
+    "/customers",
+    summary="Customers report",
+    description=(
+        "Builds customer-centric follow-up aggregates by inferred customer phone.\n\n"
+        "**Defaults**\n"
+        "- `sort_by=total_calls`\n"
+        "- `order=desc`\n"
+        f"- {_SOURCE_AND_THRESHOLD_NOTE}\n\n"
+        "**Example**\n"
+        "`GET /reports/customers?manager_id=petrenko_aa&sort_by=last_call_date&order=desc`"
+    ),
+    responses={
+        200: {"description": "Customer aggregates under `all_customers` with first/last call dates and top metrics."},
+    },
+)
 def customers_report(
     query: Annotated[ReportFiltersQuery, Depends()],
     sorting: Annotated[CustomersSortQuery, Depends()],
@@ -110,8 +161,37 @@ def customers_report(
         source.close()
 
 
-@router.get("/customers/{customer_phone}")
-def customer_report(customer_phone: str, query: Annotated[ReportFiltersQuery, Depends()]):
+@router.get(
+    "/customers/{customer_phone}",
+    summary="Customer follow-up detail",
+    description=(
+        "Returns full follow-up history for a specific customer phone.\n\n"
+        "The path value is normalized by removing non-digits before lookup.\n\n"
+        "**Example**\n"
+        "`GET /reports/customers/%2B38%28067%29123-45-67?effective_only=true`"
+    ),
+    responses={
+        200: {"description": "Detailed customer report with aggregated stats and the matching call list."},
+        400: {
+            "description": "Invalid customer phone.",
+            "content": {"application/json": {"example": {"detail": "Invalid customer_phone"}}},
+        },
+        404: {
+            "description": "No customer found for the normalized phone within selected filters.",
+            "content": {"application/json": {"example": {"detail": "Customer report not found"}}},
+        },
+    },
+)
+def customer_report(
+    customer_phone: Annotated[
+        str,
+        Path(
+            description="Customer phone in any readable format. Non-digit characters are ignored.",
+            example="+38 (067) 123-45-67",
+        ),
+    ],
+    query: Annotated[ReportFiltersQuery, Depends()],
+):
     normalized_phone = re.sub(r"[^\d]", "", customer_phone)
     if not normalized_phone:
         raise HTTPException(status_code=400, detail="Invalid customer_phone")
@@ -129,8 +209,38 @@ def customer_report(customer_phone: str, query: Annotated[ReportFiltersQuery, De
     return data
 
 
-@router.get("/manager/{manager_id}")
-def manager_report(manager_id: str, query: Annotated[ReportFiltersQuery, Depends()]):
+@router.get(
+    "/manager/{manager_id}",
+    summary="Single manager report",
+    description=(
+        "Returns one manager aggregate record.\n\n"
+        "The path `manager_id` always takes precedence over any `manager_id` query value.\n\n"
+        "**Example**\n"
+        "`GET /reports/manager/petrenko_aa?date_from=2026-03-01&date_to=2026-03-31`"
+    ),
+    responses={
+        200: {"description": "Single manager aggregate payload."},
+        400: {
+            "description": "Invalid manager id format.",
+            "content": {"application/json": {"example": {"detail": "Invalid manager_id"}}},
+        },
+        404: {
+            "description": "Manager is not present in filtered results.",
+            "content": {"application/json": {"example": {"detail": "Manager report not found"}}},
+        },
+    },
+)
+def manager_report(
+    manager_id: Annotated[
+        str,
+        Path(
+            description="Manager identifier (letters, digits, underscore, dash).",
+            pattern=_SAFE_ID_PATTERN,
+            example="petrenko_aa",
+        ),
+    ],
+    query: Annotated[ReportFiltersQuery, Depends()],
+):
     if not _SAFE_ID.match(manager_id):
         raise HTTPException(status_code=400, detail="Invalid manager_id")
 
@@ -159,7 +269,24 @@ def manager_report(manager_id: str, query: Annotated[ReportFiltersQuery, Depends
     raise HTTPException(status_code=404, detail="Manager report not found")
 
 
-@router.get("/keywords")
+@router.get(
+    "/keywords",
+    summary="Keywords aggregate report",
+    description=(
+        "Returns keyword-level match statistics.\n\n"
+        "When keyword matches are materialized in Postgres, this endpoint uses materialized data; "
+        "otherwise it computes metrics dynamically.\n\n"
+        "**Defaults**\n"
+        "- `sort_by=matched_calls`\n"
+        "- `order=desc`\n"
+        f"- {_SOURCE_AND_THRESHOLD_NOTE}\n\n"
+        "**Example**\n"
+        "`GET /reports/keywords?intent=order_status&sort_by=total_matches&order=desc`"
+    ),
+    responses={
+        200: {"description": "Keyword aggregates with match counters and coverage metadata."},
+    },
+)
 def keywords_report(
     query: Annotated[ReportFiltersQuery, Depends()],
     sorting: Annotated[KeywordsSortQuery, Depends()],
@@ -193,8 +320,38 @@ def keywords_report(
         keyword_source.close()
 
 
-@router.get("/keywords/{keyword_id}")
-def keyword_detail_report(keyword_id: str, query: Annotated[ReportFiltersQuery, Depends()]):
+@router.get(
+    "/keywords/{keyword_id}",
+    summary="Single keyword aggregate",
+    description=(
+        "Returns aggregate statistics for one keyword id.\n\n"
+        "Works with both materialized and dynamic keyword reporting modes.\n\n"
+        "**Example**\n"
+        "`GET /reports/keywords/delivery?date_from=2026-03-01`"
+    ),
+    responses={
+        200: {"description": "Single keyword aggregate payload."},
+        400: {
+            "description": "Invalid keyword id format.",
+            "content": {"application/json": {"example": {"detail": "Invalid keyword_id"}}},
+        },
+        404: {
+            "description": "Keyword is not present in filtered results.",
+            "content": {"application/json": {"example": {"detail": "Keyword report not found"}}},
+        },
+    },
+)
+def keyword_detail_report(
+    keyword_id: Annotated[
+        str,
+        Path(
+            description="Keyword identifier (letters, digits, underscore, dash).",
+            pattern=_SAFE_ID_PATTERN,
+            example="delivery",
+        ),
+    ],
+    query: Annotated[ReportFiltersQuery, Depends()],
+):
     if not _SAFE_ID.match(keyword_id):
         raise HTTPException(status_code=400, detail="Invalid keyword_id")
 
@@ -222,9 +379,53 @@ def keyword_detail_report(keyword_id: str, query: Annotated[ReportFiltersQuery, 
     raise HTTPException(status_code=404, detail="Keyword report not found")
 
 
-@router.get("/keywords/{keyword_id}/calls")
+@router.get(
+    "/keywords/{keyword_id}/calls",
+    summary="Keyword matched calls (paginated)",
+    description=(
+        "Returns paginated call list where the selected keyword was matched.\n\n"
+        "**Requirements**\n"
+        "- `POSTGRES_DSN` must be configured.\n"
+        "- Keyword matches must be materialized (`POST /keywords/materialize`).\n\n"
+        "**Defaults**\n"
+        "- `limit=50`, `offset=0`\n"
+        "- `sort_by=call_date`, `order=desc`\n\n"
+        "**Example**\n"
+        "`GET /reports/keywords/delivery/calls?limit=25&offset=0&sort_by=match_count&order=desc`"
+    ),
+    responses={
+        200: {"description": "Paginated matched calls and pagination metadata."},
+        400: {
+            "description": "Invalid keyword id format.",
+            "content": {"application/json": {"example": {"detail": "Invalid keyword_id"}}},
+        },
+        404: {
+            "description": "Keyword is not found in catalog.",
+            "content": {"application/json": {"example": {"detail": "Keyword report not found"}}},
+        },
+        405: {
+            "description": "Drill-down is unavailable without Postgres.",
+            "content": {
+                "application/json": {"example": {"detail": "Keyword drill-down requires POSTGRES_DSN"}}
+            },
+        },
+        409: {
+            "description": "Materialized keyword matches are not prepared yet.",
+            "content": {
+                "application/json": {"example": {"detail": "Keyword matches are not materialized yet"}}
+            },
+        },
+    },
+)
 def keyword_calls_report(
-    keyword_id: str,
+    keyword_id: Annotated[
+        str,
+        Path(
+            description="Keyword identifier (letters, digits, underscore, dash).",
+            pattern=_SAFE_ID_PATTERN,
+            example="delivery",
+        ),
+    ],
     query: Annotated[ReportFiltersQuery, Depends()],
     pagination: Annotated[PaginationQuery, Depends()],
     sorting: Annotated[KeywordCallsSortQuery, Depends()],
@@ -251,8 +452,52 @@ def keyword_calls_report(
         source.close()
 
 
-@router.get("/keywords/{keyword_id}/trend")
-def keyword_trend_report(keyword_id: str, query: Annotated[ReportFiltersQuery, Depends()]):
+@router.get(
+    "/keywords/{keyword_id}/trend",
+    summary="Keyword trend over time",
+    description=(
+        "Returns trend points for the selected keyword over dates in the filtered range.\n\n"
+        "**Requirements**\n"
+        "- `POSTGRES_DSN` must be configured.\n"
+        "- Keyword matches must be materialized (`POST /keywords/materialize`).\n\n"
+        "**Example**\n"
+        "`GET /reports/keywords/delivery/trend?date_from=2026-03-01&date_to=2026-03-20`"
+    ),
+    responses={
+        200: {"description": "Date-based trend series for one keyword."},
+        400: {
+            "description": "Invalid keyword id format.",
+            "content": {"application/json": {"example": {"detail": "Invalid keyword_id"}}},
+        },
+        404: {
+            "description": "Keyword is not found in catalog.",
+            "content": {"application/json": {"example": {"detail": "Keyword report not found"}}},
+        },
+        405: {
+            "description": "Drill-down is unavailable without Postgres.",
+            "content": {
+                "application/json": {"example": {"detail": "Keyword drill-down requires POSTGRES_DSN"}}
+            },
+        },
+        409: {
+            "description": "Materialized keyword matches are not prepared yet.",
+            "content": {
+                "application/json": {"example": {"detail": "Keyword matches are not materialized yet"}}
+            },
+        },
+    },
+)
+def keyword_trend_report(
+    keyword_id: Annotated[
+        str,
+        Path(
+            description="Keyword identifier (letters, digits, underscore, dash).",
+            pattern=_SAFE_ID_PATTERN,
+            example="delivery",
+        ),
+    ],
+    query: Annotated[ReportFiltersQuery, Depends()],
+):
     if not _SAFE_ID.match(keyword_id):
         raise HTTPException(status_code=400, detail="Invalid keyword_id")
     filters = _build_filters(query)
@@ -267,9 +512,53 @@ def keyword_trend_report(keyword_id: str, query: Annotated[ReportFiltersQuery, D
         source.close()
 
 
-@router.get("/keywords/{keyword_id}/managers")
+@router.get(
+    "/keywords/{keyword_id}/managers",
+    summary="Keyword manager distribution",
+    description=(
+        "Returns manager-level breakdown for one keyword.\n\n"
+        "**Requirements**\n"
+        "- `POSTGRES_DSN` must be configured.\n"
+        "- Keyword matches must be materialized (`POST /keywords/materialize`).\n\n"
+        "**Defaults**\n"
+        "- `sort_by=matched_calls`\n"
+        "- `order=desc`\n\n"
+        "**Example**\n"
+        "`GET /reports/keywords/delivery/managers?sort_by=total_matches&order=desc`"
+    ),
+    responses={
+        200: {"description": "Manager-level aggregates for one keyword."},
+        400: {
+            "description": "Invalid keyword id format.",
+            "content": {"application/json": {"example": {"detail": "Invalid keyword_id"}}},
+        },
+        404: {
+            "description": "Keyword is not found in catalog.",
+            "content": {"application/json": {"example": {"detail": "Keyword report not found"}}},
+        },
+        405: {
+            "description": "Drill-down is unavailable without Postgres.",
+            "content": {
+                "application/json": {"example": {"detail": "Keyword drill-down requires POSTGRES_DSN"}}
+            },
+        },
+        409: {
+            "description": "Materialized keyword matches are not prepared yet.",
+            "content": {
+                "application/json": {"example": {"detail": "Keyword matches are not materialized yet"}}
+            },
+        },
+    },
+)
 def keyword_managers_report(
-    keyword_id: str,
+    keyword_id: Annotated[
+        str,
+        Path(
+            description="Keyword identifier (letters, digits, underscore, dash).",
+            pattern=_SAFE_ID_PATTERN,
+            example="delivery",
+        ),
+    ],
     query: Annotated[ReportFiltersQuery, Depends()],
     sorting: Annotated[KeywordManagersSortQuery, Depends()],
 ):

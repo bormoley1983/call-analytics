@@ -9,6 +9,7 @@ from adapters.keywords_yaml import YamlKeywordSource
 from adapters.reporting_json import JsonReportingSource
 from adapters.reporting_postgres import PostgresReportingSource
 from api.schemas import (
+    CustomersSortQuery,
     KeywordCallsSortQuery,
     KeywordManagersSortQuery,
     KeywordsSortQuery,
@@ -17,7 +18,12 @@ from api.schemas import (
     ReportFiltersQuery,
 )
 from core.keywords_service import build_keywords_report
-from core.reporting_service import build_managers_report, build_overall_report
+from core.reporting_service import (
+    build_customer_followup_report,
+    build_customers_report,
+    build_managers_report,
+    build_overall_report,
+)
 from domain.config import ANALYSIS, KEYWORDS_CONFIG
 from domain.reporting import ReportFilters
 
@@ -88,6 +94,39 @@ def managers_report(
         return build_managers_report(source, filters, spam_threshold, sorting.sort_by.value, sorting.order.value)
     finally:
         source.close()
+
+
+@router.get("/customers")
+def customers_report(
+    query: Annotated[ReportFiltersQuery, Depends()],
+    sorting: Annotated[CustomersSortQuery, Depends()],
+):
+    filters = _build_filters(query)
+    source = _get_reporting_source()
+    spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
+    try:
+        return build_customers_report(source, filters, spam_threshold, sorting.sort_by.value, sorting.order.value)
+    finally:
+        source.close()
+
+
+@router.get("/customers/{customer_phone}")
+def customer_report(customer_phone: str, query: Annotated[ReportFiltersQuery, Depends()]):
+    normalized_phone = re.sub(r"[^\d]", "", customer_phone)
+    if not normalized_phone:
+        raise HTTPException(status_code=400, detail="Invalid customer_phone")
+
+    filters = _build_filters(query)
+    source = _get_reporting_source()
+    spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
+    try:
+        data = build_customer_followup_report(source, filters, spam_threshold, normalized_phone)
+    finally:
+        source.close()
+
+    if data is None:
+        raise HTTPException(status_code=404, detail="Customer report not found")
+    return data
 
 
 @router.get("/manager/{manager_id}")

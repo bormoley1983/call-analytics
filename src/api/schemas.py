@@ -196,6 +196,16 @@ class KeywordManagersSortBy(str, Enum):
     total_matches = "total_matches"
 
 
+class CustomerSortBy(str, Enum):
+    customer_phone = "customer_phone"
+    total_calls = "total_calls"
+    spam_calls = "spam_calls"
+    effective_calls = "effective_calls"
+    total_duration_seconds = "total_duration_seconds"
+    first_call_date = "first_call_date"
+    last_call_date = "last_call_date"
+
+
 class ManagersSortQuery(BaseModel):
     sort_by: ManagerSortBy = ManagerSortBy.total_calls
     order: SortOrder = SortOrder.desc
@@ -213,4 +223,9 @@ class KeywordCallsSortQuery(BaseModel):
 
 class KeywordManagersSortQuery(BaseModel):
     sort_by: KeywordManagersSortBy = KeywordManagersSortBy.matched_calls
+    order: SortOrder = SortOrder.desc
+
+
+class CustomersSortQuery(BaseModel):
+    sort_by: CustomerSortBy = CustomerSortBy.total_calls
     order: SortOrder = SortOrder.desc

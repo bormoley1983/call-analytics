@@ -19,6 +19,8 @@ class ReportCallRecord:
     summary: str
     audio_seconds: float
     call_date: str
+    src_number: str = ""
+    dst_number: str = ""
     key_questions: list[str] = field(default_factory=list)
     objections: list[str] = field(default_factory=list)
 

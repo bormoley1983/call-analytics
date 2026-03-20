@@ -61,6 +61,8 @@ class PostgresReportingSource:
                 summary,
                 audio_seconds,
                 call_date,
+                src_number,
+                dst_number,
                 key_questions,
                 objections
             FROM analyses
@@ -84,8 +86,10 @@ class PostgresReportingSource:
                     summary=row[9] or "",
                     audio_seconds=float(row[10] or 0.0),
                     call_date=row[11] or "",
-                    key_questions=list(row[12] or []),
-                    objections=list(row[13] or []),
+                    src_number=row[12] or "",
+                    dst_number=row[13] or "",
+                    key_questions=list(row[14] or []),
+                    objections=list(row[15] or []),
                 )
 
     def close(self) -> None:

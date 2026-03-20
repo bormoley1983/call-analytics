@@ -47,6 +47,8 @@ def _record_from_analysis(call_id: str, data: dict[str, Any]) -> ReportCallRecor
         summary=str(data.get("summary") or ""),
         audio_seconds=audio_seconds,
         call_date=str(call_meta.get("date") or ""),
+        src_number=str(call_meta.get("src_number") or ""),
+        dst_number=str(call_meta.get("dst_number") or ""),
         key_questions=_as_str_list(data.get("key_questions")),
         objections=_as_str_list(data.get("objections")),
     )

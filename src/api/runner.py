@@ -19,6 +19,7 @@ from core.keywords_ai_runtime import (
     auto_keyword_ai_analysis_enabled as _auto_keyword_ai_analysis_enabled_impl,
     run_keyword_ai_analysis_once as _run_keyword_ai_analysis_once_impl,
 )
+from core.keywords_materialize import materialize_call_keywords
 from core.keywords_refresh import refresh_keywords_data
 from core.pipeline import Pipeline
 from domain.config import CALLS_RAW, KEYWORDS_CONFIG, load_app_config
@@ -139,7 +140,28 @@ def _run_keyword_refresh_once(prune_missing: bool = False) -> dict | None:
 
 
 def _run_keyword_ai_analysis_once(trigger: str) -> dict | None:
-    return _run_keyword_ai_analysis_once_impl(trigger)
+    return _run_keyword_ai_analysis_once_impl(trigger, skip_if_empty=True)
+
+
+def _run_keyword_materialization_once() -> dict | None:
+    dsn = os.getenv("POSTGRES_DSN")
+    if not dsn:
+        logger.info("Skipping keyword materialization because POSTGRES_DSN is not configured")
+        return None
+
+    logger.info("Refreshing keyword matches after processing using existing Postgres keyword catalog")
+    keyword_source = PostgresKeywordSource(dsn)
+    reporting_source = PostgresReportingSource(dsn)
+    try:
+        return materialize_call_keywords(
+            reporting_source=reporting_source,
+            keyword_source=keyword_source,
+            keyword_store=keyword_source,
+            state_store=keyword_source,
+        )
+    finally:
+        reporting_source.close()
+        keyword_source.close()
 
 
 def _run_process_once(req: ProcessRequest) -> dict:
@@ -167,14 +189,36 @@ def _run_process_once(req: ProcessRequest) -> dict:
             )
             pipeline.run()
             result: dict[str, Any] = {"ok": True}
+            keywords_refresh: dict[str, Any] | None = None
             try:
                 keywords_refresh = _run_keyword_refresh_once()
+            except FileNotFoundError as exc:
+                logger.warning(
+                    "Skipping keyword refresh after processing because keyword config is missing: %s",
+                    exc,
+                )
+                try:
+                    materialize_result = _run_keyword_materialization_once()
+                except Exception as fallback_exc:
+                    logger.exception(
+                        "Keyword materialization fallback failed after missing keyword config"
+                    )
+                    result["keywords_refresh_error"] = str(fallback_exc)
+                else:
+                    if materialize_result is not None:
+                        keywords_refresh = {
+                            "sync": {
+                                "skipped": True,
+                                "reason": "keyword_config_missing",
+                                "detail": str(exc),
+                            },
+                            "materialize": materialize_result,
+                        }
             except Exception as exc:
                 logger.exception("Keyword refresh failed after processing")
                 result["keywords_refresh_error"] = str(exc)
-            else:
-                if keywords_refresh is not None:
-                    result["keywords_refresh"] = keywords_refresh
+            if keywords_refresh is not None:
+                result["keywords_refresh"] = keywords_refresh
             try:
                 keyword_ai_analysis = _run_keyword_ai_analysis_once(trigger="process")
             except Exception as exc:

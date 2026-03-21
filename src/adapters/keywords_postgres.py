@@ -3,9 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterable
 
-import psycopg2
-
-from adapters.storage_postgres import DDL, _ensure_utf8_client_encoding, _jsonb
+from adapters.postgres_single_connection import SingleConnectionPostgresAdapter
+from adapters.storage_postgres import DDL, _jsonb
 from domain.keywords import DEFAULT_MATCH_FIELDS, KeywordDefinition
 from domain.reporting import ReportFilters
 
@@ -14,23 +13,15 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-class PostgresKeywordSource:
+class PostgresKeywordSource(SingleConnectionPostgresAdapter):
     source_name = "postgres"
 
-    def __init__(self, dsn: str):
-        self.dsn = dsn
-        self._conn = None
-
-    def _getconn(self):
-        if self._conn is None or self._conn.closed:
-            self._conn = _ensure_utf8_client_encoding(psycopg2.connect(self.dsn))
-            with self._conn.cursor() as cur:
-                cur.execute(DDL)
-            self._conn.commit()
-        return self._conn
+    def _initialize_connection(self, conn) -> None:
+        with conn.cursor() as cur:
+            cur.execute(DDL)
+        conn.commit()
 
     def list_keywords(self) -> Iterable[KeywordDefinition]:
-        conn = self._getconn()
         query = """
             SELECT
                 k.keyword_id,
@@ -50,9 +41,12 @@ class PostgresKeywordSource:
             FROM keywords k
             ORDER BY k.category, k.label, k.keyword_id
         """
-        with conn.cursor() as cur:
-            cur.execute(query)
-            rows = cur.fetchall()
+        def _list(conn):
+            with conn.cursor() as cur:
+                cur.execute(query)
+                return cur.fetchall()
+
+        rows = self._run_read(_list)
 
         return [
             KeywordDefinition(
@@ -67,7 +61,6 @@ class PostgresKeywordSource:
         ]
 
     def get_keyword(self, keyword_id: str) -> KeywordDefinition | None:
-        conn = self._getconn()
         query = """
             SELECT
                 k.keyword_id,
@@ -87,9 +80,12 @@ class PostgresKeywordSource:
             FROM keywords k
             WHERE k.keyword_id = %s
         """
-        with conn.cursor() as cur:
-            cur.execute(query, (keyword_id,))
-            row = cur.fetchone()
+        def _get(conn):
+            with conn.cursor() as cur:
+                cur.execute(query, (keyword_id,))
+                return cur.fetchone()
+
+        row = self._run_read(_get)
         if row is None:
             return None
         return KeywordDefinition(
@@ -102,8 +98,7 @@ class PostgresKeywordSource:
         )
 
     def upsert_keyword(self, keyword: KeywordDefinition) -> KeywordDefinition:
-        conn = self._getconn()
-        try:
+        def _upsert(conn):
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -133,29 +128,22 @@ class PostgresKeywordSource:
                         """,
                         (keyword.keyword_id, term),
                     )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+
+        self._run_retryable_write(_upsert)
         created = self.get_keyword(keyword.keyword_id)
         assert created is not None
         return created
 
     def delete_keyword(self, keyword_id: str) -> bool:
-        conn = self._getconn()
-        try:
+        def _delete(conn):
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM keywords WHERE keyword_id = %s", (keyword_id,))
-                deleted = cur.rowcount > 0
-            conn.commit()
-            return deleted
-        except Exception:
-            conn.rollback()
-            raise
+                return cur.rowcount > 0
+
+        return self._run_write(_delete)
 
     def replace_call_keyword_matches(self, call_id: str, rows: list[dict]) -> None:
-        conn = self._getconn()
-        try:
+        def _replace(conn):
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM call_keywords WHERE call_id = %s", (call_id,))
                 for row in rows:
@@ -173,23 +161,22 @@ class PostgresKeywordSource:
                             _jsonb(row.get("matched_terms") or []),
                         ),
                     )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+
+        self._run_retryable_write(_replace)
 
     def is_materialized(self) -> bool:
-        conn = self._getconn()
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM keyword_materialization_state WHERE state_key = %s",
-                ("default",),
-            )
-            return cur.fetchone() is not None
+        def _is_materialized(conn):
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM keyword_materialization_state WHERE state_key = %s",
+                    ("default",),
+                )
+                return cur.fetchone() is not None
+
+        return self._run_read(_is_materialized)
 
     def mark_materialization_completed(self, processed_calls: int, matched_calls: int, stored_rows: int) -> None:
-        conn = self._getconn()
-        try:
+        def _mark(conn):
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -204,10 +191,8 @@ class PostgresKeywordSource:
                     """,
                     ("default", processed_calls, matched_calls, stored_rows),
                 )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+
+        self._run_retryable_write(_mark)
 
     def build_materialized_keywords_report(
         self,
@@ -216,7 +201,6 @@ class PostgresKeywordSource:
         sort_by: str = "matched_calls",
         order: str = "desc",
     ) -> dict:
-        conn = self._getconn()
         clauses = ["1=1"]
         params: list[object] = []
 
@@ -275,29 +259,32 @@ class PostgresKeywordSource:
         """
 
         buckets: dict[str, dict] = {}
-        with conn.cursor() as cur:
-            cur.execute(query, params)
-            for row in cur.fetchall():
-                bucket = buckets.setdefault(
-                    row[0],
-                    {
-                        "keyword_id": row[0],
-                        "label": row[1],
-                        "category": row[2] or "general",
-                        "match_fields": list(row[3] or DEFAULT_MATCH_FIELDS),
-                        "terms": list(row[4] or []),
-                        "matched_calls": 0,
-                        "total_matches": 0,
-                        "matched_managers": set(),
-                        "intents": {},
-                        "outcomes": {},
-                    },
-                )
-                bucket["matched_calls"] += 1
-                bucket["total_matches"] += int(row[6] or 0)
-                bucket["matched_managers"].add(row[7] or "manager_unknown")
-                bucket["intents"][row[8] or "інше"] = bucket["intents"].get(row[8] or "інше", 0) + 1
-                bucket["outcomes"][row[9] or "невідомо"] = bucket["outcomes"].get(row[9] or "невідомо", 0) + 1
+        def _fetch_rows(conn):
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                return cur.fetchall()
+
+        for row in self._run_read(_fetch_rows):
+            bucket = buckets.setdefault(
+                row[0],
+                {
+                    "keyword_id": row[0],
+                    "label": row[1],
+                    "category": row[2] or "general",
+                    "match_fields": list(row[3] or DEFAULT_MATCH_FIELDS),
+                    "terms": list(row[4] or []),
+                    "matched_calls": 0,
+                    "total_matches": 0,
+                    "matched_managers": set(),
+                    "intents": {},
+                    "outcomes": {},
+                },
+            )
+            bucket["matched_calls"] += 1
+            bucket["total_matches"] += int(row[6] or 0)
+            bucket["matched_managers"].add(row[7] or "manager_unknown")
+            bucket["intents"][row[8] or "інше"] = bucket["intents"].get(row[8] or "інше", 0) + 1
+            bucket["outcomes"][row[9] or "невідомо"] = bucket["outcomes"].get(row[9] or "невідомо", 0) + 1
 
         all_keywords = []
         for keyword in [keyword for keyword in self.list_keywords() if keyword.is_active and keyword.terms]:
@@ -395,7 +382,6 @@ class PostgresKeywordSource:
         sort_by: str = "call_date",
         order: str = "desc",
     ) -> dict:
-        conn = self._getconn()
         clauses, params = self._analysis_filter_clauses(filters, spam_threshold)
         params = [keyword_id, *params]
         count_params = list(params)
@@ -439,11 +425,14 @@ class PostgresKeywordSource:
             ORDER BY {order_by} {order_dir} NULLS LAST, ck.call_id DESC
             LIMIT %s OFFSET %s
         """
-        with conn.cursor() as cur:
-            cur.execute(count_query, count_params)
-            total = int(cur.fetchone()[0])
-            cur.execute(data_query, params)
-            rows = cur.fetchall()
+        def _fetch(conn):
+            with conn.cursor() as cur:
+                cur.execute(count_query, count_params)
+                total = int(cur.fetchone()[0])
+                cur.execute(data_query, params)
+                return total, cur.fetchall()
+
+        total, rows = self._run_read(_fetch)
 
         calls = [
             {
@@ -477,7 +466,6 @@ class PostgresKeywordSource:
         }
 
     def build_keyword_trend_report(self, keyword_id: str, filters: ReportFilters, spam_threshold: float) -> dict:
-        conn = self._getconn()
         clauses, params = self._analysis_filter_clauses(filters, spam_threshold)
         params = [keyword_id, *params]
         query = f"""
@@ -491,9 +479,12 @@ class PostgresKeywordSource:
             GROUP BY a.call_date
             ORDER BY a.call_date
         """
-        with conn.cursor() as cur:
-            cur.execute(query, params)
-            rows = cur.fetchall()
+        def _fetch(conn):
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                return cur.fetchall()
+
+        rows = self._run_read(_fetch)
         return {
             "generated_at": _utc_now_iso(),
             "report_data_source": "postgres_materialized",
@@ -517,7 +508,6 @@ class PostgresKeywordSource:
         sort_by: str = "matched_calls",
         order: str = "desc",
     ) -> dict:
-        conn = self._getconn()
         clauses, params = self._analysis_filter_clauses(filters, spam_threshold)
         params = [keyword_id, *params]
         order_by_map = {
@@ -540,9 +530,12 @@ class PostgresKeywordSource:
             GROUP BY a.manager_id, a.manager_name, a.role
             ORDER BY {order_by} {order_dir}, total_matches DESC, a.manager_name, a.manager_id
         """
-        with conn.cursor() as cur:
-            cur.execute(query, params)
-            rows = cur.fetchall()
+        def _fetch(conn):
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                return cur.fetchall()
+
+        rows = self._run_read(_fetch)
         return {
             "generated_at": _utc_now_iso(),
             "report_data_source": "postgres_materialized",
@@ -559,8 +552,3 @@ class PostgresKeywordSource:
                 for row in rows
             ],
         }
-
-    def close(self) -> None:
-        if self._conn is not None and not self._conn.closed:
-            self._conn.close()
-        self._conn = None

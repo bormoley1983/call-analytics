@@ -2,26 +2,17 @@ from __future__ import annotations
 
 from typing import Iterable
 
-import psycopg2
-
-from adapters.storage_postgres import _ensure_utf8_client_encoding
+from adapters.postgres_single_connection import (
+    RETRYABLE_CONNECTION_ERRORS,
+    SingleConnectionPostgresAdapter,
+)
 from domain.reporting import ReportCallRecord, ReportFilters
 
 
-class PostgresReportingSource:
+class PostgresReportingSource(SingleConnectionPostgresAdapter):
     source_name = "postgres"
 
-    def __init__(self, dsn: str):
-        self.dsn = dsn
-        self._conn = None
-
-    def _getconn(self):
-        if self._conn is None or self._conn.closed:
-            self._conn = _ensure_utf8_client_encoding(psycopg2.connect(self.dsn))
-        return self._conn
-
     def iter_call_records(self, filters: ReportFilters) -> Iterable[ReportCallRecord]:
-        conn = self._getconn()
         clauses = ["1=1"]
         params: list[object] = []
 
@@ -70,29 +61,38 @@ class PostgresReportingSource:
             ORDER BY call_date NULLS LAST, call_id
         """
 
-        with conn.cursor() as cur:
-            cur.execute(query, params)
-            for row in cur.fetchall():
-                yield ReportCallRecord(
-                    call_id=row[0],
-                    manager_id=row[1] or "manager_unknown",
-                    manager_name=row[2] or "Unknown/General",
-                    role=row[3] or "unknown",
-                    direction=row[4] or "unknown",
-                    spam_probability=float(row[5] or 0.0),
-                    effective_call=bool(row[6]),
-                    intent=row[7] or "інше",
-                    outcome=row[8] or "невідомо",
-                    summary=row[9] or "",
-                    audio_seconds=float(row[10] or 0.0),
-                    call_date=row[11] or "",
-                    src_number=row[12] or "",
-                    dst_number=row[13] or "",
-                    key_questions=list(row[14] or []),
-                    objections=list(row[15] or []),
-                )
-
-    def close(self) -> None:
-        if self._conn is not None and not self._conn.closed:
-            self._conn.close()
-        self._conn = None
+        rows_yielded = 0
+        for attempt in range(2):
+            try:
+                conn = self._getconn()
+                with conn.cursor() as cur:
+                    cur.execute(query, params)
+                    while True:
+                        rows = cur.fetchmany(1000)
+                        if not rows:
+                            return
+                        for row in rows:
+                            rows_yielded += 1
+                            yield ReportCallRecord(
+                                call_id=row[0],
+                                manager_id=row[1] or "manager_unknown",
+                                manager_name=row[2] or "Unknown/General",
+                                role=row[3] or "unknown",
+                                direction=row[4] or "unknown",
+                                spam_probability=float(row[5] or 0.0),
+                                effective_call=bool(row[6]),
+                                intent=row[7] or "інше",
+                                outcome=row[8] or "невідомо",
+                                summary=row[9] or "",
+                                audio_seconds=float(row[10] or 0.0),
+                                call_date=row[11] or "",
+                                src_number=row[12] or "",
+                                dst_number=row[13] or "",
+                                key_questions=list(row[14] or []),
+                                objections=list(row[15] or []),
+                            )
+                return
+            except RETRYABLE_CONNECTION_ERRORS:
+                self._close_conn()
+                if rows_yielded > 0 or attempt == 1:
+                    raise

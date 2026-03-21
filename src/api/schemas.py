@@ -207,12 +207,12 @@ class KeywordSyncRequest(BaseModel):
 class KeywordGenerationRequest(BaseModel):
     date_from: Optional[date] = Field(
         default=None,
-        description="Optional inclusive start date for candidate generation.",
+        description="Optional inclusive start date for candidate generation. Leave empty to scan across all available analyses.",
         examples=["2026-03-01"],
     )
     date_to: Optional[date] = Field(
         default=None,
-        description="Optional inclusive end date for candidate generation.",
+        description="Optional inclusive end date for candidate generation. Leave empty to scan across all available analyses.",
         examples=["2026-03-20"],
     )
     manager_id: Optional[str] = Field(
@@ -245,8 +245,8 @@ class KeywordGenerationRequest(BaseModel):
         description="When true, consider only spam calls under configured threshold logic.",
     )
     effective_only: bool = Field(
-        default=False,
-        description="When true, consider only effective calls.",
+        default=True,
+        description="When true, consider only effective calls. Enabled by default for cleaner bootstrap candidates.",
     )
     include_summary: bool = Field(
         default=True,

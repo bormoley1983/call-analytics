@@ -198,10 +198,103 @@ def test_run_process_once_keeps_success_when_keywords_refresh_fails(monkeypatch)
     assert result["keywords_refresh_error"] == "refresh failed"
 
 
+def test_run_process_once_skips_missing_keyword_yaml(monkeypatch):
+    monkeypatch.setenv("POSTGRES_DSN", "postgresql://example")
+    monkeypatch.delenv("AUTO_REFRESH_KEYWORDS", raising=False)
+
+    class FakeStorage:
+        def ensure_ready(self):
+            return None
+
+        def close(self):
+            return None
+
+    class FakePipeline:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr(runner, "load_app_config", lambda: SimpleNamespace(out=Path("."), norm=Path("."), trans=Path("."), analysis=Path(".")))
+    monkeypatch.setattr(runner, "PostgresStorage", lambda dsn: FakeStorage())
+    monkeypatch.setattr(runner, "Pipeline", FakePipeline)
+    monkeypatch.setattr(runner, "OllamaLlm", lambda config: object())
+    monkeypatch.setattr(runner, "FfmpegAudio", lambda: object())
+    monkeypatch.setattr(runner, "AsteriskPbx", lambda: object())
+    monkeypatch.setattr(runner, "_run_keyword_refresh_once", lambda prune_missing=False: (_ for _ in ()).throw(FileNotFoundError("Keyword config not found: /work/config/keywords.yaml")))
+    monkeypatch.setattr(runner, "_run_keyword_materialization_once", lambda: None)
+    monkeypatch.setattr(runner, "_run_keyword_ai_analysis_once", lambda trigger: None)
+
+    result = runner._run_process_once(
+        ProcessRequest(days=None, limit=1, force_reanalyze=False, force_retranscribe=False)
+    )
+
+    assert result["ok"] is True
+    assert "keywords_refresh" not in result
+    assert "keywords_refresh_error" not in result
+
+
+def test_run_process_once_materializes_existing_postgres_keywords_when_yaml_missing(monkeypatch):
+    monkeypatch.setenv("POSTGRES_DSN", "postgresql://example")
+    monkeypatch.delenv("AUTO_REFRESH_KEYWORDS", raising=False)
+
+    class FakeStorage:
+        def ensure_ready(self):
+            return None
+
+        def close(self):
+            return None
+
+    class FakePipeline:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr(runner, "load_app_config", lambda: SimpleNamespace(out=Path("."), norm=Path("."), trans=Path("."), analysis=Path(".")))
+    monkeypatch.setattr(runner, "PostgresStorage", lambda dsn: FakeStorage())
+    monkeypatch.setattr(runner, "Pipeline", FakePipeline)
+    monkeypatch.setattr(runner, "OllamaLlm", lambda config: object())
+    monkeypatch.setattr(runner, "FfmpegAudio", lambda: object())
+    monkeypatch.setattr(runner, "AsteriskPbx", lambda: object())
+    monkeypatch.setattr(runner, "_run_keyword_refresh_once", lambda prune_missing=False: (_ for _ in ()).throw(FileNotFoundError("Keyword config not found: /work/config/keywords.yaml")))
+    monkeypatch.setattr(
+        runner,
+        "_run_keyword_materialization_once",
+        lambda: {"processed_calls": 3, "matched_calls": 2, "stored_rows": 4, "active_keywords": 2},
+    )
+    monkeypatch.setattr(runner, "_run_keyword_ai_analysis_once", lambda trigger: None)
+
+    result = runner._run_process_once(
+        ProcessRequest(days=None, limit=1, force_reanalyze=False, force_retranscribe=False)
+    )
+
+    assert result["ok"] is True
+    assert result["keywords_refresh"]["sync"]["skipped"] is True
+    assert result["keywords_refresh"]["sync"]["reason"] == "keyword_config_missing"
+    assert result["keywords_refresh"]["materialize"]["active_keywords"] == 2
+
+
 def test_auto_keyword_ai_analysis_enabled_uses_analysis_env(monkeypatch):
     monkeypatch.setenv("AUTO_RUN_AI_KEYWORD_ANALYSIS", "0")
 
     assert runner._auto_keyword_ai_analysis_enabled() is False
+
+
+def test_run_keyword_ai_analysis_once_skips_empty_catalog(monkeypatch):
+    captured = {}
+
+    def _fake_impl(trigger, *, skip_if_empty=False):
+        captured["trigger"] = trigger
+        captured["skip_if_empty"] = skip_if_empty
+        return None
+
+    monkeypatch.setattr(runner, "_run_keyword_ai_analysis_once_impl", _fake_impl)
+
+    assert runner._run_keyword_ai_analysis_once("process") is None
+    assert captured == {"trigger": "process", "skip_if_empty": True}
 
 
 def test_run_sync_does_not_trigger_keyword_ai_analysis(monkeypatch):

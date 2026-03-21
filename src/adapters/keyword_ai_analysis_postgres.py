@@ -3,23 +3,26 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-import psycopg2
+from adapters.postgres_single_connection import SingleConnectionPostgresAdapter
+from adapters.storage_postgres import DDL, _jsonb
 
-from adapters.storage_postgres import DDL, _ensure_utf8_client_encoding, _jsonb
 
+class PostgresKeywordAiAnalysisStore(SingleConnectionPostgresAdapter):
+    def _initialize_connection(self, conn: Any) -> None:
+        with conn.cursor() as cur:
+            cur.execute(DDL)
+        conn.commit()
 
-class PostgresKeywordAiAnalysisStore:
-    def __init__(self, dsn: str):
-        self.dsn = dsn
-        self._conn = None
-
-    def _getconn(self):
-        if self._conn is None or self._conn.closed:
-            self._conn = _ensure_utf8_client_encoding(psycopg2.connect(self.dsn))
-            with self._conn.cursor() as cur:
-                cur.execute(DDL)
-            self._conn.commit()
-        return self._conn
+    def _load_existing_history(self, analysis_id: str) -> dict[str, Any] | None:
+        detail = self.get_analysis(analysis_id)
+        if detail is None:
+            return None
+        stored_items = sum(len(rows) for rows in (detail.get("items") or {}).values())
+        return {
+            "analysis_id": analysis_id,
+            "created_at": detail["created_at"],
+            "stored_items": stored_items,
+        }
 
     def save_analysis(
         self,
@@ -31,11 +34,10 @@ class PostgresKeywordAiAnalysisStore:
         reporting_source: str | None,
         ai_model: str | None,
     ) -> dict[str, Any]:
-        conn = self._getconn()
         analysis_id = str(uuid.uuid4())
         items = self._build_items(analysis_id=analysis_id, analysis_input=analysis_input, ai_analysis=ai_analysis)
 
-        try:
+        def _save(conn):
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -84,39 +86,41 @@ class PostgresKeywordAiAnalysisStore:
                             _jsonb(item["data"]),
                         ),
                     )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+            return {
+                "analysis_id": analysis_id,
+                "created_at": created_at.isoformat(),
+                "stored_items": len(items),
+            }
 
-        return {
-            "analysis_id": analysis_id,
-            "created_at": created_at.isoformat(),
-            "stored_items": len(items),
-        }
+        return self._run_retryable_write(
+            _save,
+            verify_after_retry=lambda: self._load_existing_history(analysis_id),
+        )
 
     def list_analyses(self, limit: int = 50) -> list[dict[str, Any]]:
-        conn = self._getconn()
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    analysis_id,
-                    keyword_source,
-                    reporting_source,
-                    ai_model,
-                    ai_summary,
-                    analyzed_keywords,
-                    total_candidates_before_limit,
-                    truncated,
-                    created_at
-                FROM keyword_ai_analyses
-                ORDER BY created_at DESC, analysis_id DESC
-                LIMIT %s
-                """,
-                (limit,),
-            )
-            rows = cur.fetchall()
+        def _list(conn):
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        analysis_id,
+                        keyword_source,
+                        reporting_source,
+                        ai_model,
+                        ai_summary,
+                        analyzed_keywords,
+                        total_candidates_before_limit,
+                        truncated,
+                        created_at
+                    FROM keyword_ai_analyses
+                    ORDER BY created_at DESC, analysis_id DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                return cur.fetchall()
+
+        rows = self._run_read(_list)
 
         return [
             {
@@ -134,42 +138,47 @@ class PostgresKeywordAiAnalysisStore:
         ]
 
     def get_analysis(self, analysis_id: str) -> dict[str, Any] | None:
-        conn = self._getconn()
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    analysis_id,
-                    keyword_source,
-                    reporting_source,
-                    ai_model,
-                    ai_summary,
-                    analyzed_keywords,
-                    total_candidates_before_limit,
-                    truncated,
-                    request_data,
-                    analysis_input,
-                    ai_analysis,
-                    created_at
-                FROM keyword_ai_analyses
-                WHERE analysis_id = %s
-                """,
-                (analysis_id,),
-            )
-            row = cur.fetchone()
-            if row is None:
-                return None
+        def _get(conn):
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        analysis_id,
+                        keyword_source,
+                        reporting_source,
+                        ai_model,
+                        ai_summary,
+                        analyzed_keywords,
+                        total_candidates_before_limit,
+                        truncated,
+                        request_data,
+                        analysis_input,
+                        ai_analysis,
+                        created_at
+                    FROM keyword_ai_analyses
+                    WHERE analysis_id = %s
+                    """,
+                    (analysis_id,),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    return None
 
-            cur.execute(
-                """
-                SELECT item_type, item_key, data, created_at
-                FROM keyword_ai_analysis_items
-                WHERE analysis_id = %s
-                ORDER BY item_type, item_key
-                """,
-                (analysis_id,),
-            )
-            item_rows = cur.fetchall()
+                cur.execute(
+                    """
+                    SELECT item_type, item_key, data, created_at
+                    FROM keyword_ai_analysis_items
+                    WHERE analysis_id = %s
+                    ORDER BY item_type, item_key
+                    """,
+                    (analysis_id,),
+                )
+                return row, cur.fetchall()
+
+        result = self._run_read(_get)
+        if result is None:
+            return None
+        row, item_rows = result
 
         items_by_type: dict[str, list[dict[str, Any]]] = {}
         for item_type, item_key, data, created_at in item_rows:
@@ -198,25 +207,22 @@ class PostgresKeywordAiAnalysisStore:
         }
 
     def get_latest_analysis(self) -> dict[str, Any] | None:
-        conn = self._getconn()
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT analysis_id
-                FROM keyword_ai_analyses
-                ORDER BY created_at DESC, analysis_id DESC
-                LIMIT 1
-                """
-            )
-            row = cur.fetchone()
+        def _get_latest(conn):
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT analysis_id
+                    FROM keyword_ai_analyses
+                    ORDER BY created_at DESC, analysis_id DESC
+                    LIMIT 1
+                    """
+                )
+                return cur.fetchone()
+
+        row = self._run_read(_get_latest)
         if row is None:
             return None
         return self.get_analysis(str(row[0]))
-
-    def close(self) -> None:
-        if self._conn is not None and not self._conn.closed:
-            self._conn.close()
-        self._conn = None
 
     def _build_items(
         self,

@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from api.routes import keywords_ai as keywords_ai_routes
 from api.schemas import KeywordCatalogAnalysisRequest
 from core.keywords_ai import prepare_keyword_catalog_analysis_input
+from core import keywords_ai_runtime
 from domain.keywords import KeywordDefinition
 
 
@@ -240,6 +241,41 @@ def test_keyword_catalog_analysis_history_routes(monkeypatch):
     assert analyses["analyses"][0]["analysis_id"] == "11111111-1111-1111-1111-111111111111"
     assert detail["analysis_id"] == "11111111-1111-1111-1111-111111111111"
     assert detail["ai_analysis"]["summary"] == "summary"
+
+
+def test_runtime_keyword_ai_analysis_skips_empty_catalog(monkeypatch):
+    class EmptyKeywordSource:
+        source_name = "postgres"
+
+        def list_keywords(self):
+            return []
+
+        def close(self):
+            return None
+
+    class FakeReportingSource:
+        source_name = "postgres"
+
+        def close(self):
+            return None
+
+    class FakeAnalysisStore:
+        def close(self):
+            return None
+
+    monkeypatch.setenv("POSTGRES_DSN", "postgresql://example")
+    monkeypatch.setattr(keywords_ai_runtime, "load_app_config", lambda: SimpleNamespace())
+    monkeypatch.setattr(keywords_ai_runtime, "OllamaLlm", lambda config: object())
+    monkeypatch.setattr(keywords_ai_runtime, "PostgresKeywordSource", lambda dsn: EmptyKeywordSource())
+    monkeypatch.setattr(keywords_ai_runtime, "PostgresReportingSource", lambda dsn: FakeReportingSource())
+    monkeypatch.setattr(keywords_ai_runtime, "PostgresKeywordAiAnalysisStore", lambda dsn: FakeAnalysisStore())
+    monkeypatch.setattr(
+        keywords_ai_runtime,
+        "run_keyword_catalog_analysis",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("analysis should be skipped")),
+    )
+
+    assert keywords_ai_runtime.run_keyword_ai_analysis_once("process", skip_if_empty=True) is None
 
 
 def test_keyword_catalog_analysis_fails_loudly_on_invalid_yaml(monkeypatch, tmp_path):

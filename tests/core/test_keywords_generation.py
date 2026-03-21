@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from api.schemas import KeywordGenerationRequest
 from core.keywords_generate import generate_keyword_candidates, publish_generated_keywords
 from domain.keywords import KeywordDefinition
 from domain.reporting import ReportCallRecord, ReportFilters
@@ -53,6 +54,14 @@ def _record(call_id: str, summary: str, key_questions: list[str] | None = None) 
         key_questions=key_questions or [],
         objections=[],
     )
+
+
+def test_keyword_generation_request_defaults_to_effective_only_without_dates():
+    req = KeywordGenerationRequest()
+
+    assert req.date_from is None
+    assert req.date_to is None
+    assert req.effective_only is True
 
 
 def test_generate_keyword_candidates_from_analysis_texts():

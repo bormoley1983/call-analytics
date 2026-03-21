@@ -268,11 +268,24 @@ def ollama_analyze_keyword_catalog(
     config: AppConfig,
     max_groups: int = 20,
 ) -> Dict[str, Any]:
+    started_at = time.perf_counter()
     prompt = KEYWORD_CATALOG_ANALYSIS_PROMPT_TEMPLATE.format(
         max_groups=max_groups,
         analysis_payload_json=json.dumps(analysis_payload, ensure_ascii=False, indent=2),
     )
+    logger.info(
+        "Sending keyword catalog analysis request to Ollama: keywords=%d customers=%d prompt_chars=%d timeout_s=%d",
+        len(analysis_payload.get("keywords", [])),
+        len(analysis_payload.get("customer_context", [])),
+        len(prompt),
+        config.ollama_timeout,
+    )
     raw = _ollama_generate(prompt, config, temperature=0.2, force_json=True)
+    logger.info(
+        "Received keyword catalog analysis response from Ollama: response_chars=%d elapsed_s=%.2f",
+        len(raw),
+        time.perf_counter() - started_at,
+    )
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:

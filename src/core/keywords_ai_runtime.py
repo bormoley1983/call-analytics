@@ -22,7 +22,15 @@ def auto_keyword_ai_analysis_enabled() -> bool:
     return os.getenv("AUTO_RUN_AI_KEYWORD_ANALYSIS", "1") != "0"
 
 
-def run_keyword_ai_analysis_once(trigger: str) -> dict[str, Any] | None:
+def _has_keywords_for_analysis(keyword_source: KeywordSource) -> bool:
+    return any(keyword.is_active and bool(keyword.terms) for keyword in keyword_source.list_keywords())
+
+
+def run_keyword_ai_analysis_once(
+    trigger: str,
+    *,
+    skip_if_empty: bool = False,
+) -> dict[str, Any] | None:
     if not auto_keyword_ai_analysis_enabled():
         logger.info("Skipping AI keyword analysis because AUTO_RUN_AI_KEYWORD_ANALYSIS=0")
         return None
@@ -45,6 +53,12 @@ def run_keyword_ai_analysis_once(trigger: str) -> dict[str, Any] | None:
         analysis_store = None
 
     try:
+        if skip_if_empty and not _has_keywords_for_analysis(keyword_source):
+            logger.info(
+                "Skipping AI keyword analysis after %s because the keyword catalog has no active keywords",
+                trigger,
+            )
+            return None
         return run_keyword_catalog_analysis(
             request_data={
                 "trigger": trigger,

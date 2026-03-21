@@ -56,6 +56,10 @@ def _build_filters(req: KeywordGenerationRequest) -> ReportFilters:
     description=(
         "Scans existing Postgres analyses (`summary`, `key_questions`, `objections`) and returns ranked "
         "candidate phrases for keyword catalog creation.\n\n"
+        "Default behavior is broad but quality-oriented:\n"
+        "- no date filters unless you provide them\n"
+        "- `effective_only=true` by default\n"
+        "- existing keyword terms are excluded by default\n\n"
         "This endpoint does not modify catalog data."
     ),
     responses={

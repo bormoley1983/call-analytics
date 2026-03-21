@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 from core.reporting_service import build_customers_report
 from core.keywords_service import build_keywords_report, list_keywords
 from domain.reporting import ReportFilters
+
+logger = logging.getLogger(__name__)
 
 
 def prepare_keyword_catalog_analysis_input(
@@ -18,13 +22,20 @@ def prepare_keyword_catalog_analysis_input(
     spam_threshold: float = 0.7,
     max_customers: int = 20,
 ) -> dict[str, Any]:
+    started_at = time.perf_counter()
     requested_ids = set(keyword_ids or [])
     catalog = list_keywords(keyword_source)
+    logger.info(
+        "Loaded keyword catalog for AI analysis: total_keywords=%d source=%s",
+        catalog["total_keywords"],
+        catalog["data_source"],
+    )
     stats_by_id: dict[str, dict[str, Any]] = {}
     customer_context: list[dict[str, Any]] = []
     reporting_source_name = None if reporting_source is None else reporting_source.source_name
 
     if include_match_stats and reporting_source is not None:
+        stats_started_at = time.perf_counter()
         report = build_keywords_report(
             reporting_source=reporting_source,
             keyword_source=keyword_source,
@@ -33,13 +44,25 @@ def prepare_keyword_catalog_analysis_input(
             sort_by="matched_calls",
             order="desc",
         )
+        logger.info(
+            "Collected keyword match stats for AI analysis: total_keywords=%d elapsed_s=%.2f",
+            report["total_keywords"],
+            time.perf_counter() - stats_started_at,
+        )
         stats_by_id = {item["keyword_id"]: item for item in report["keywords"]}
+
+        customers_started_at = time.perf_counter()
         customers_report = build_customers_report(
             source=reporting_source,
             filters=ReportFilters(),
             spam_threshold=spam_threshold,
             sort_by="total_calls",
             order="desc",
+        )
+        logger.info(
+            "Collected customer context for AI analysis: total_customers=%d elapsed_s=%.2f",
+            customers_report["total_customers"],
+            time.perf_counter() - customers_started_at,
         )
         customer_context = [
             {
@@ -91,7 +114,7 @@ def prepare_keyword_catalog_analysis_input(
     total_candidates = len(analysis_keywords)
     analysis_keywords = analysis_keywords[:max_keywords]
 
-    return {
+    result = {
         "keyword_source": catalog["data_source"],
         "reporting_source": reporting_source_name,
         "analyzed_keywords": len(analysis_keywords),
@@ -100,6 +123,15 @@ def prepare_keyword_catalog_analysis_input(
         "keywords": analysis_keywords,
         "customer_context": customer_context,
     }
+    logger.info(
+        "Prepared keyword AI analysis input payload: analyzed_keywords=%d total_candidates=%d truncated=%s customer_context=%d elapsed_s=%.2f",
+        result["analyzed_keywords"],
+        result["total_candidates_before_limit"],
+        result["truncated"],
+        len(result["customer_context"]),
+        time.perf_counter() - started_at,
+    )
+    return result
 
 
 def run_keyword_catalog_analysis(
@@ -117,6 +149,13 @@ def run_keyword_catalog_analysis(
     spam_threshold: float = 0.7,
     ai_model: str | None = None,
 ) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    logger.info(
+        "Starting keyword AI analysis: include_match_stats=%s max_keywords=%d max_groups=%d",
+        include_match_stats,
+        max_keywords,
+        max_groups,
+    )
     analysis_input = prepare_keyword_catalog_analysis_input(
         keyword_source=keyword_source,
         reporting_source=reporting_source,
@@ -151,15 +190,38 @@ def run_keyword_catalog_analysis(
                 ai_model=ai_model,
             )
             response["analysis_history"] = history
+            logger.info(
+                "Saved empty keyword AI analysis history: analysis_id=%s stored_items=%s",
+                history.get("analysis_id"),
+                history.get("stored_items"),
+            )
+        logger.info(
+            "Completed keyword AI analysis without LLM call: elapsed_s=%.2f",
+            time.perf_counter() - started_at,
+        )
         return response
 
+    llm_started_at = time.perf_counter()
+    logger.info(
+        "Submitting keyword AI analysis to LLM: analyzed_keywords=%d max_groups=%d",
+        analysis_input["analyzed_keywords"],
+        max_groups,
+    )
     ai_analysis = llm.analyze_keyword_catalog(analysis_input, max_groups=max_groups)
+    logger.info(
+        "Received keyword AI analysis from LLM: groups=%d ungrouped=%d elapsed_s=%.2f",
+        len(ai_analysis.get("groups", [])),
+        len(ai_analysis.get("ungrouped_keyword_ids", [])),
+        time.perf_counter() - llm_started_at,
+    )
     response = {
         **analysis_input,
         "ai_analysis": ai_analysis,
         "analysis_history": None,
     }
     if save_fn is not None:
+        save_started_at = time.perf_counter()
+        logger.info("Saving keyword AI analysis history")
         history = save_fn(
             request_data=request_data,
             analysis_input=analysis_input,
@@ -169,4 +231,11 @@ def run_keyword_catalog_analysis(
             ai_model=ai_model,
         )
         response["analysis_history"] = history
+        logger.info(
+            "Saved keyword AI analysis history: analysis_id=%s stored_items=%s elapsed_s=%.2f",
+            history.get("analysis_id"),
+            history.get("stored_items"),
+            time.perf_counter() - save_started_at,
+        )
+    logger.info("Completed keyword AI analysis: elapsed_s=%.2f", time.perf_counter() - started_at)
     return response

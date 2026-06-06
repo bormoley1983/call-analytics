@@ -62,8 +62,12 @@ docker compose up -d api
 ```
 
 The API is available at:
-- `http://localhost:8000/docs`
-- `http://localhost:8000/redoc`
+- `http://localhost:8800/docs`
+- `http://localhost:8800/redoc`
+
+Notes:
+- Docker Compose publishes container port `8000` on host port `8800` (`8800:8000`).
+- From another machine, replace `localhost` with the server hostname or IP, for example `http://call-analytics.local:8800/docs`.
 
 ## Production Flow
 
@@ -78,17 +82,17 @@ Examples:
 
 ```bash
 # Optional PBX sync only
-curl -X POST http://localhost:8000/jobs/sync \
+curl -X POST http://localhost:8800/jobs/sync \
   -H "Content-Type: application/json" \
   -d '{"days": "2026/03/19,2026/03/20"}'
 
 # Process existing raw data already present under calls_raw/
-curl -X POST http://localhost:8000/jobs/process \
+curl -X POST http://localhost:8800/jobs/process \
   -H "Content-Type: application/json" \
   -d '{"days": "2026/03/19,2026/03/20", "limit": 30}'
 
 # Or do both in one job
-curl -X POST http://localhost:8000/jobs/sync-and-process \
+curl -X POST http://localhost:8800/jobs/sync-and-process \
   -H "Content-Type: application/json" \
   -d '{"days": "2026/03/19,2026/03/20", "limit": 30}'
 ```
@@ -104,7 +108,7 @@ Important behavior:
 ### Poll the job
 
 ```bash
-curl http://localhost:8000/jobs/<job_id>
+curl http://localhost:8800/jobs/<job_id>
 ```
 
 A successful process-like job may include these sections in `result`:
@@ -167,7 +171,7 @@ For keyword-specific endpoints, `keyword_ai_analysis.groups` is filtered down to
 Use the combined refresh endpoint:
 
 ```bash
-curl -X POST http://localhost:8000/keywords/refresh \
+curl -X POST http://localhost:8800/keywords/refresh \
   -H "Content-Type: application/json" \
   -d '{"prune_missing": false}'
 ```

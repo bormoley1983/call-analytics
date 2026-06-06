@@ -17,12 +17,22 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
         "Queues a background PBX synchronization job.\n\n"
         "**Example body**\n"
         "```json\n"
-        "{\"days\": \"2026/03/18,2026/03/19\"}\n"
+        '{"days": "2026/03/18,2026/03/19"}\n'
         "```"
     ),
+    responses={
+        409: {
+            "description": "A sync-like job is already running.",
+            "content": {
+                "application/json": {"example": {"detail": "A sync-like job is already running"}}
+            },
+        }
+    },
 )
 def trigger_sync(req: SyncRequest, background_tasks: BackgroundTasks):
-    job = job_store.create_job("sync")
+    job = job_store.create_sync_job_if_none_running()
+    if job is None:
+        raise HTTPException(status_code=409, detail="A sync-like job is already running")
     background_tasks.add_task(run_sync, job.job_id, req)
     return job
 
@@ -44,7 +54,7 @@ def trigger_sync(req: SyncRequest, background_tasks: BackgroundTasks):
         "- `generate_report_snapshots=null`\n\n"
         "**Example body**\n"
         "```json\n"
-        "{\"days\": \"2026/03/19\", \"limit\": 30, \"force_reanalyze\": false}\n"
+        '{"days": "2026/03/19", "limit": 30, "force_reanalyze": false}\n'
         "```"
     ),
     responses={
@@ -63,6 +73,7 @@ def trigger_process(req: ProcessRequest, background_tasks: BackgroundTasks):
     background_tasks.add_task(run_process, job.job_id, req)
     return job
 
+
 @router.post(
     "/sync-and-process",
     response_model=JobResponse,
@@ -75,17 +86,17 @@ def trigger_process(req: ProcessRequest, background_tasks: BackgroundTasks):
     ),
     responses={
         409: {
-            "description": "A process-like job is already running.",
+            "description": "A conflicting job is already running.",
             "content": {
-                "application/json": {"example": {"detail": "A process-like job is already running"}}
+                "application/json": {"example": {"detail": "A conflicting job is already running"}}
             },
         }
     },
 )
 def trigger_sync_and_process(req: ProcessRequest, background_tasks: BackgroundTasks):
-    job = job_store.create_process_like_job_if_none_running("sync-and-process")
+    job = job_store.create_sync_and_process_job_if_none_running()
     if job is None:
-        raise HTTPException(status_code=409, detail="A process-like job is already running")
+        raise HTTPException(status_code=409, detail="A conflicting job is already running")
     background_tasks.add_task(run_sync_and_process, job.job_id, req)
     return job
 

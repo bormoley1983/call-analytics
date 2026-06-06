@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import stat
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -78,26 +79,73 @@ class PbxSshDownloader:
             self._client.close()
             logger.info("PBX SSH connection closed")
 
-    def _iter_remote_files(self, sftp: paramiko.SFTPClient, remote_root: str) -> List[str]:
-        """
-        Recursively collect file paths under remote_root as POSIX-relative paths.
-        """
+    def _iter_scan_roots(
+        self,
+        remote_root: str,
+        allowed_days: Optional[set[str]] = None,
+    ) -> List[tuple[str, str]]:
         root = remote_root.rstrip("/")
-        stack: List[tuple[str, str]] = [("", root)]
-        files: List[str] = []
+        if not allowed_days:
+            return [("", root)]
+
+        scan_roots: List[tuple[str, str]] = []
+        for day in sorted(allowed_days):
+            parts = [part for part in day.split("/") if part]
+            if len(parts) != 3:
+                logger.warning("Skipping unsupported PBX day filter: %s", day)
+                continue
+            rel_prefix = "/".join(parts)
+            scan_roots.append((rel_prefix, f"{root}/{rel_prefix}"))
+        return scan_roots or [("", root)]
+
+    def _iter_remote_files(
+        self,
+        sftp: paramiko.SFTPClient,
+        remote_root: str,
+        allowed_days: Optional[set[str]] = None,
+    ) -> Iterator[str]:
+        """
+        Recursively yield file paths under remote_root as POSIX-relative paths.
+        """
+        stack: List[tuple[str, str]] = list(reversed(self._iter_scan_roots(remote_root, allowed_days)))
+        directories_scanned = 0
+        files_seen = 0
 
         while stack:
             rel_prefix, current_dir = stack.pop()
-            for entry in sftp.listdir_attr(current_dir):
+            try:
+                entries = sftp.listdir_attr(current_dir)
+            except OSError as exc:
+                if allowed_days and rel_prefix:
+                    logger.info("Skipping unavailable PBX day directory: %s (%s)", current_dir, exc)
+                    continue
+                raise
+
+            directories_scanned += 1
+            if directories_scanned % 100 == 0:
+                logger.info(
+                    "PBX scan progress: directories=%d files_seen=%d current_dir=%s",
+                    directories_scanned,
+                    files_seen,
+                    current_dir,
+                )
+
+            for entry in entries:
                 rel_path = f"{rel_prefix}/{entry.filename}" if rel_prefix else entry.filename
                 remote_path = f"{current_dir}/{entry.filename}"
                 mode = entry.st_mode if entry.st_mode is not None else 0
                 if stat.S_ISDIR(mode):
                     stack.append((rel_path, remote_path))
                 else:
-                    files.append(rel_path)
-
-        return files
+                    files_seen += 1
+                    if files_seen % 1000 == 0:
+                        logger.info(
+                            "PBX scan progress: directories=%d files_seen=%d latest_file=%s",
+                            directories_scanned,
+                            files_seen,
+                            rel_path,
+                        )
+                    yield rel_path
 
     def _extract_day_key(self, rel_path: str) -> str | None:
         parts = Path(rel_path).parts
@@ -134,14 +182,14 @@ class PbxSshDownloader:
             sorted(allowed_days) if allowed_days else "all",
         )
         with self._client.open_sftp() as sftp:
-            for rel_path in self._iter_remote_files(sftp, self.remote_dir):
+            for rel_path in self._iter_remote_files(sftp, self.remote_dir, allowed_days=allowed_days):
                 scanned += 1
                 if allowed_days:
                     day_key = self._extract_day_key(rel_path)
                     if day_key is None or day_key not in allowed_days:
                         skipped_day_filter += 1
                         continue
-                
+
                 name = Path(rel_path).name
                 if not any(name.lower().endswith(ext.lower()) for ext in extensions):
                     continue

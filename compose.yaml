@@ -1,6 +1,6 @@
 x-base: &base
   pull_policy: never
-  image: call-analytics-base:cuda12.8.1-py312
+  image: call-analytics-whisper:cuda12.8.1-py312
   working_dir: /work
   volumes:
     - ./:/work
@@ -15,16 +15,52 @@ x-base: &base
   gpus: all
 
 services:
-  api:
+  stt-whisper:
     <<: *base
     build:
       context: .
-      dockerfile: Dockerfile.base
+      dockerfile: Dockerfile.whisper
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
       - PYTHONPATH=/work/src
+      - STT_BACKEND=whisper
     ports:
       - "8800:8000"
+    command: ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+
+  # Backward-compatible alias for previous service name.
+  api:
+    <<: *base
+    profiles: [compat-api]
+    build:
+      context: .
+      dockerfile: Dockerfile.whisper
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - PYTHONPATH=/work/src
+      - STT_BACKEND=whisper
+    ports:
+      - "8800:8000"
+    command: ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+
+  stt-canary:
+    <<: *base
+    profiles: [canary]
+    image: call-analytics-canary:cuda13.0.2-py312
+    build:
+      context: .
+      dockerfile: Dockerfile.canary
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - PYTHONPATH=/work/src
+      - STT_BACKEND=canary
+      - NEMO_CACHE_DIR=/root/.cache/huggingface/nemo
+      - TORCH_HOME=/root/.cache/huggingface/torch
+      - TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
+    ports:
+      - "8810:8000"
     command: ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped
 

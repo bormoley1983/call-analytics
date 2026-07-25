@@ -1,14 +1,13 @@
+import gc
 import json
 import logging
 import os
 import sys
 import time
-import gc
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List
 
-from faster_whisper import WhisperModel
 from tqdm import tqdm
 
 from adapters.reports_html import render_manager_report, render_overall_report
@@ -119,7 +118,7 @@ class Pipeline:
 
         logger.info("Phase 1: Transcription (Whisper) for %d file(s)", len(files))
 
-        model = None
+        model: Any = None
         files_metadata: List[Dict[str, Any]] = []
 
         for index, src in enumerate(tqdm(files, desc="Transcribing", disable=not _progress_enabled()), start=1):
@@ -174,6 +173,8 @@ class Pipeline:
                 logger.info("Reusing existing transcript: call_id=%s stage=%s", call_id, transcript.get("_pipeline_stage", "unknown"))
             else:
                 if model is None:
+                    # Import lazily so non-Whisper images can import app modules.
+                    from faster_whisper import WhisperModel
                     logger.info(
                         "Loading Whisper model: name=%s device=%s compute_type=%s",
                         self.config.whisper_model,

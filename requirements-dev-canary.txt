@@ -1,4 +1,4 @@
--r requirements-stt-whisper.txt
+-r requirements-stt-canary.txt
 
 debugpy>=1.8.19,<2.0.0
 mypy

@@ -1,0 +1,4 @@
+-r requirements-common.txt
+
+faster-whisper>=1.2.1,<2.0.0
+ctranslate2>=4.6.3,<5.0.0

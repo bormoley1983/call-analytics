@@ -1,0 +1,21 @@
+FROM nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 python3-pip python-is-python3 ffmpeg curl libsndfile1 git \
+  && rm -rf /var/lib/apt/lists/*
+
+ARG PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
+ARG PYTORCH_VERSION=2.10.0
+RUN python -m pip install --no-cache-dir --break-system-packages \
+    torch==${PYTORCH_VERSION} torchaudio==${PYTORCH_VERSION} --index-url "${PYTORCH_INDEX_URL}"
+
+COPY requirements-common.txt /tmp/requirements-common.txt
+COPY requirements-stt-canary.txt /tmp/requirements-stt-canary.txt
+RUN python -m pip install --no-cache-dir --break-system-packages -r /tmp/requirements-stt-canary.txt
+
+ENV TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
+WORKDIR /work

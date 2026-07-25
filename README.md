@@ -57,16 +57,29 @@ Optional PBX sync variables are described below.
 ### 2. Build and run the API
 
 ```bash
-docker compose build
-docker compose up -d api
+docker compose build stt-whisper
+docker compose up -d stt-whisper
 ```
+
+Optional Canary service (separate image and dependency stack):
+
+```bash
+docker compose --profile canary build stt-canary
+docker compose --profile canary up -d stt-canary
+```
+
+Note: separate containers improve lifecycle isolation, but both services still use the same physical GPU.
 
 The API is available at:
 - `http://localhost:8800/docs`
 - `http://localhost:8800/redoc`
 
+Canary service (when profile is enabled) is available at:
+- `http://localhost:8810/docs`
+
 Notes:
 - Docker Compose publishes container port `8000` on host port `8800` (`8800:8000`).
+- Canary profile publishes container port `8000` on host port `8810` (`8810:8000`).
 - From another machine, replace `localhost` with the server hostname or IP, for example `http://call-analytics.local:8800/docs`.
 
 ## Production Flow

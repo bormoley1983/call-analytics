@@ -15,7 +15,15 @@ Current operating model:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt -r requirements-dev.txt
+pip install -r requirements-dev.txt
+```
+
+Default local development keeps the Whisper stack only.
+
+Optional Canary-oriented dev environment:
+
+```bash
+pip install -r requirements-dev-canary.txt
 ```
 
 Optional future-only dependency set for the Qdrant plan:
@@ -33,8 +41,12 @@ mypy --no-incremental src tests
 
 ## Requirements Files
 
-- `requirements.txt`: production runtime dependencies for the active Postgres/Ollama/FastAPI stack
-- `requirements-dev.txt`: local dev tooling and typing/test dependencies
+- `requirements-common.txt`: shared runtime dependencies used by STT variants
+- `requirements-stt-whisper.txt`: Whisper/CTranslate2 runtime dependencies
+- `requirements-stt-canary.txt`: Canary/NeMo runtime dependencies
+- `requirements.txt`: compatibility entrypoint, currently points to Whisper runtime
+- `requirements-dev.txt`: default local dev tooling and typing/test dependencies for Whisper
+- `requirements-dev-canary.txt`: optional dev tooling + Canary runtime stack
 - `requirements-qdrant.txt`: optional dependency file for the future Qdrant plan only
 
 ## Production Runtime Model

@@ -1,0 +1,15 @@
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 python3-pip python-is-python3 ffmpeg curl \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-common.txt /tmp/requirements-common.txt
+COPY requirements-stt-whisper.txt /tmp/requirements-stt-whisper.txt
+RUN python -m pip install --no-cache-dir --break-system-packages -r /tmp/requirements-stt-whisper.txt
+
+WORKDIR /work

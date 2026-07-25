@@ -1,13 +1,11 @@
 from pathlib import Path
 from typing import Any, Dict, List
 
-from faster_whisper import WhisperModel
-
 from core.rules import correct_brand_names
 from domain.config import AppConfig
 
 
-def transcribe(model: WhisperModel, wav_path: Path, config: AppConfig) -> Dict[str, Any]:
+def transcribe(model: Any, wav_path: Path, config: AppConfig) -> Dict[str, Any]:
     """Transcribe audio using Whisper model with config settings."""
     segments, info = model.transcribe(
         str(wav_path),

@@ -27,6 +27,16 @@ def build_overall_report(
     filters: ReportFilters,
     spam_threshold: float,
 ) -> dict[str, Any]:
+    if hasattr(source, "build_overall_report_data"):
+        data = source.build_overall_report_data(filters, spam_threshold)  # type: ignore[attr-defined]
+        return {
+            "generated_at": _utc_now_iso(),
+            "data_source": source.source_name,
+            "filters": filters.as_dict(),
+            "skipped_metrics_available": False,
+            **data,
+        }
+
     total_calls = 0
     spam_calls = 0
     effective_calls = 0
@@ -106,6 +116,16 @@ def build_managers_report(
     sort_by: str = "total_calls",
     order: str = "desc",
 ) -> dict[str, Any]:
+    if hasattr(source, "build_managers_report_data"):
+        data = source.build_managers_report_data(filters, spam_threshold, sort_by, order)  # type: ignore[attr-defined]
+        return {
+            "generated_at": _utc_now_iso(),
+            "data_source": source.source_name,
+            "filters": filters.as_dict(),
+            "skipped_metrics_available": False,
+            **data,
+        }
+
     role_summary: dict[str, dict[str, int]] = {}
     managers_stats: dict[str, dict[str, Any]] = {}
 
@@ -295,6 +315,16 @@ def build_customers_report(
     sort_by: str = "total_calls",
     order: str = "desc",
 ) -> dict[str, Any]:
+    if hasattr(source, "build_customers_report_data"):
+        data = source.build_customers_report_data(filters, spam_threshold, sort_by, order)  # type: ignore[attr-defined]
+        return {
+            "generated_at": _utc_now_iso(),
+            "data_source": source.source_name,
+            "filters": filters.as_dict(),
+            "skipped_metrics_available": False,
+            **data,
+        }
+
     customers_stats: dict[str, dict[str, Any]] = {}
 
     for record in source.iter_call_records(filters):

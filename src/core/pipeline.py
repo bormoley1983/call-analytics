@@ -133,6 +133,22 @@ class Pipeline:
 
         return meta
 
+    def _record_call_metadata(self, meta: Dict[str, Any], *, status: str, error_message: str | None = None) -> None:
+        upsert = getattr(self.storage, "upsert_call_metadata", None)
+        if not callable(upsert):
+            return
+        call_id = meta.get("call_id")
+        if not call_id:
+            return
+        upsert(
+            call_id=call_id,
+            source_file=meta.get("source_file"),
+            source_path=meta.get("source_path"),
+            call_date=meta.get("date"),
+            status=status,
+            error_message=error_message,
+        )
+
     def run_transcription_phase(self, files: List[Path]) -> List[Dict[str, Any]]:
         """
         Phase 1: Transcription with Whisper (GPU intensive).
@@ -168,12 +184,15 @@ class Pipeline:
                     )
                     continue
 
+                self._record_call_metadata(meta, status="discovered")
+
                 dur = self.audio.duration_seconds(src)
                 meta["audio_seconds"] = dur
 
                 if dur < self.config.min_seconds:
                     meta["status"] = "skipped_too_short"
                     files_metadata.append(meta)
+                    self._record_call_metadata(meta, status="skipped_too_short", error_message="duration_below_min_seconds")
                     logger.info(
                         "Skipping call_id=%s file=%s reason=too_short duration=%.2fs min_seconds=%.2fs",
                         meta["call_id"],
@@ -245,6 +264,7 @@ class Pipeline:
 
                 meta["stage"] = transcript.get("_pipeline_stage", "transcribed")
                 meta["status"] = "transcribed"
+                self._record_call_metadata(meta, status="transcribed")
                 files_metadata.append(meta)
                 logger.info(
                     "File ready for analysis: call_id=%s file=%s stage=%s",
@@ -328,6 +348,7 @@ class Pipeline:
                 logger.warning("Translation failed, stored fallback transcript: call_id=%s error=%r", call_id, e)
 
             meta["stage"] = transcript.get("_pipeline_stage", "transcribed")
+            self._record_call_metadata(meta, status="translated")
 
         return files_metadata
 
@@ -389,6 +410,11 @@ class Pipeline:
                 },
             })
             self.storage.save_analysis(call_id, analysis)
+            self._record_call_metadata(
+                meta,
+                status="processed",
+                error_message=str(analysis.get("analysis_error") or "").strip() or None,
+            )
             logger.debug("Saved analysis: call_id=%s file=%s", call_id, meta["source_file"])
             return {"meta": meta, "analysis": analysis, "status": "processed"}
 
@@ -427,13 +453,37 @@ class Pipeline:
         try:
             synced = 0
             for item in per_call:
+                meta = item.get("meta", {}) or {}
+                call_id = meta.get("call_id")
+                if call_id:
+                    pg.upsert_call_metadata(
+                        call_id=call_id,
+                        source_file=meta.get("source_file"),
+                        source_path=meta.get("source_path"),
+                        call_date=meta.get("date"),
+                        status=item.get("status") or "discovered",
+                        error_message=(
+                            "duration_below_min_seconds"
+                            if item.get("status") == "skipped_too_short"
+                            else None
+                        ),
+                    )
+
                 if item.get("status") != "processed":
                     continue
-                call_id = item.get("meta", {}).get("call_id")
                 if not call_id:
                     continue
                 pg.upsert_transcript(call_id, self.storage.load_transcript(call_id))
                 pg.upsert_analysis(call_id, item.get("analysis", {}))
+                pg.upsert_call_metadata(
+                    call_id=call_id,
+                    source_file=meta.get("source_file"),
+                    source_path=meta.get("source_path"),
+                    call_date=meta.get("date"),
+                    status="processed",
+                    error_message=str((item.get("analysis", {}) or {}).get("analysis_error") or "").strip() or None,
+                    mark_synced=True,
+                )
                 synced += 1
             logger.info("Postgres sync complete: %d call(s) upserted", synced)
         finally:

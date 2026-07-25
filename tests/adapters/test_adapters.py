@@ -1,17 +1,12 @@
 from datetime import datetime, timezone
-import pytest
 from types import SimpleNamespace
 
-from adapters import (
-    audio_ffmpeg,
-    keyword_ai_analysis_postgres,
-    keywords_postgres,
-    llm_ollama,
-    postgres_single_connection,
-    reporting_postgres,
-    storage_json,
-    storage_postgres,
-)
+import pytest
+
+from adapters import (audio_ffmpeg, keyword_ai_analysis_postgres,
+                      keywords_postgres, llm_ollama,
+                      postgres_single_connection, reporting_postgres,
+                      storage_json, storage_postgres)
 
 
 def test_ffprobe_duration_seconds_exists():
@@ -20,6 +15,107 @@ def test_ffprobe_duration_seconds_exists():
 def test_json_storage_init(tmp_path):
     storage = storage_json.JsonStorage(tmp_path, tmp_path, tmp_path, tmp_path)
     assert storage.out == tmp_path
+
+
+def test_json_storage_upsert_call_metadata_creates_and_updates_file(tmp_path):
+    storage = storage_json.JsonStorage(tmp_path / "out", tmp_path / "norm", tmp_path / "trans", tmp_path / "analysis")
+    storage.ensure_ready()
+
+    storage.upsert_call_metadata(
+        call_id="call-1",
+        source_file="a.wav",
+        source_path="/tmp/a.wav",
+        call_date="20260725",
+        status="discovered",
+    )
+    storage.upsert_call_metadata(
+        call_id="call-1",
+        status="processed",
+        error_message="analysis_failed",
+        mark_synced=True,
+    )
+
+    payload = storage.load_call_metadata("call-1")
+    assert payload["call_id"] == "call-1"
+    assert payload["source_file"] == "a.wav"
+    assert payload["status"] == "processed"
+    assert payload["error_message"] == "analysis_failed"
+    assert payload["discovered_at"]
+    assert payload["transcribed_at"]
+    assert payload["translated_at"]
+    assert payload["analyzed_at"]
+    assert payload["synced_at"]
+
+
+def test_json_storage_save_transcript_and_analysis_updates_call_metadata(tmp_path):
+    storage = storage_json.JsonStorage(tmp_path / "out", tmp_path / "norm", tmp_path / "trans", tmp_path / "analysis")
+    storage.ensure_ready()
+
+    storage.save_transcript(
+        "call-2",
+        {
+            "_pipeline_stage": "translated",
+            "call_meta": {"date": "20260725"},
+        },
+    )
+    storage.save_analysis(
+        "call-2",
+        {
+            "source_file": "b.wav",
+            "source_path": "/tmp/b.wav",
+            "analysis_error": "",
+            "call_meta": {"date": "20260725"},
+        },
+    )
+
+    payload = storage.load_call_metadata("call-2")
+    assert payload["call_id"] == "call-2"
+    assert payload["status"] == "processed"
+    assert payload["source_file"] == "b.wav"
+    assert payload["call_date"] == "20260725"
+    assert payload["translated_at"]
+    assert payload["analyzed_at"]
+
+
+def test_json_storage_sync_per_call_tracks_metadata_and_saves_processed_analysis(tmp_path):
+    storage = storage_json.JsonStorage(tmp_path / "out", tmp_path / "norm", tmp_path / "trans", tmp_path / "analysis")
+    storage.ensure_ready()
+
+    per_call = [
+        {
+            "status": "processed",
+            "meta": {
+                "call_id": "call-10",
+                "source_file": "a.wav",
+                "source_path": "/tmp/a.wav",
+                "date": "20260725",
+            },
+            "analysis": {"intent": "sale", "call_meta": {"date": "20260725"}},
+        },
+        {
+            "status": "skipped_too_short",
+            "meta": {
+                "call_id": "call-11",
+                "source_file": "b.wav",
+                "source_path": "/tmp/b.wav",
+                "date": "20260725",
+            },
+        },
+    ]
+
+    storage.sync_per_call(per_call)
+
+    processed_meta = storage.load_call_metadata("call-10")
+    skipped_meta = storage.load_call_metadata("call-11")
+    processed_analysis = storage.load_analysis("call-10")
+
+    assert processed_meta["status"] == "processed"
+    assert processed_meta["source_file"] == "a.wav"
+    assert processed_meta["analyzed_at"]
+    assert skipped_meta["status"] == "skipped_too_short"
+    assert skipped_meta["error_message"] == "duration_below_min_seconds"
+    assert processed_analysis["intent"] == "sale"
+    assert not storage.analysis_exists("call-11")
 
 
 def test_postgres_jsonb_keeps_utf8_text():
@@ -47,6 +143,67 @@ def test_postgres_storage_forces_utf8_client_encoding():
     assert result is conn
     assert conn.calls == ["UTF8"]
     assert conn.encoding == "UTF8"
+
+
+def test_postgres_storage_ddl_includes_calls_metadata_table_and_indexes():
+    ddl = storage_postgres.DDL
+
+    assert "CREATE TABLE IF NOT EXISTS calls" in ddl
+    assert "source_file" in ddl
+    assert "source_path" in ddl
+    assert "status" in ddl
+    assert "error_message" in ddl
+    assert "idx_calls_status" in ddl
+    assert "idx_calls_call_date" in ddl
+
+
+def test_postgres_storage_sync_per_call_tracks_calls_metadata_for_processed_and_skipped():
+    tracked_meta = []
+    tracked_analysis = []
+
+    class DummyStorage(storage_postgres.PostgresStorage):
+        def __init__(self):
+            pass
+
+        def upsert_call_metadata(self, **kwargs):
+            tracked_meta.append(kwargs)
+
+        def upsert_analysis(self, call_id, data):
+            tracked_analysis.append((call_id, data))
+
+    storage = DummyStorage()
+
+    per_call = [
+        {
+            "status": "processed",
+            "meta": {
+                "call_id": "call-1",
+                "source_file": "a.wav",
+                "source_path": "/tmp/a.wav",
+                "date": "20260725",
+            },
+            "analysis": {"intent": "sale"},
+        },
+        {
+            "status": "skipped_too_short",
+            "meta": {
+                "call_id": "call-2",
+                "source_file": "b.wav",
+                "source_path": "/tmp/b.wav",
+                "date": "20260725",
+            },
+        },
+    ]
+
+    storage.sync_per_call(per_call)
+
+    assert len(tracked_meta) == 2
+    assert tracked_meta[0]["call_id"] == "call-1"
+    assert tracked_meta[0]["status"] == "processed"
+    assert tracked_meta[1]["call_id"] == "call-2"
+    assert tracked_meta[1]["status"] == "skipped_too_short"
+    assert tracked_meta[1]["error_message"] == "duration_below_min_seconds"
+    assert tracked_analysis == [("call-1", {"intent": "sale"})]
 
 
 def test_single_connection_adapter_adds_default_connect_timeout(monkeypatch):

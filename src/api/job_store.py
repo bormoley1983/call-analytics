@@ -69,3 +69,10 @@ def create_sync_and_process_job_if_none_running() -> JobResponse | None:
         if _has_active_job({"sync", "process", "sync-and-process"}):
             return None
         return _create_job_locked("sync-and-process")
+
+
+def create_export_snapshots_job_if_none_running() -> JobResponse | None:
+    with _lock:
+        if _has_active_job({"process", "sync-and-process"}):
+            return None
+        return _create_job_locked("export-snapshots")

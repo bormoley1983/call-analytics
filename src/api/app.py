@@ -2,7 +2,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from api.routes import health, jobs, keywords, keywords_ai, keywords_generation, managers, reports
+from api.routes import (health, jobs, keywords, keywords_ai,
+                        keywords_generation, managers, reports)
 from logging_config import setup_logging
 
 description = """
@@ -13,14 +14,15 @@ Internal API for Call Analytics.
 2. `POST /jobs/process` (or `POST /jobs/sync-and-process`) to run transcription and analysis.
 3. Poll `GET /jobs/{job_id}` until `status` becomes `done` or `failed`.
 4. Read aggregated analytics from `/reports/*`.
-5. With Postgres storage, keyword data is refreshed automatically after successful processing jobs.
-6. Manual keyword maintenance remains available:
+5. Optional explicit snapshot export: `POST /jobs/export-snapshots`.
+6. With Postgres storage, keyword data is refreshed automatically after successful processing jobs.
+7. Manual keyword maintenance remains available:
    - `POST /keywords/refresh` for the normal manual flow
    - `POST /keywords/sync` and `POST /keywords/materialize` as low-level maintenance endpoints
-7. Optional keyword discovery flow from existing analyses:
+8. Optional keyword discovery flow from existing analyses:
    - `POST /keywords/generation/candidates`
    - `POST /keywords/generation/publish`
-8. Optional AI catalog analysis flow:
+9. Optional AI catalog analysis flow:
    - `POST /keywords/catalog/analysis`
    - `GET /keywords/catalog/analyses`
    - `GET /keywords/catalog/analyses/{analysis_id}`

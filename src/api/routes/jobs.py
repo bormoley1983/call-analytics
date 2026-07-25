@@ -3,7 +3,8 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Path
 
 from api import job_store
-from api.runner import run_process, run_sync, run_sync_and_process
+from api.runner import (run_export_snapshots, run_process, run_sync,
+                        run_sync_and_process)
 from api.schemas import JobResponse, ProcessRequest, SyncRequest
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -51,7 +52,7 @@ def trigger_sync(req: SyncRequest, background_tasks: BackgroundTasks):
         "- `limit=null` -> use configured default\n"
         "- `force_reanalyze=false`\n"
         "- `force_retranscribe=false`\n"
-        "- `generate_report_snapshots=null`\n\n"
+        "\nUse `POST /jobs/export-snapshots` for explicit snapshot generation.\n\n"
         "**Example body**\n"
         "```json\n"
         '{"days": "2026/03/19", "limit": 30, "force_reanalyze": false}\n'
@@ -82,7 +83,8 @@ def trigger_process(req: ProcessRequest, background_tasks: BackgroundTasks):
     description=(
         "Queues one background job that first syncs PBX records and then processes them.\n\n"
         "Uses the same request defaults as `/jobs/process`.\n\n"
-        "When `POSTGRES_DSN` is configured, keyword refresh runs automatically after successful processing."
+        "When `POSTGRES_DSN` is configured, keyword refresh runs automatically after successful processing.\n\n"
+        "Snapshots are exported only through `POST /jobs/export-snapshots`."
     ),
     responses={
         409: {
@@ -98,6 +100,32 @@ def trigger_sync_and_process(req: ProcessRequest, background_tasks: BackgroundTa
     if job is None:
         raise HTTPException(status_code=409, detail="A conflicting job is already running")
     background_tasks.add_task(run_sync_and_process, job.job_id, req)
+    return job
+
+
+@router.post(
+    "/export-snapshots",
+    response_model=JobResponse,
+    status_code=202,
+    summary="Export report snapshots",
+    description=(
+        "Queues a background export job that builds report snapshot files from persisted data.\n\n"
+        "This flow is read-only with respect to transcript/analysis storage and is decoupled from processing jobs."
+    ),
+    responses={
+        409: {
+            "description": "A process-like job is already running.",
+            "content": {
+                "application/json": {"example": {"detail": "A process-like job is already running"}}
+            },
+        }
+    },
+)
+def trigger_export_snapshots(background_tasks: BackgroundTasks):
+    job = job_store.create_export_snapshots_job_if_none_running()
+    if job is None:
+        raise HTTPException(status_code=409, detail="A process-like job is already running")
+    background_tasks.add_task(run_export_snapshots, job.job_id)
     return job
 
 

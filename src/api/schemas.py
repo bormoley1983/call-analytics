@@ -51,11 +51,6 @@ class ProcessRequest(BaseModel):
         description="When true, run transcription again even if transcript artifacts already exist.",
         examples=[False],
     )
-    generate_report_snapshots: Optional[bool] = Field(
-        default=None,
-        description="Optional override for writing snapshot report files during processing.",
-        examples=[True, False],
-    )
 
     @field_validator("days", mode="before")
     @classmethod

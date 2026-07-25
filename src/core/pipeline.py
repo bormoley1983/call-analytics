@@ -10,10 +10,8 @@ from typing import Any, Dict, List
 
 from tqdm import tqdm
 
-from adapters.reports_html import render_manager_report, render_overall_report
 from adapters.storage_postgres import PostgresStorage
 from core.planner import categorize_files, discover_and_filter_files
-from core.reports import aggregate_report, aggregate_report_by_manager
 from core.rules import ensure_analysis_schema, sha12
 from core.stt_factory import build_stt_adapter
 from core.stt_service import SttService
@@ -112,10 +110,7 @@ class Pipeline:
 
         per_call = self.run_analysis_phase(files_metadata)
         self.sync_to_postgres(per_call)
-        if self.config.generate_report_snapshots:
-            self.generate_reports(per_call)
-        else:
-            logger.info("Snapshot report generation is disabled; skipping report artifacts.")
+        logger.info("Snapshot export is decoupled from processing; use dedicated export flow when needed.")
         logger.info("Processing complete in %.2fs.", time.perf_counter() - started_at)
 
     def _build_meta(self, src: Path) -> Dict[str, Any]:
@@ -419,31 +414,6 @@ class Pipeline:
         logger.info("Analysis complete. Processed %d call(s).",
                     len([c for c in per_call if c.get("status") == "processed"]))
         return per_call
-
-    def generate_reports(self, per_call: List[Dict[str, Any]]) -> None:
-        """Generate and save analysis reports."""
-        logger.info("Generating reports for %d call result(s)", len(per_call))
-        
-        # Generate overall report
-        report = aggregate_report(per_call, self.config)
-        (self.config.out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        # Generate per-manager report
-        manager_report = aggregate_report_by_manager(per_call, self.config)
-        (self.config.out / "report_by_manager.json").write_text(json.dumps(manager_report, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        logger.debug("Overall summary:\n%s", json.dumps(report, ensure_ascii=False, indent=2))
-        render_overall_report(report, self.config.out / "report.html")
-
-        logger.debug("Per-manager summary:\n%s", json.dumps(manager_report, ensure_ascii=False, indent=2))
-        render_manager_report(manager_report, self.config.out / "report_by_manager.html")
-
-        logger.info(
-            "Reports saved: %s, %s",
-            self.config.out / "report.json",
-            self.config.out / "report_by_manager.json",
-        )
-
 
     def sync_to_postgres(self, per_call: List[Dict[str, Any]]) -> None:
         if isinstance(self.storage, PostgresStorage):

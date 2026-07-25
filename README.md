@@ -121,6 +121,7 @@ Important behavior:
 - `POST /jobs/process` runs transcription and analysis, stores results in Postgres, then automatically:
   - refreshes keywords
   - runs AI keyword catalog analysis
+- Snapshot files are exported explicitly via `POST /jobs/export-snapshots`.
 - `POST /jobs/sync-and-process` now uses the same `days` scope for both sync and processing.
 - If `days` is omitted, `/jobs/sync-and-process` performs a full sync and then processes all eligible data.
 
@@ -134,6 +135,12 @@ A successful process-like job may include these sections in `result`:
 
 - `keywords_refresh`
 - `keyword_ai_analysis`
+
+Snapshot export is an explicit, separate job:
+
+```bash
+curl -X POST http://localhost:8800/jobs/export-snapshots
+```
 
 ## Reports
 
@@ -234,7 +241,6 @@ Optional admin flows:
 | `SPAM_PROBABILITY_THRESHOLD` | `0.7` | Used in reports and keyword analysis |
 | `AUTO_REFRESH_KEYWORDS` | `1` | Auto-refresh after successful processing |
 | `AUTO_RUN_AI_KEYWORD_ANALYSIS` | `1` | Auto-run keyword catalog AI analysis after process-like flows |
-| `GENERATE_REPORT_SNAPSHOTS` | `0` | Optional JSON/HTML snapshot export, not production source of truth |
 | `PROCESS_LIMIT` | `30` | `0` means unlimited |
 | `DAYS` | all eligible | Used by processing flow |
 

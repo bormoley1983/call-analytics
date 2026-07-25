@@ -10,6 +10,7 @@ from adapters.keywords_yaml import YamlKeywordSource
 from adapters.llm_ollama import OllamaLlm
 from adapters.pbx_asterisk import AsteriskPbx
 from adapters.pbx_ssh import PbxSshDownloader
+from adapters.reporting_json import JsonReportingSource
 from adapters.reporting_postgres import PostgresReportingSource
 from adapters.storage_json import JsonStorage
 from adapters.storage_postgres import PostgresStorage
@@ -22,6 +23,7 @@ from core.keywords_ai_runtime import \
 from core.keywords_materialize import materialize_call_keywords
 from core.keywords_refresh import refresh_keywords_data
 from core.pipeline import Pipeline
+from core.snapshot_export import export_snapshot_reports
 from domain.config import CALLS_RAW, KEYWORDS_CONFIG, load_app_config
 from ports.storage import StoragePort
 
@@ -99,10 +101,27 @@ def _configure_process_env(req: ProcessRequest) -> None:
     os.environ["FORCE_REANALYZE"] = "1" if req.force_reanalyze else "0"
     os.environ["FORCE_RETRANSCRIBE"] = "1" if req.force_retranscribe else "0"
 
-    if req.generate_report_snapshots is None:
-        os.environ.pop("GENERATE_REPORT_SNAPSHOTS", None)
-    else:
-        os.environ["GENERATE_REPORT_SNAPSHOTS"] = "1" if req.generate_report_snapshots else "0"
+
+def _build_reporting_source() -> PostgresReportingSource | JsonReportingSource:
+    dsn = os.getenv("POSTGRES_DSN")
+    if dsn:
+        return PostgresReportingSource(dsn)
+    config = load_app_config()
+    return JsonReportingSource(config.analysis)
+
+
+def _run_export_snapshots_once() -> dict[str, Any]:
+    config = load_app_config()
+    spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
+    source = _build_reporting_source()
+    try:
+        return export_snapshot_reports(
+            output_dir=config.out,
+            source=source,
+            spam_threshold=spam_threshold,
+        )
+    finally:
+        source.close()
 
 
 def _auto_refresh_keywords_enabled() -> bool:
@@ -165,7 +184,7 @@ def _run_keyword_materialization_once() -> dict | None:
 
 
 def _run_process_once(req: ProcessRequest) -> dict:
-    env_keys = ["DAYS", "PROCESS_LIMIT", "FORCE_REANALYZE", "FORCE_RETRANSCRIBE", "GENERATE_REPORT_SNAPSHOTS"]
+    env_keys = ["DAYS", "PROCESS_LIMIT", "FORCE_REANALYZE", "FORCE_RETRANSCRIBE"]
     old_env = {k: os.environ.get(k) for k in env_keys}
     try:
         _configure_process_env(req)
@@ -297,6 +316,26 @@ def run_sync_and_process(job_id: str, req: ProcessRequest) -> None:
         )
     except Exception as exc:
         logger.exception("sync-and-process job %s failed", job_id)
+        job_store.update_job(
+            job_id,
+            status=JobStatus.failed,
+            finished_at=datetime.now(timezone.utc),
+            error=str(exc),
+        )
+
+
+def run_export_snapshots(job_id: str) -> None:
+    job_store.update_job(job_id, status=JobStatus.running, started_at=datetime.now(timezone.utc))
+    try:
+        export_result = _run_export_snapshots_once()
+        job_store.update_job(
+            job_id,
+            status=JobStatus.done,
+            finished_at=datetime.now(timezone.utc),
+            result=export_result,
+        )
+    except Exception as exc:
+        logger.exception("export-snapshots job %s failed", job_id)
         job_store.update_job(
             job_id,
             status=JobStatus.failed,

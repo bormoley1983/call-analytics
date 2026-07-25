@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from types import SimpleNamespace
 
 import pytest
@@ -7,8 +8,8 @@ from fastapi import HTTPException
 
 from api.routes import keywords_ai as keywords_ai_routes
 from api.schemas import KeywordCatalogAnalysisRequest
-from core.keywords_ai import prepare_keyword_catalog_analysis_input
 from core import keywords_ai_runtime
+from core.keywords_ai import prepare_keyword_catalog_analysis_input
 from domain.keywords import KeywordDefinition
 
 
@@ -290,3 +291,70 @@ def test_keyword_catalog_analysis_fails_loudly_on_invalid_yaml(monkeypatch, tmp_
 
     assert exc.value.status_code == 500
     assert "Invalid keyword YAML" in exc.value.detail
+
+
+def test_keyword_ai_analysis_persistence_does_not_mutate_reporting_records(monkeypatch):
+    analyses = {
+        "call-1": {
+            "summary": "delivery delayed",
+            "key_questions": ["where is my order"],
+            "objections": ["late"],
+        }
+    }
+    analyses_before = copy.deepcopy(analyses)
+
+    class ReportingFromAnalyses:
+        source_name = "json"
+
+        def __init__(self, records):
+            self.records = records
+
+        def iter_call_records(self, filters):
+            for call_id, payload in self.records.items():
+                yield _record(call_id, payload["summary"])
+
+        def close(self):
+            return None
+
+    keyword_source = FakeKeywordSource(
+        [
+            KeywordDefinition(
+                keyword_id="delivery",
+                label="Delivery",
+                category="logistics",
+                terms=["delivery"],
+                match_fields=["summary"],
+                is_active=True,
+            )
+        ]
+    )
+    analysis_store = FakeAnalysisStore()
+
+    class FakeLlm:
+        def analyze_keyword_catalog(self, analysis_input, max_groups=20):
+            return {
+                "summary": "ok",
+                "groups": [],
+                "ungrouped_keyword_ids": ["delivery"],
+                "global_recommendations": [],
+            }
+
+    from core.keywords_ai import run_keyword_catalog_analysis
+
+    response = run_keyword_catalog_analysis(
+        request_data={"trigger": "process"},
+        keyword_source=keyword_source,
+        reporting_source=ReportingFromAnalyses(analyses),
+        llm=FakeLlm(),
+        analysis_store=analysis_store,
+        include_inactive=False,
+        include_match_stats=True,
+        keyword_ids=None,
+        max_keywords=10,
+        max_groups=20,
+        spam_threshold=0.7,
+        ai_model="test-model",
+    )
+
+    assert response["analysis_history"]["analysis_id"] == "11111111-1111-1111-1111-111111111111"
+    assert analyses == analyses_before

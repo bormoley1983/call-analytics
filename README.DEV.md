@@ -70,7 +70,8 @@ Production writes directly into Postgres tables, primarily:
 3. The job runner then performs post-processing orchestration:
    - keyword refresh
    - keyword AI analysis
-4. `/reports/*` reads persisted data and attaches the latest persisted `keyword_ai_analysis`
+4. Optional explicit snapshot export runs via `POST /jobs/export-snapshots`
+5. `/reports/*` reads persisted data and attaches the latest persisted `keyword_ai_analysis`
 
 Important behavior:
 - `/jobs/sync` is download-only and does not run AI keyword analysis
@@ -127,9 +128,9 @@ The pipeline itself is responsible for:
 - optional translation
 - call analysis
 - persistence via the configured storage backend
-- optional snapshot report export when `GENERATE_REPORT_SNAPSHOTS=1`
 
 The pipeline is not responsible for:
+- snapshot export orchestration
 - keyword refresh orchestration
 - keyword AI analysis orchestration
 - online reporting
@@ -141,6 +142,10 @@ Those happen in `api/runner.py` after successful process-like jobs.
 After a successful process job, the runner may do:
 - `refresh_keywords_data(...)`
 - `run_keyword_ai_analysis_once(...)`
+
+Snapshot exports are run independently through:
+- `run_export_snapshots(...)`
+- `core.snapshot_export.export_snapshot_reports(...)`
 
 This separation keeps processing/storage and downstream enrichment easier to reason about.
 

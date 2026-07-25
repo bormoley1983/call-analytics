@@ -24,3 +24,16 @@ def test_sync_and_process_blocks_process_and_sync() -> None:
     job_store.update_job(job.job_id, status=JobStatus.done)
 
     assert job_store.create_sync_job_if_none_running() is not None
+
+
+def test_export_snapshots_blocks_during_process_like_jobs() -> None:
+    process_job = job_store.create_process_like_job_if_none_running("process")
+
+    assert process_job is not None
+    assert job_store.create_export_snapshots_job_if_none_running() is None
+
+    job_store.update_job(process_job.job_id, status=JobStatus.done)
+
+    export_job = job_store.create_export_snapshots_job_if_none_running()
+    assert export_job is not None
+    assert export_job.type == "export-snapshots"

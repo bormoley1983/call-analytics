@@ -5,7 +5,6 @@ Local Call Analytics PoC (FreePBX/Asterisk recordings)
 - Transcribe with faster-whisper (GPU)
 - Translate transcript to Ukrainian (UA) via Ollama (optional but enabled by default)
 - Analyze calls with Ollama (UA-only JSON schema)
-- Optionally aggregate report snapshots (when `GENERATE_REPORT_SNAPSHOTS=1`)
 
 Folder layout expected:
   ./calls_raw/YYYY/MM/DD/*.wav
@@ -13,7 +12,6 @@ Outputs:
   ./out/normalized/*.wav
   ./out/transcripts/*.json
   ./out/analysis/*.json
-  ./out/report.json (optional snapshot)
 """
 import logging
 import os
@@ -23,8 +21,11 @@ from adapters.audio_ffmpeg import FfmpegAudio
 from adapters.llm_ollama import OllamaLlm
 from adapters.pbx_asterisk import AsteriskPbx
 from adapters.pbx_ssh import PbxSshDownloader
+from adapters.reporting_json import JsonReportingSource
+from adapters.reporting_postgres import PostgresReportingSource
 from adapters.storage_json import JsonStorage
 from core.pipeline import Pipeline
+from core.snapshot_export import export_snapshot_reports
 from domain.config import CALLS_RAW, load_app_config
 from logging_config import setup_logging
 
@@ -81,15 +82,33 @@ def main() -> None:
     pipeline.run()
 
 
+def export_snapshots() -> None:
+    config = load_app_config()
+    spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
+    dsn = os.getenv("POSTGRES_DSN")
+    source = PostgresReportingSource(dsn) if dsn else JsonReportingSource(config.analysis)
+    try:
+        result = export_snapshot_reports(
+            output_dir=config.out,
+            source=source,
+            spam_threshold=spam_threshold,
+        )
+    finally:
+        source.close()
+    logger.info("Snapshot export completed: %s", result)
+
+
 if __name__ == "__main__":
     setup_logging()
     command = sys.argv[1] if len(sys.argv) > 1 else "run"
     if command == "sync":
         sync()
+    elif command == "export-snapshots":
+        export_snapshots()
     elif command == "migrate-storage":
         migrate_storage()
     elif command == "run":
         main()
     else:
-        logger.error("Unknown command: %s. Use 'run', 'sync' or 'migrate-storage'.", command)
+        logger.error("Unknown command: %s. Use 'run', 'sync', 'export-snapshots' or 'migrate-storage'.", command)
         sys.exit(1)

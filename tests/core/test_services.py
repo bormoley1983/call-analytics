@@ -1,6 +1,7 @@
-import pytest
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from api import runner
 from api.schemas import ProcessRequest, SyncRequest
@@ -34,39 +35,20 @@ def test_configure_process_env_preserves_zero_limit(monkeypatch):
     assert runner.os.environ["PROCESS_LIMIT"] == "0"
 
 
-def test_configure_process_env_sets_snapshot_toggle(monkeypatch):
-    monkeypatch.delenv("GENERATE_REPORT_SNAPSHOTS", raising=False)
-
+def test_configure_process_env_sets_core_flags_only(monkeypatch):
     runner._configure_process_env(
         ProcessRequest(
             days=None,
             limit=1,
             force_reanalyze=False,
             force_retranscribe=False,
-            generate_report_snapshots=True,
         )
     )
-
-    assert runner.os.environ["GENERATE_REPORT_SNAPSHOTS"] == "1"
-
-
-def test_configure_process_env_unsets_snapshot_toggle_when_not_specified(monkeypatch):
-    monkeypatch.setenv("GENERATE_REPORT_SNAPSHOTS", "1")
-
-    runner._configure_process_env(
-        ProcessRequest(
-            days=None,
-            limit=1,
-            force_reanalyze=False,
-            force_retranscribe=False,
-            generate_report_snapshots=None,
-        )
-    )
-
-    assert "GENERATE_REPORT_SNAPSHOTS" not in runner.os.environ
+    assert runner.os.environ["FORCE_REANALYZE"] == "0"
+    assert runner.os.environ["FORCE_RETRANSCRIBE"] == "0"
 
 
-def _minimal_pipeline_config(generate_report_snapshots: bool):
+def _minimal_pipeline_config():
     return SimpleNamespace(
         whisper_model="large-v3-turbo",
         whisper_device="cpu",
@@ -74,13 +56,12 @@ def _minimal_pipeline_config(generate_report_snapshots: bool):
         ollama_model="test-model",
         analysis_workers=1,
         process_limit=1,
-        generate_report_snapshots=generate_report_snapshots,
     )
 
 
 def test_pipeline_run_syncs_even_when_snapshot_reports_disabled(monkeypatch):
     events = []
-    cfg = _minimal_pipeline_config(generate_report_snapshots=False)
+    cfg = _minimal_pipeline_config()
     pl = pipeline.Pipeline(config=cfg, storage=object(), audio=object(), llm=object(), pbx=object())
 
     monkeypatch.setattr(pipeline, "discover_and_filter_files", lambda config, storage: [Path("call.wav")])
@@ -89,16 +70,15 @@ def test_pipeline_run_syncs_even_when_snapshot_reports_disabled(monkeypatch):
     monkeypatch.setattr(pl, "run_translation_phase", lambda files_metadata: files_metadata)
     monkeypatch.setattr(pl, "run_analysis_phase", lambda files_metadata: [{"status": "processed"}])
     monkeypatch.setattr(pl, "sync_to_postgres", lambda per_call: events.append("sync"))
-    monkeypatch.setattr(pl, "generate_reports", lambda per_call: events.append("reports"))
 
     pl.run()
 
     assert events == ["sync"]
 
 
-def test_pipeline_run_generates_snapshots_only_after_sync(monkeypatch):
+def test_pipeline_run_does_not_generate_snapshots_during_process(monkeypatch):
     events = []
-    cfg = _minimal_pipeline_config(generate_report_snapshots=True)
+    cfg = _minimal_pipeline_config()
     pl = pipeline.Pipeline(config=cfg, storage=object(), audio=object(), llm=object(), pbx=object())
 
     monkeypatch.setattr(pipeline, "discover_and_filter_files", lambda config, storage: [Path("call.wav")])
@@ -107,11 +87,50 @@ def test_pipeline_run_generates_snapshots_only_after_sync(monkeypatch):
     monkeypatch.setattr(pl, "run_translation_phase", lambda files_metadata: files_metadata)
     monkeypatch.setattr(pl, "run_analysis_phase", lambda files_metadata: [{"status": "processed"}])
     monkeypatch.setattr(pl, "sync_to_postgres", lambda per_call: events.append("sync"))
-    monkeypatch.setattr(pl, "generate_reports", lambda per_call: events.append("reports"))
-
     pl.run()
 
-    assert events == ["sync", "reports"]
+    assert events == ["sync"]
+
+
+def test_run_export_snapshots_once_uses_persisted_reporting_source(monkeypatch):
+    class FakeSource:
+        source_name = "json"
+
+        def close(self):
+            return None
+
+    captured = {}
+
+    monkeypatch.setattr(runner, "load_app_config", lambda: SimpleNamespace(out=Path(".")))
+    monkeypatch.setenv("SPAM_PROBABILITY_THRESHOLD", "0.75")
+    monkeypatch.setattr(runner, "_build_reporting_source", lambda: FakeSource())
+
+    def _fake_export_snapshot_reports(*, output_dir, source, spam_threshold):
+        captured["output_dir"] = output_dir
+        captured["source_name"] = source.source_name
+        captured["spam_threshold"] = spam_threshold
+        return {"ok": True}
+
+    monkeypatch.setattr(runner, "export_snapshot_reports", _fake_export_snapshot_reports)
+
+    result = runner._run_export_snapshots_once()
+
+    assert result["ok"] is True
+    assert captured["output_dir"] == Path(".")
+    assert captured["source_name"] == "json"
+    assert captured["spam_threshold"] == 0.75
+
+
+def test_run_export_snapshots_updates_job_done(monkeypatch):
+    updates = []
+    monkeypatch.setattr(runner.job_store, "update_job", lambda job_id, **kwargs: updates.append(kwargs))
+    monkeypatch.setattr(runner, "_run_export_snapshots_once", lambda: {"overall_report": "out/report.json"})
+
+    runner.run_export_snapshots("job-export")
+
+    assert updates[0]["status"] == runner.JobStatus.running
+    assert updates[-1]["status"] == runner.JobStatus.done
+    assert updates[-1]["result"]["overall_report"] == "out/report.json"
 
 
 def test_run_keyword_refresh_once_skips_without_postgres(monkeypatch):

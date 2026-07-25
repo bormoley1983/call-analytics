@@ -2,14 +2,20 @@ import json
 
 from adapters.reporting_json import JsonReportingSource
 from api.routes import reports as report_routes
-from api.schemas import CustomersSortQuery, ManagersSortQuery, ReportFiltersQuery
-from core.reporting_service import (
-    build_customer_followup_report,
-    build_customers_report,
-    build_managers_report,
-    build_overall_report,
-)
+from api.schemas import (CustomersSortQuery, ManagersSortQuery,
+                         ReportFiltersQuery)
+from core.reporting_service import (build_customer_followup_report,
+                                    build_customers_report,
+                                    build_managers_report,
+                                    build_overall_report)
 from domain.reporting import ReportFilters
+
+
+def _snapshot_analysis_files(base):
+    return {
+        path.name: path.read_text(encoding="utf-8")
+        for path in sorted(base.glob("*.json"))
+    }
 
 
 def _write_analysis(base, call_id, **overrides):
@@ -100,6 +106,29 @@ def test_overall_route_includes_keyword_ai_analysis(monkeypatch, tmp_path):
 
     assert response["keyword_ai_analysis"]["analysis_id"] == "analysis-1"
     assert response["keyword_ai_analysis"]["keyword_id"] is None
+
+
+def test_report_routes_do_not_mutate_analysis_storage(monkeypatch, tmp_path):
+    _write_analysis(tmp_path, "call-1", manager_id="sales_001", effective_call=True)
+    _write_analysis(tmp_path, "call-2", manager_id="sales_002", effective_call=False)
+    before = _snapshot_analysis_files(tmp_path)
+
+    monkeypatch.setenv("SPAM_PROBABILITY_THRESHOLD", "0.7")
+    monkeypatch.setattr(report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path))
+    monkeypatch.setattr(
+        report_routes,
+        "_build_keyword_ai_analysis_payload",
+        lambda keyword_id=None: {"analysis_id": "analysis-guard", "keyword_id": keyword_id},
+    )
+
+    overall = report_routes.overall_report(ReportFiltersQuery())
+    managers = report_routes.managers_report(ReportFiltersQuery(), ManagersSortQuery())
+
+    after = _snapshot_analysis_files(tmp_path)
+
+    assert overall["total_calls"] == 2
+    assert managers["total_managers"] == 2
+    assert before == after
 
 
 def test_build_managers_report_from_json_source(tmp_path):

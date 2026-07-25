@@ -9,7 +9,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Literal, Tuple, cast
 
 import requests
 import yaml
@@ -92,10 +92,31 @@ OLLAMA_TOKEN_OVERHEAD = int(os.getenv("OLLAMA_TOKEN_OVERHEAD", "1800"))
 ANALYSIS_WORKERS = int(os.getenv("ANALYSIS_WORKERS", "1"))
 SPAM_PROBABILITY_THRESHOLD = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
 
+_raw_stt_engine = os.getenv("STT_ENGINE", "faster-whisper").strip().lower()
+_stt_aliases = {
+    "whisper": "faster-whisper",
+    "faster_whisper": "faster-whisper",
+    "faster-whisper": "faster-whisper",
+    "canary": "canary",
+}
+STT_ENGINE = _stt_aliases.get(_raw_stt_engine, _raw_stt_engine)
+
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3-turbo")
 DEVICE = os.getenv("WHISPER_DEVICE", "cuda")
 COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
 WHISPER_BEAM_SIZE = int(os.getenv("WHISPER_BEAM_SIZE", "5"))
+STT_LANGUAGE = os.getenv("STT_LANGUAGE", "auto").strip().lower()
+
+CANARY_MODEL_ID = os.getenv("CANARY_MODEL_ID", "nvidia/canary-1b-v2")
+CANARY_MODEL_REVISION = os.getenv("CANARY_MODEL_REVISION", "unknown")
+CANARY_DEVICE = os.getenv("CANARY_DEVICE", DEVICE)
+CANARY_COMPUTE_TYPE = os.getenv("CANARY_COMPUTE_TYPE", "float16")
+CANARY_BATCH_SIZE = int(os.getenv("CANARY_BATCH_SIZE", "1"))
+CANARY_BEAM_SIZE = int(os.getenv("CANARY_BEAM_SIZE", "1"))
+CANARY_TASK = os.getenv("CANARY_TASK", "asr")
+CANARY_SOURCE_LANG = os.getenv("CANARY_SOURCE_LANG", "auto")
+CANARY_TARGET_LANG = os.getenv("CANARY_TARGET_LANG", "auto")
+CANARY_RETURN_HYPOTHESES = os.getenv("CANARY_RETURN_HYPOTHESES", "1") == "1"
 
 MIN_BYTES = int(os.getenv("MIN_BYTES", "20000"))
 MIN_SECONDS = float(os.getenv("MIN_SECONDS", "1.0"))
@@ -226,7 +247,21 @@ class AppConfig:
     whisper_device: str
     whisper_compute_type: str
     whisper_beam_size: int
+    stt_language: str
     whisper_initial_prompt: str
+
+    # STT engine selector and provider-specific settings
+    stt_engine: Literal["faster-whisper", "canary"]
+    canary_model_id: str
+    canary_model_revision: str
+    canary_device: str
+    canary_compute_type: str
+    canary_batch_size: int
+    canary_beam_size: int
+    canary_task: str
+    canary_source_lang: str
+    canary_target_lang: str
+    canary_return_hypotheses: bool
     
     # Processing settings
     min_bytes: int
@@ -270,6 +305,12 @@ def load_app_config() -> AppConfig:
     brand_corrections, whisper_prompt = load_brand_corrections()
     manager_mapper = ManagerMapper(MANAGERS_CONFIG)
 
+    stt_engine = STT_ENGINE
+    if stt_engine not in {"faster-whisper", "canary"}:
+        logger.warning("Unsupported STT_ENGINE=%s, falling back to faster-whisper", stt_engine)
+        stt_engine = "faster-whisper"
+    stt_engine = cast(Literal["faster-whisper", "canary"], stt_engine)
+
     # Read mutable flags at runtime so API request overrides are honored
     process_limit = int(os.getenv("PROCESS_LIMIT", "30"))
     force_reanalyze = os.getenv("FORCE_REANALYZE", "0") == "1"
@@ -283,7 +324,8 @@ def load_app_config() -> AppConfig:
     logger.info(
         "Configuration loaded: model=%s context=%s tokens brand_corrections=%d "
         "managers=%d whisper=%s(%s/%s) limit=%d reanalyze=%s retranscribe=%s "
-        "translate_uk=%s report_snapshots=%s detected_ctx=%s keep_alive=%s think=%s",
+        "translate_uk=%s report_snapshots=%s detected_ctx=%s keep_alive=%s think=%s "
+        "stt_engine=%s canary_model=%s",
         OLLAMA_MODEL,
         f"{context_window:,}",
         len(brand_corrections),
@@ -297,6 +339,8 @@ def load_app_config() -> AppConfig:
         f"{detected_context_window:,}",
         OLLAMA_KEEP_ALIVE,
         OLLAMA_THINK,
+        stt_engine,
+        CANARY_MODEL_ID,
     )
     
     return AppConfig(
@@ -320,7 +364,19 @@ def load_app_config() -> AppConfig:
         whisper_device=DEVICE,
         whisper_compute_type=COMPUTE_TYPE,
         whisper_beam_size=WHISPER_BEAM_SIZE,
+        stt_language=STT_LANGUAGE,
         whisper_initial_prompt=whisper_prompt,
+        stt_engine=stt_engine,
+        canary_model_id=CANARY_MODEL_ID,
+        canary_model_revision=CANARY_MODEL_REVISION,
+        canary_device=CANARY_DEVICE,
+        canary_compute_type=CANARY_COMPUTE_TYPE,
+        canary_batch_size=CANARY_BATCH_SIZE,
+        canary_beam_size=CANARY_BEAM_SIZE,
+        canary_task=CANARY_TASK,
+        canary_source_lang=CANARY_SOURCE_LANG,
+        canary_target_lang=CANARY_TARGET_LANG,
+        canary_return_hypotheses=CANARY_RETURN_HYPOTHESES,
         min_bytes=MIN_BYTES,
         min_seconds=MIN_SECONDS,
         process_limit=process_limit,

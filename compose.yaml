@@ -23,7 +23,7 @@ services:
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
       - PYTHONPATH=/work/src
-      - STT_BACKEND=whisper
+      - STT_ENGINE=faster-whisper
     ports:
       - "8800:8000"
     command: ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -39,7 +39,7 @@ services:
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
       - PYTHONPATH=/work/src
-      - STT_BACKEND=whisper
+      - STT_ENGINE=faster-whisper
     ports:
       - "8800:8000"
     command: ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -55,7 +55,7 @@ services:
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
       - PYTHONPATH=/work/src
-      - STT_BACKEND=canary
+      - STT_ENGINE=canary
       - NEMO_CACHE_DIR=/root/.cache/huggingface/nemo
       - TORCH_HOME=/root/.cache/huggingface/torch
       - TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1

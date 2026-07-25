@@ -55,3 +55,29 @@ class JsonStorage:
         self.analysis_path(call_id).write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+
+    def mark_analysis_stale_if_text_changed(self, call_id: str, text_sha256: str) -> bool:
+        path = self.analysis_path(call_id)
+        if not path.exists():
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+        old_hash = str(data.get("input_text_sha256") or "")
+        if old_hash == text_sha256:
+            return False
+        path.unlink(missing_ok=True)
+        return True
+
+    def promote_stt_result(
+        self,
+        call_id: str,
+        transcript: Dict[str, Any],
+        *,
+        stt_run_id: str,
+        stt_config_hash: str,
+        source_text_sha256: str,
+    ) -> None:
+        promoted = dict(transcript)
+        promoted["stt_run_id"] = stt_run_id
+        promoted["stt_config_hash"] = stt_config_hash
+        promoted["source_text_sha256"] = source_text_sha256
+        self.save_transcript(call_id, promoted)

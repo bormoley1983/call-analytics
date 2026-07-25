@@ -3,6 +3,7 @@
 Production-first call analytics for FreePBX/Asterisk recordings.
 
 The production flow is built around:
+
 - PostgreSQL as the system of record
 - Whisper for transcription
 - Ollama for call analysis and keyword AI analysis
@@ -19,6 +20,7 @@ JSON artifacts still exist for local development, migration, and optional snapsh
 - Valid config files under `config/`
 
 Required production inputs:
+
 - `config/.env`
 - `config/managers.yaml`
 - `config/brands.yaml`
@@ -71,13 +73,16 @@ docker compose --profile canary up -d stt-canary
 Note: separate containers improve lifecycle isolation, but both services still use the same physical GPU.
 
 The API is available at:
+
 - `http://localhost:8800/docs`
 - `http://localhost:8800/redoc`
 
 Canary service (when profile is enabled) is available at:
+
 - `http://localhost:8810/docs`
 
 Notes:
+
 - Docker Compose publishes container port `8000` on host port `8800` (`8800:8000`).
 - Canary profile publishes container port `8000` on host port `8810` (`8810:8000`).
 - From another machine, replace `localhost` with the server hostname or IP, for example `http://call-analytics.local:8800/docs`.
@@ -111,6 +116,7 @@ curl -X POST http://localhost:8800/jobs/sync-and-process \
 ```
 
 Important behavior:
+
 - `POST /jobs/sync` downloads files only. It does not run AI keyword analysis.
 - `POST /jobs/process` runs transcription and analysis, stores results in Postgres, then automatically:
   - refreshes keywords
@@ -125,12 +131,14 @@ curl http://localhost:8800/jobs/<job_id>
 ```
 
 A successful process-like job may include these sections in `result`:
+
 - `keywords_refresh`
 - `keyword_ai_analysis`
 
 ## Reports
 
 Main production reports:
+
 - `GET /reports/overall`
 - `GET /reports/managers`
 - `GET /reports/manager/{manager_id}`
@@ -190,6 +198,7 @@ curl -X POST http://localhost:8800/keywords/refresh \
 ```
 
 This endpoint:
+
 - syncs `config/keywords.yaml` into Postgres
 - materializes keyword matches from existing analyses
 - runs AI keyword analysis at the end
@@ -197,6 +206,7 @@ This endpoint:
 ### Low-level maintenance endpoints
 
 Available for admin/debugging use:
+
 - `POST /keywords/sync`
 - `POST /keywords/materialize`
 
@@ -205,6 +215,7 @@ These also trigger AI keyword analysis after they complete successfully.
 ### Keyword discovery and AI catalog analysis
 
 Optional admin flows:
+
 - `POST /keywords/generation/candidates`
 - `POST /keywords/generation/publish`
 - `POST /keywords/catalog/analysis`
@@ -216,7 +227,7 @@ Optional admin flows:
 ### Core runtime
 
 | Variable | Default | Production note |
-|---|---|---|
+| --- | --- | --- |
 | `POSTGRES_DSN` | unset | Required in production |
 | `OLLAMA_URL` | `http://localhost:11434` | Must be reachable from container |
 | `OLLAMA_MODEL` | `qwen3.5:27b` | Main analysis and keyword AI model |
@@ -227,9 +238,22 @@ Optional admin flows:
 | `PROCESS_LIMIT` | `30` | `0` means unlimited |
 | `DAYS` | all eligible | Used by processing flow |
 
+### STT engine selection
+
+| Variable | Default | Production note |
+| --- | --- | --- |
+| `STT_ENGINE` | `faster-whisper` | Valid: `faster-whisper`, `canary`; compose services should set this explicitly |
+| `CANARY_MODEL_ID` | `nvidia/canary-1b-v2` | Canary model name passed to NeMo |
+| `CANARY_MODEL_REVISION` | `unknown` | Free-form provenance field |
+| `CANARY_DEVICE` | `cuda` | Use `cuda` or `cuda:0` for GPU, fallback to CPU only when CUDA is unavailable |
+| `CANARY_COMPUTE_TYPE` | `float16` | Reserved for provider-specific decode/runtime tuning |
+| `CANARY_BATCH_SIZE` | `1` | Batch size for Canary transcribe calls |
+| `CANARY_BEAM_SIZE` | `1` | Reserved for provider-specific decode/runtime tuning |
+
 ### PBX sync
 
 Optional variables for `POST /jobs/sync` and `POST /jobs/sync-and-process`:
+
 - `PBX_HOST`
 - `PBX_PORT`
 - `PBX_USER`
@@ -254,6 +278,7 @@ calls_raw/YYYY/MM/DD/<dir>-<dst>-<src>-<YYYYMMDD>-<HHMMSS>-<uniqueid>.wav
 ## Legacy JSON Mode
 
 JSON storage and JSON/YAML read paths remain in the repository for:
+
 - local development
 - migration from older deployments
 - optional snapshot exports

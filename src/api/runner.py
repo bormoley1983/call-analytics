@@ -15,10 +15,10 @@ from adapters.storage_json import JsonStorage
 from adapters.storage_postgres import PostgresStorage
 from api import job_store
 from api.schemas import JobStatus, ProcessRequest, SyncRequest
-from core.keywords_ai_runtime import (
-    auto_keyword_ai_analysis_enabled as _auto_keyword_ai_analysis_enabled_impl,
-    run_keyword_ai_analysis_once as _run_keyword_ai_analysis_once_impl,
-)
+from core.keywords_ai_runtime import \
+    auto_keyword_ai_analysis_enabled as _auto_keyword_ai_analysis_enabled_impl
+from core.keywords_ai_runtime import \
+    run_keyword_ai_analysis_once as _run_keyword_ai_analysis_once_impl
 from core.keywords_materialize import materialize_call_keywords
 from core.keywords_refresh import refresh_keywords_data
 from core.pipeline import Pipeline

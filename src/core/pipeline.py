@@ -1,10 +1,10 @@
-import gc
 import json
 import logging
 import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -15,12 +15,16 @@ from adapters.storage_postgres import PostgresStorage
 from core.planner import categorize_files, discover_and_filter_files
 from core.reports import aggregate_report, aggregate_report_by_manager
 from core.rules import ensure_analysis_schema, sha12
-from core.transcription import transcribe
+from core.stt_factory import build_stt_adapter
+from core.stt_service import SttService
+from core.transcript_fingerprint import transcript_text_sha256
 from domain.config import AppConfig
+from domain.stt import SttRequest
 from ports.audio import AudioPort
 from ports.llm import LlmPort
 from ports.pbx import PbxPort
 from ports.storage import StoragePort
+from ports.stt import SttProcessorPort
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +33,40 @@ def _progress_enabled() -> bool:
     return os.getenv("ENABLE_TQDM", "1") == "1" and sys.stderr.isatty()
 
 
+def _sha256_file(path: Path) -> str:
+    h = sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
 class Pipeline:
-    def __init__(self, config: AppConfig, storage: StoragePort, audio: AudioPort, llm: LlmPort, pbx: PbxPort):
+    def __init__(
+        self,
+        config: AppConfig,
+        storage: StoragePort,
+        audio: AudioPort,
+        llm: LlmPort,
+        pbx: PbxPort,
+        stt: SttProcessorPort | None = None,
+    ):
         self.config = config
         self.storage = storage
         self.audio = audio
         self.llm = llm
         self.pbx = pbx
+        self._stt = stt
+        self._stt_service: SttService | None = None
+
+    def _get_stt_service(self) -> SttService:
+        if self._stt_service is None:
+            processor = self._stt or build_stt_adapter(self.config)
+            self._stt_service = SttService(processor, self.config)
+        return self._stt_service
 
     def run(self) -> None:
         started_at = time.perf_counter()
@@ -118,120 +149,117 @@ class Pipeline:
 
         logger.info("Phase 1: Transcription (Whisper) for %d file(s)", len(files))
 
-        model: Any = None
         files_metadata: List[Dict[str, Any]] = []
 
-        for index, src in enumerate(tqdm(files, desc="Transcribing", disable=not _progress_enabled()), start=1):
-            meta = self._build_meta(src)
-            logger.info(
-                "[%d/%d] Preparing file=%s manager=%s direction=%s",
-                index,
-                len(files),
-                meta["source_file"],
-                meta["manager_name"],
-                meta.get("direction", "unknown"),
-            )
-            if "call_id" not in meta:
-                meta["status"] = "skipped_too_small"
-                files_metadata.append(meta)
+        stt_service = self._get_stt_service()
+        try:
+            for index, src in enumerate(tqdm(files, desc="Transcribing", disable=not _progress_enabled()), start=1):
+                meta = self._build_meta(src)
                 logger.info(
-                    "Skipping file=%s reason=too_small min_bytes=%d",
+                    "[%d/%d] Preparing file=%s manager=%s direction=%s",
+                    index,
+                    len(files),
                     meta["source_file"],
-                    self.config.min_bytes,
+                    meta["manager_name"],
+                    meta.get("direction", "unknown"),
                 )
-                continue
-
-            dur = self.audio.duration_seconds(src)
-            meta["audio_seconds"] = dur
-
-            if dur < self.config.min_seconds:
-                meta["status"] = "skipped_too_short"
-                files_metadata.append(meta)
-                logger.info(
-                    "Skipping call_id=%s file=%s reason=too_short duration=%.2fs min_seconds=%.2fs",
-                    meta["call_id"],
-                    meta["source_file"],
-                    dur,
-                    self.config.min_seconds,
-                )
-                continue
-            
-            call_id = meta["call_id"]
-            norm_path = self.config.norm / f"{call_id}.wav"
-
-            if not norm_path.exists():
-                logger.info("Normalizing audio: call_id=%s source=%s target=%s", call_id, src, norm_path)
-                self.audio.normalize(src, norm_path)
-            else:
-                logger.debug("Normalized audio already exists: call_id=%s path=%s", call_id, norm_path)
-
-            # Transcribe
-            transcript: Dict[str, Any]
-            newly_transcribed = False
-            if (not self.config.force_retranscribe) and self.storage.transcript_exists(call_id):
-                transcript = self.storage.load_transcript(call_id)
-                logger.info("Reusing existing transcript: call_id=%s stage=%s", call_id, transcript.get("_pipeline_stage", "unknown"))
-            else:
-                if model is None:
-                    # Import lazily so non-Whisper images can import app modules.
-                    from faster_whisper import WhisperModel
+                if "call_id" not in meta:
+                    meta["status"] = "skipped_too_small"
+                    files_metadata.append(meta)
                     logger.info(
-                        "Loading Whisper model: name=%s device=%s compute_type=%s",
-                        self.config.whisper_model,
-                        self.config.whisper_device,
-                        self.config.whisper_compute_type,
+                        "Skipping file=%s reason=too_small min_bytes=%d",
+                        meta["source_file"],
+                        self.config.min_bytes,
                     )
-                    model = WhisperModel(
-                        self.config.whisper_model,
-                        device=self.config.whisper_device,
-                        compute_type=self.config.whisper_compute_type
+                    continue
+
+                dur = self.audio.duration_seconds(src)
+                meta["audio_seconds"] = dur
+
+                if dur < self.config.min_seconds:
+                    meta["status"] = "skipped_too_short"
+                    files_metadata.append(meta)
+                    logger.info(
+                        "Skipping call_id=%s file=%s reason=too_short duration=%.2fs min_seconds=%.2fs",
+                        meta["call_id"],
+                        meta["source_file"],
+                        dur,
+                        self.config.min_seconds,
                     )
-                logger.info("Running Whisper transcription: call_id=%s duration=%.2fs", call_id, dur)
-                transcribe_started = time.perf_counter()
-                transcript = transcribe(model, norm_path, self.config)
-                newly_transcribed = True
+                    continue
+
+                call_id = meta["call_id"]
+                norm_path = self.config.norm / f"{call_id}.wav"
+
+                if not norm_path.exists():
+                    logger.info("Normalizing audio: call_id=%s source=%s target=%s", call_id, src, norm_path)
+                    self.audio.normalize(src, norm_path)
+                else:
+                    logger.debug("Normalized audio already exists: call_id=%s path=%s", call_id, norm_path)
+
+                # Transcribe
+                transcript: Dict[str, Any]
+                newly_transcribed = False
+                if (not self.config.force_retranscribe) and self.storage.transcript_exists(call_id):
+                    transcript = self.storage.load_transcript(call_id)
+                    logger.info("Reusing existing transcript: call_id=%s stage=%s", call_id, transcript.get("_pipeline_stage", "unknown"))
+                else:
+                    logger.info(
+                        "Running STT transcription: call_id=%s duration=%.2fs provider=%s model=%s",
+                        call_id,
+                        dur,
+                        stt_service.identity.provider,
+                        stt_service.identity.model_id,
+                    )
+                    request = SttRequest(
+                        call_id=call_id,
+                        audio_path=norm_path,
+                        audio_seconds=dur,
+                        audio_sha256=_sha256_file(norm_path),
+                        language=self.config.stt_language,
+                    )
+                    transcribe_started = time.perf_counter()
+                    transcript = stt_service.transcribe_one(request)
+                    newly_transcribed = True
+                    logger.info(
+                        "STT complete: call_id=%s segments=%d text_chars=%d elapsed=%.2fs",
+                        call_id,
+                        len(transcript.get("segments", [])),
+                        len(transcript.get("text", "")),
+                        time.perf_counter() - transcribe_started,
+                    )
+
+                # Add manager info to transcript
+                transcript["manager_name"] = meta["manager_name"]
+                transcript["manager_id"] = meta["manager_id"]
+                transcript["role"] = meta["role"]
+                transcript["call_meta"] = {
+                    "direction": meta.get("direction"),
+                    "src_number": meta.get("src_number"),
+                    "dst_number": meta.get("dst_number"),
+                    "date": meta.get("date"),
+                    "time": meta.get("time"),
+                }
+
+                # Save immediately after STT so a crash during translation
+                # doesn't require re-running GPU transcription
+                if newly_transcribed or self.config.force_retranscribe:
+                    transcript["_pipeline_stage"] = "transcribed"
+                    self.storage.save_transcript(call_id, transcript)
+                    logger.debug("Saved transcript snapshot: call_id=%s stage=transcribed", call_id)
+
+                meta["stage"] = transcript.get("_pipeline_stage", "transcribed")
+                meta["status"] = "transcribed"
+                files_metadata.append(meta)
                 logger.info(
-                    "Whisper complete: call_id=%s segments=%d text_chars=%d elapsed=%.2fs",
+                    "File ready for analysis: call_id=%s file=%s stage=%s",
                     call_id,
-                    len(transcript.get("segments", [])),
-                    len(transcript.get("text", "")),
-                    time.perf_counter() - transcribe_started,
+                    meta["source_file"],
+                    meta["stage"],
                 )
+        finally:
+            stt_service.close()
 
-            # Add manager info to transcript
-            transcript["manager_name"] = meta["manager_name"]
-            transcript["manager_id"] = meta["manager_id"]
-            transcript["role"] = meta["role"]
-            transcript["call_meta"] = {
-                "direction": meta.get("direction"),
-                "src_number": meta.get("src_number"),
-                "dst_number": meta.get("dst_number"),
-                "date": meta.get("date"),
-                "time": meta.get("time"),
-            }
-
-            # Save immediately after Whisper so a crash during translation
-            # doesn't require re-running the GPU transcription
-            if newly_transcribed or self.config.force_retranscribe:
-                transcript["_pipeline_stage"] = "transcribed"
-                self.storage.save_transcript(call_id, transcript)
-                logger.debug("Saved transcript snapshot: call_id=%s stage=transcribed", call_id)
-
-            meta["stage"] = transcript.get("_pipeline_stage", "transcribed")
-            meta["status"] = "transcribed"
-            files_metadata.append(meta)
-            logger.info(
-                "File ready for analysis: call_id=%s file=%s stage=%s",
-                call_id,
-                meta["source_file"],
-                meta["stage"],
-            )
-
-        # Free Whisper model from memory
-        if model is not None:
-            del model
-            gc.collect()
-            logger.info("Whisper model released from memory.")
         transcribed_count = len([m for m in files_metadata if m.get('status') == 'transcribed'])
         logger.info("Transcription complete. Processed %d file(s).", transcribed_count)
         
@@ -317,6 +345,8 @@ class Pipeline:
         def _analyze_one(meta: Dict[str, Any]) -> Dict[str, Any]:
             call_id = meta["call_id"]
             transcript = self.storage.load_transcript(call_id)
+            active_text_hash = transcript_text_sha256(transcript)
+            self.storage.mark_analysis_stale_if_text_changed(call_id, active_text_hash)
             if (not self.config.force_reanalyze) and self.storage.analysis_exists(call_id):
                 analysis = self.storage.load_analysis(call_id)
                 analysis = ensure_analysis_schema(analysis, meta)
@@ -353,6 +383,7 @@ class Pipeline:
                 "manager_name": meta["manager_name"],
                 "manager_id": meta["manager_id"],
                 "role": meta["role"],
+                "input_text_sha256": active_text_hash,
                 "call_meta": {
                     "direction": meta.get("direction"),
                     "src_number": meta.get("src_number"),

@@ -7,6 +7,8 @@ from psycopg2 import extensions as pg_extensions
 from psycopg2 import pool as pg_pool
 from psycopg2.extras import Json
 
+from adapters.stt_runs_schema import STT_RUNS_DDL
+
 DDL = """
 CREATE TABLE IF NOT EXISTS transcripts (
     call_id     TEXT PRIMARY KEY,
@@ -149,6 +151,8 @@ CREATE INDEX IF NOT EXISTS idx_keyword_ai_analyses_created_at ON keyword_ai_anal
 CREATE INDEX IF NOT EXISTS idx_keyword_ai_analysis_items_analysis_id ON keyword_ai_analysis_items(analysis_id);
 """
 
+DDL += "\n" + STT_RUNS_DDL
+
 
 def _jsonb(value: Any) -> Json:
     return Json(value, dumps=lambda obj: json.dumps(obj, ensure_ascii=False))
@@ -211,6 +215,7 @@ def _analysis_row(call_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         "key_questions": _jsonb(data.get("key_questions") or []),
         "objections": _jsonb(data.get("objections") or []),
         "analysis_error": data.get("analysis_error"),
+        "input_text_sha256": data.get("input_text_sha256"),
         "data": _jsonb(data),
     }
 
@@ -315,6 +320,71 @@ class PostgresStorage:
     def save_analysis(self, call_id: str, data: Dict[str, Any]) -> None:
         self.upsert_analysis(call_id, data)          
 
+    def mark_analysis_stale_if_text_changed(self, call_id: str, text_sha256: str) -> bool:
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT input_text_sha256 FROM analyses WHERE call_id = %s", (call_id,))
+                row = cur.fetchone()
+                if row is None:
+                    return False
+                old_hash = row[0] or ""
+                if old_hash == text_sha256:
+                    return False
+                cur.execute("DELETE FROM analyses WHERE call_id = %s", (call_id,))
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._putconn(conn)
+
+    def promote_stt_result(
+        self,
+        call_id: str,
+        transcript: Dict[str, Any],
+        *,
+        stt_run_id: str,
+        stt_config_hash: str,
+        source_text_sha256: str,
+    ) -> None:
+        promoted = dict(transcript)
+        promoted["stt_run_id"] = stt_run_id
+        promoted["stt_config_hash"] = stt_config_hash
+        promoted["source_text_sha256"] = source_text_sha256
+
+        row = _transcript_row(call_id, promoted)
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO transcripts (call_id, pipeline_stage, stt_run_id, stt_config_hash, source_text_sha256, data)
+                    VALUES (%s, %s, %s::uuid, %s, %s, %s)
+                    ON CONFLICT (call_id) DO UPDATE SET
+                      pipeline_stage = EXCLUDED.pipeline_stage,
+                      stt_run_id = EXCLUDED.stt_run_id,
+                      stt_config_hash = EXCLUDED.stt_config_hash,
+                      source_text_sha256 = EXCLUDED.source_text_sha256,
+                      data = EXCLUDED.data
+                    """,
+                    (
+                        call_id,
+                        row["pipeline_stage"],
+                        stt_run_id,
+                        stt_config_hash,
+                        source_text_sha256,
+                        row["data"],
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._putconn(conn)
+
     # --- upsert helpers (also kept for sync_per_call / migration) ---
 
     def upsert_transcript(self, call_id: str, data: Dict[str, Any]) -> None:
@@ -347,8 +417,8 @@ class PostgresStorage:
                          (call_id, direction, manager_id, manager_name, role,
                           spam_probability, effective_call, intent, outcome,
                           summary, audio_seconds, call_date, src_number,
-                          dst_number, key_questions, objections, analysis_error, data)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                                  dst_number, key_questions, objections, analysis_error, input_text_sha256, data)
+                              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                        ON CONFLICT (call_id) DO UPDATE SET
                          direction        = EXCLUDED.direction,
                          manager_id       = EXCLUDED.manager_id,
@@ -366,7 +436,8 @@ class PostgresStorage:
                          dst_number       = EXCLUDED.dst_number,
                          key_questions    = EXCLUDED.key_questions,
                          objections       = EXCLUDED.objections,
-                         analysis_error   = EXCLUDED.analysis_error""",
+                         analysis_error   = EXCLUDED.analysis_error,
+                         input_text_sha256 = EXCLUDED.input_text_sha256""",
                     (
                         row["call_id"],
                         row["direction"],
@@ -385,6 +456,7 @@ class PostgresStorage:
                         row["key_questions"],
                         row["objections"],
                         row["analysis_error"],
+                        row["input_text_sha256"],
                         row["data"],
                     ),
                 )

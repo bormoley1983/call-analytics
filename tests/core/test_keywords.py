@@ -1,25 +1,22 @@
 import copy
 import json
 
-import yaml
 import pytest
+import yaml
 from fastapi import HTTPException
 
+from adapters.keywords_postgres import PostgresKeywordSource
+from adapters.keywords_yaml import YamlKeywordSource
 from adapters.reporting_json import JsonReportingSource
 from adapters.reporting_postgres import PostgresReportingSource
 from api.routes import keywords as keyword_routes
+from api.routes import keywords_generation as keyword_generation_routes
 from api.routes import reports as report_routes
-from adapters.keywords_postgres import PostgresKeywordSource
-from adapters.keywords_yaml import YamlKeywordSource
-from api.schemas import (
-    KeywordCallsSortQuery,
-    KeywordManagersSortQuery,
-    KeywordsSortQuery,
-    KeywordSyncRequest,
-    KeywordUpsertRequest,
-    PaginationQuery,
-    ReportFiltersQuery,
-)
+from api.schemas import (KeywordCallsSortQuery,
+                         KeywordGenerationBootstrapRequest,
+                         KeywordManagersSortQuery, KeywordsSortQuery,
+                         KeywordSyncRequest, KeywordUpsertRequest,
+                         PaginationQuery, ReportFiltersQuery)
 from core.keywords_materialize import materialize_call_keywords
 from core.keywords_service import build_keywords_report, list_keywords
 from core.keywords_sync import sync_keywords_to_postgres
@@ -215,6 +212,125 @@ class FakeReportingSource:
 
     def close(self):
         return None
+
+
+def test_keywords_bootstrap_generates_publishes_and_materializes(monkeypatch):
+    keyword_source = FakeWritableKeywordSource()
+    reporting_source = FakeReportingSource(
+        [
+            type(
+                "Record",
+                (),
+                {
+                    "call_id": "call-1",
+                    "summary": "delivery issue and refund request",
+                    "key_questions": ["Where is delivery?", "Can I get refund?"],
+                    "objections": [],
+                    "manager_id": "sales_001",
+                    "spam_probability": 0.1,
+                    "effective_call": True,
+                    "intent": "консультація",
+                    "outcome": "продаж",
+                    "call_date": "20260725",
+                },
+            )(),
+            type(
+                "Record",
+                (),
+                {
+                    "call_id": "call-2",
+                    "summary": "refund status and delayed delivery",
+                    "key_questions": ["Refund status?"],
+                    "objections": [],
+                    "manager_id": "sales_002",
+                    "spam_probability": 0.1,
+                    "effective_call": True,
+                    "intent": "консультація",
+                    "outcome": "продаж",
+                    "call_date": "20260725",
+                },
+            )(),
+        ]
+    )
+
+    monkeypatch.setattr(keyword_generation_routes, "_get_postgres_reporting_source", lambda: reporting_source)
+    monkeypatch.setattr(keyword_generation_routes, "_get_postgres_keyword_source", lambda: keyword_source)
+    monkeypatch.setattr(keyword_generation_routes, "run_keyword_ai_analysis_once", lambda trigger, skip_if_empty=False: {"trigger": trigger})
+
+    response = keyword_generation_routes.bootstrap_keywords(
+        KeywordGenerationBootstrapRequest(
+            min_token_length=4,
+            max_ngram_words=1,
+            min_support_calls=2,
+            min_total_matches=2,
+            max_candidates=20,
+            materialize_after_publish=True,
+            run_ai_analysis_after_publish=True,
+        )
+    )
+
+    assert response["generation"]["candidate_count"] >= 1
+    assert response["publish"]["created"] >= 1
+    assert response["materialized"] is True
+    assert response["materialize"]["processed_calls"] == 2
+    assert response["keyword_ai_analysis"] == {"trigger": "keywords-bootstrap"}
+
+
+def test_keywords_bootstrap_skips_materialize_and_ai_without_changes(monkeypatch):
+    keyword_source = FakeWritableKeywordSource(
+        [
+            KeywordDefinition(
+                keyword_id="delivery",
+                label="Delivery",
+                category="logistics",
+                terms=["delivery"],
+                match_fields=["summary", "key_questions", "objections"],
+                is_active=True,
+            )
+        ]
+    )
+    reporting_source = FakeReportingSource(
+        [
+            type(
+                "Record",
+                (),
+                {
+                    "call_id": "call-1",
+                    "summary": "delivery only",
+                    "key_questions": ["Where is delivery?"],
+                    "objections": [],
+                    "manager_id": "sales_001",
+                    "spam_probability": 0.1,
+                    "effective_call": True,
+                    "intent": "консультація",
+                    "outcome": "продаж",
+                    "call_date": "20260725",
+                },
+            )(),
+        ]
+    )
+
+    monkeypatch.setattr(keyword_generation_routes, "_get_postgres_reporting_source", lambda: reporting_source)
+    monkeypatch.setattr(keyword_generation_routes, "_get_postgres_keyword_source", lambda: keyword_source)
+    monkeypatch.setattr(keyword_generation_routes, "run_keyword_ai_analysis_once", lambda trigger, skip_if_empty=False: {"trigger": trigger})
+
+    response = keyword_generation_routes.bootstrap_keywords(
+        KeywordGenerationBootstrapRequest(
+            min_token_length=4,
+            max_ngram_words=1,
+            min_support_calls=2,
+            min_total_matches=1,
+            max_candidates=20,
+            exclude_existing_terms=True,
+            materialize_after_publish=True,
+            run_ai_analysis_after_publish=True,
+        )
+    )
+
+    assert response["publish"]["created"] == 0
+    assert response["publish"]["updated"] == 0
+    assert response["materialized"] is False
+    assert response["keyword_ai_analysis"] is None
 
 
 def test_keyword_management_routes_use_writable_source(monkeypatch):

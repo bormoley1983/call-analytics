@@ -411,6 +411,54 @@ class KeywordGenerationPublishRequest(BaseModel):
         return result
 
 
+class KeywordGenerationBootstrapRequest(KeywordGenerationRequest):
+    default_category: str = Field(
+        default="generated",
+        min_length=1,
+        description="Default category for newly published generated keywords.",
+    )
+    default_match_fields: List[str] = Field(
+        default_factory=lambda: ["summary", "key_questions", "objections"],
+        description="Default match fields when candidate-specific fields are absent.",
+    )
+    default_is_active: bool = Field(
+        default=True,
+        description="Default activation status for bootstrap-created keywords.",
+    )
+    materialize_after_publish: bool = Field(
+        default=True,
+        description="When true, materializes keyword matches immediately after bootstrap publish.",
+    )
+    run_ai_analysis_after_publish: bool = Field(
+        default=True,
+        description="When true, runs AI keyword grouping analysis after successful publish.",
+    )
+
+    @field_validator("default_category", mode="before")
+    @classmethod
+    def normalize_bootstrap_default_category(cls, value: str) -> str:
+        normalized = str(value).strip()
+        if not normalized:
+            raise ValueError("default_category must not be empty")
+        return normalized
+
+    @field_validator("default_match_fields", mode="before")
+    @classmethod
+    def normalize_bootstrap_default_match_fields(cls, value: Any) -> List[str]:
+        if value is None:
+            return ["summary", "key_questions", "objections"]
+        if not isinstance(value, list):
+            raise ValueError("default_match_fields must be a list")
+        result: List[str] = []
+        for item in value:
+            normalized = str(item).strip()
+            if normalized:
+                result.append(normalized)
+        if not result:
+            raise ValueError("default_match_fields must contain at least one field")
+        return result
+
+
 class KeywordCatalogAnalysisRequest(BaseModel):
     keyword_ids: Optional[List[str]] = Field(
         default=None,

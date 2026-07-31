@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 
@@ -18,7 +18,7 @@ class ReportCallRecord:
     outcome: str
     summary: str
     audio_seconds: float
-    call_date: str
+    call_datetime: datetime | None = None
     src_number: str = ""
     dst_number: str = ""
     key_questions: list[str] = field(default_factory=list)
@@ -50,13 +50,10 @@ class ReportFilters:
         return self.date_to.strftime("%Y%m%d")
 
     def matches_record(self, record: ReportCallRecord) -> bool:
-        if self.call_date_from and not record.call_date:
+        rec_date = record.call_datetime.date() if record.call_datetime else None
+        if self.date_from and (rec_date is None or rec_date < self.date_from):
             return False
-        if self.call_date_to and not record.call_date:
-            return False
-        if self.call_date_from and record.call_date < self.call_date_from:
-            return False
-        if self.call_date_to and record.call_date > self.call_date_to:
+        if self.date_to and (rec_date is None or rec_date > self.date_to):
             return False
         if self.manager_id and record.manager_id != self.manager_id:
             return False

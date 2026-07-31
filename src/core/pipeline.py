@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 from tqdm import tqdm
 
-from adapters.storage_postgres import PostgresStorage
+from adapters.storage_postgres import PostgresStorage, parse_call_datetime
 from core.planner import categorize_files, discover_and_filter_files
 from core.rules import ensure_analysis_schema, sha12
 from core.stt_factory import build_stt_adapter
@@ -94,7 +94,14 @@ class Pipeline:
         # Inject analysis-only files directly — skip Whisper and translation entirely
         for src in analysis_only:
             meta = self._build_meta(src)
-            call_id = meta["call_id"]
+            call_id = meta.get("call_id")
+            if not call_id:
+                meta["status"] = "skipped_too_small"
+                self._record_call_metadata(
+                    meta, status="skipped_too_small",
+                    error_message="file below min_bytes after transcription"
+                )
+                continue
             transcript = self.storage.load_transcript(call_id)
             meta["audio_seconds"] = transcript.get("call_meta", {}).get("audio_seconds") or \
                                     self.audio.duration_seconds(self.config.norm / f"{call_id}.wav")
@@ -144,7 +151,7 @@ class Pipeline:
             call_id=call_id,
             source_file=meta.get("source_file"),
             source_path=meta.get("source_path"),
-            call_date=meta.get("date"),
+            call_datetime=parse_call_datetime(meta.get("date") or "", meta.get("time")),
             status=status,
             error_message=error_message,
         )
@@ -460,7 +467,7 @@ class Pipeline:
                         call_id=call_id,
                         source_file=meta.get("source_file"),
                         source_path=meta.get("source_path"),
-                        call_date=meta.get("date"),
+                        call_datetime=parse_call_datetime(meta.get("date") or "", meta.get("time")),
                         status=item.get("status") or "discovered",
                         error_message=(
                             "duration_below_min_seconds"
@@ -479,7 +486,7 @@ class Pipeline:
                     call_id=call_id,
                     source_file=meta.get("source_file"),
                     source_path=meta.get("source_path"),
-                    call_date=meta.get("date"),
+                    call_datetime=parse_call_datetime(meta.get("date") or "", meta.get("time")),
                     status="processed",
                     error_message=str((item.get("analysis", {}) or {}).get("analysis_error") or "").strip() or None,
                     mark_synced=True,

@@ -60,7 +60,14 @@ def truncate_text_for_analysis(text: str, config: AppConfig) -> str:
     last_newline = truncated.rfind('\n')
     cut_point = max(last_period, last_newline)
     
+    if cut_point < 0:
+        # No period or newline found; fall back to word boundary or hard cutoff
+        last_space = truncated.rfind(' ')
+        cut_point = last_space if last_space > 0 else int(max_chars * 0.9)
+    
     if cut_point > max_chars * 0.9:
+        truncated = truncated[:cut_point + 1]
+    elif cut_point >= 0:
         truncated = truncated[:cut_point + 1]
     
     return truncated + TRUNCATION_MESSAGE_UK

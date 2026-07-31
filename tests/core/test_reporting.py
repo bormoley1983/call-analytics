@@ -2,12 +2,13 @@ import json
 
 from adapters.reporting_json import JsonReportingSource
 from api.routes import reports as report_routes
-from api.schemas import (CustomersSortQuery, ManagersSortQuery,
-                         ReportFiltersQuery)
-from core.reporting_service import (build_customer_followup_report,
-                                    build_customers_report,
-                                    build_managers_report,
-                                    build_overall_report)
+from api.schemas import CustomersSortQuery, ManagersSortQuery, ReportFiltersQuery
+from core.reporting_service import (
+    build_customer_followup_report,
+    build_customers_report,
+    build_managers_report,
+    build_overall_report,
+)
 from domain.reporting import ReportFilters
 
 
@@ -83,9 +84,13 @@ def test_overall_route_uses_storage_backed_filters(monkeypatch, tmp_path):
     )
 
     monkeypatch.setenv("SPAM_PROBABILITY_THRESHOLD", "0.7")
-    monkeypatch.setattr(report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path))
+    monkeypatch.setattr(
+        report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path)
+    )
 
-    response = report_routes.overall_report(ReportFiltersQuery(manager_id="sales_001", effective_only=True))
+    response = report_routes.overall_report(
+        ReportFiltersQuery(manager_id="sales_001", effective_only=True)
+    )
 
     assert response["total_calls"] == 1
     assert response["effective_calls"] == 1
@@ -95,7 +100,9 @@ def test_overall_route_uses_storage_backed_filters(monkeypatch, tmp_path):
 def test_overall_route_includes_keyword_ai_analysis(monkeypatch, tmp_path):
     _write_analysis(tmp_path, "call-1")
 
-    monkeypatch.setattr(report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path))
+    monkeypatch.setattr(
+        report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path)
+    )
     monkeypatch.setattr(
         report_routes,
         "_build_keyword_ai_analysis_payload",
@@ -114,11 +121,16 @@ def test_report_routes_do_not_mutate_analysis_storage(monkeypatch, tmp_path):
     before = _snapshot_analysis_files(tmp_path)
 
     monkeypatch.setenv("SPAM_PROBABILITY_THRESHOLD", "0.7")
-    monkeypatch.setattr(report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path))
+    monkeypatch.setattr(
+        report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path)
+    )
     monkeypatch.setattr(
         report_routes,
         "_build_keyword_ai_analysis_payload",
-        lambda keyword_id=None: {"analysis_id": "analysis-guard", "keyword_id": keyword_id},
+        lambda keyword_id=None: {
+            "analysis_id": "analysis-guard",
+            "keyword_id": keyword_id,
+        },
     )
 
     overall = report_routes.overall_report(ReportFiltersQuery())
@@ -132,7 +144,9 @@ def test_report_routes_do_not_mutate_analysis_storage(monkeypatch, tmp_path):
 
 
 def test_build_managers_report_from_json_source(tmp_path):
-    _write_analysis(tmp_path, "call-1", manager_id="sales_001", manager_name="Manager 1")
+    _write_analysis(
+        tmp_path, "call-1", manager_id="sales_001", manager_name="Manager 1"
+    )
     _write_analysis(
         tmp_path,
         "call-2",
@@ -168,7 +182,9 @@ def test_build_managers_report_from_json_source(tmp_path):
 
 
 def test_manager_routes_use_storage_backed_report(monkeypatch, tmp_path):
-    _write_analysis(tmp_path, "call-1", manager_id="sales_001", manager_name="Manager 1")
+    _write_analysis(
+        tmp_path, "call-1", manager_id="sales_001", manager_name="Manager 1"
+    )
     _write_analysis(
         tmp_path,
         "call-2",
@@ -178,9 +194,13 @@ def test_manager_routes_use_storage_backed_report(monkeypatch, tmp_path):
     )
 
     monkeypatch.setenv("SPAM_PROBABILITY_THRESHOLD", "0.7")
-    monkeypatch.setattr(report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path))
+    monkeypatch.setattr(
+        report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path)
+    )
 
-    managers_response = report_routes.managers_report(ReportFiltersQuery(), ManagersSortQuery())
+    managers_response = report_routes.managers_report(
+        ReportFiltersQuery(), ManagersSortQuery()
+    )
     manager_response = report_routes.manager_report("sales_001", ReportFiltersQuery())
 
     assert managers_response["total_managers"] == 2
@@ -233,11 +253,19 @@ def test_build_keyword_ai_analysis_payload_filters_groups(monkeypatch):
 
 
 def test_managers_report_supports_sorting(monkeypatch, tmp_path):
-    _write_analysis(tmp_path, "call-1", manager_id="sales_001", manager_name="Manager 1")
-    _write_analysis(tmp_path, "call-2", manager_id="sales_002", manager_name="Manager 2")
-    _write_analysis(tmp_path, "call-3", manager_id="sales_002", manager_name="Manager 2")
+    _write_analysis(
+        tmp_path, "call-1", manager_id="sales_001", manager_name="Manager 1"
+    )
+    _write_analysis(
+        tmp_path, "call-2", manager_id="sales_002", manager_name="Manager 2"
+    )
+    _write_analysis(
+        tmp_path, "call-3", manager_id="sales_002", manager_name="Manager 2"
+    )
 
-    monkeypatch.setattr(report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path))
+    monkeypatch.setattr(
+        report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path)
+    )
 
     response = report_routes.managers_report(
         ReportFiltersQuery(),
@@ -290,7 +318,9 @@ def test_build_customers_report_groups_by_normalized_phone(tmp_path):
         },
     )
 
-    report = build_customers_report(JsonReportingSource(tmp_path), ReportFilters(), spam_threshold=0.7)
+    report = build_customers_report(
+        JsonReportingSource(tmp_path), ReportFilters(), spam_threshold=0.7
+    )
 
     assert report["data_source"] == "json"
     assert report["total_customers"] == 2
@@ -299,7 +329,7 @@ def test_build_customers_report_groups_by_normalized_phone(tmp_path):
     assert by_phone["380991112233"]["incoming"] == 1
     assert by_phone["380991112233"]["outgoing"] == 1
     assert by_phone["380991112233"]["spam_calls"] == 1
-    assert by_phone["380991112233"]["last_call_date"] == "20241113"
+    assert by_phone["380991112233"]["last_call_date"] == "2024-11-13"
     assert len(by_phone["380991112233"]["managers"]) == 2
 
 
@@ -374,10 +404,16 @@ def test_customer_routes_use_storage_backed_report(monkeypatch, tmp_path):
     )
 
     monkeypatch.setenv("SPAM_PROBABILITY_THRESHOLD", "0.7")
-    monkeypatch.setattr(report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path))
+    monkeypatch.setattr(
+        report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path)
+    )
 
-    customers_response = report_routes.customers_report(ReportFiltersQuery(), CustomersSortQuery())
-    customer_response = report_routes.customer_report("+380991112233", ReportFiltersQuery())
+    customers_response = report_routes.customers_report(
+        ReportFiltersQuery(), CustomersSortQuery()
+    )
+    customer_response = report_routes.customer_report(
+        "+380991112233", ReportFiltersQuery()
+    )
 
     assert customers_response["total_customers"] == 1
     assert customer_response["customer_phone"] == "380991112233"
@@ -408,7 +444,9 @@ def test_customers_report_supports_sorting(monkeypatch, tmp_path):
         },
     )
 
-    monkeypatch.setattr(report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path))
+    monkeypatch.setattr(
+        report_routes, "_get_reporting_source", lambda: JsonReportingSource(tmp_path)
+    )
 
     response = report_routes.customers_report(
         ReportFiltersQuery(),

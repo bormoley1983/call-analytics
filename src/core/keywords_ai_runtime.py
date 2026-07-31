@@ -4,7 +4,8 @@ import logging
 import os
 from typing import Any
 
-from adapters.keyword_ai_analysis_postgres import PostgresKeywordAiAnalysisStore
+from adapters.keyword_ai_analysis_postgres import \
+    PostgresKeywordAiAnalysisStore
 from adapters.keywords_postgres import PostgresKeywordSource
 from adapters.keywords_yaml import YamlKeywordSource
 from adapters.llm_ollama import OllamaLlm
@@ -80,7 +81,13 @@ def run_keyword_ai_analysis_once(
             ai_model=getattr(config, "ollama_model", None),
         )
     finally:
-        reporting_source.close()
-        keyword_source.close()
+        for _source in (reporting_source, keyword_source):
+            try:
+                _source.close()
+            except Exception:
+                logger.exception("Error closing source during AI keyword analysis cleanup")
         if analysis_store is not None:
-            analysis_store.close()
+            try:
+                analysis_store.close()
+            except Exception:
+                logger.exception("Error closing analysis store during AI keyword analysis cleanup")

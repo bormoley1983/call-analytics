@@ -28,7 +28,7 @@ class JsonStorage:
         self.ensure_ready()
 
     def close(self) -> None:
-        pass      
+        pass
 
     # --- internal path helpers (also used by planner + migrate_storage) ---
 
@@ -53,7 +53,7 @@ class JsonStorage:
         call_id: str,
         source_file: str | None = None,
         source_path: str | None = None,
-        call_date: str | None = None,
+        call_datetime: datetime | None = None,
         status: str = "discovered",
         error_message: str | None = None,
         mark_synced: bool = False,
@@ -65,7 +65,7 @@ class JsonStorage:
                 "call_id": call_id,
                 "source_file": source_file,
                 "source_path": source_path,
-                "call_date": call_date,
+                "call_datetime": call_datetime.isoformat() if call_datetime else None,
                 "status": status,
                 "error_message": error_message,
                 "discovered_at": None,
@@ -80,15 +80,17 @@ class JsonStorage:
             current["source_file"] = source_file
         if source_path:
             current["source_path"] = source_path
-        if call_date:
-            current["call_date"] = call_date
+        if call_datetime:
+            current["call_datetime"] = call_datetime.isoformat()
         current["status"] = status
         if error_message:
             current["error_message"] = error_message
 
         if status == "discovered" and not current.get("discovered_at"):
             current["discovered_at"] = _utc_now_iso()
-        if status in {"transcribed", "translated", "processed"} and not current.get("transcribed_at"):
+        if status in {"transcribed", "translated", "processed"} and not current.get(
+            "transcribed_at"
+        ):
             current["transcribed_at"] = _utc_now_iso()
         if status in {"translated", "processed"} and not current.get("translated_at"):
             current["translated_at"] = _utc_now_iso()
@@ -101,7 +103,7 @@ class JsonStorage:
             json.dumps(current, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-    
+
     # --- StoragePort interface ---
 
     def transcript_exists(self, call_id: str) -> bool:
@@ -121,12 +123,20 @@ class JsonStorage:
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         raw_call_meta = data.get("call_meta")
-        call_meta: dict[str, Any] = raw_call_meta if isinstance(raw_call_meta, dict) else {}
+        call_meta: dict[str, Any] = (
+            raw_call_meta if isinstance(raw_call_meta, dict) else {}
+        )
         stage = str(data.get("_pipeline_stage") or "transcribed")
         status = "translated" if stage == "translated" else "transcribed"
+        date_str = str(call_meta.get("date") or "").strip()
+        call_dt = (
+            datetime.strptime(date_str, "%Y%m%d").replace(tzinfo=timezone.utc)
+            if date_str
+            else None
+        )
         self.upsert_call_metadata(
             call_id=call_id,
-            call_date=str(call_meta.get("date") or "") or None,
+            call_datetime=call_dt,
             status=status,
         )
 
@@ -135,17 +145,27 @@ class JsonStorage:
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         raw_call_meta = data.get("call_meta")
-        call_meta: dict[str, Any] = raw_call_meta if isinstance(raw_call_meta, dict) else {}
+        call_meta: dict[str, Any] = (
+            raw_call_meta if isinstance(raw_call_meta, dict) else {}
+        )
+        date_str = str(call_meta.get("date") or "").strip()
+        call_dt = (
+            datetime.strptime(date_str, "%Y%m%d").replace(tzinfo=timezone.utc)
+            if date_str
+            else None
+        )
         self.upsert_call_metadata(
             call_id=call_id,
             source_file=str(data.get("source_file") or "") or None,
             source_path=str(data.get("source_path") or "") or None,
-            call_date=str(call_meta.get("date") or "") or None,
+            call_datetime=call_dt,
             status="processed",
             error_message=str(data.get("analysis_error") or "") or None,
         )
 
-    def mark_analysis_stale_if_text_changed(self, call_id: str, text_sha256: str) -> bool:
+    def mark_analysis_stale_if_text_changed(
+        self, call_id: str, text_sha256: str
+    ) -> bool:
         path = self.analysis_path(call_id)
         if not path.exists():
             return False
@@ -176,12 +196,18 @@ class JsonStorage:
         for item in per_call:
             meta = item.get("meta", {}) or {}
             call_id = meta.get("call_id")
+            date_str = str(meta.get("date") or "").strip()
+            call_dt = (
+                datetime.strptime(date_str, "%Y%m%d").replace(tzinfo=timezone.utc)
+                if date_str
+                else None
+            )
             if call_id:
                 self.upsert_call_metadata(
                     call_id=call_id,
                     source_file=meta.get("source_file"),
                     source_path=meta.get("source_path"),
-                    call_date=meta.get("date"),
+                    call_datetime=call_dt,
                     status=item.get("status") or "discovered",
                     error_message=(
                         "duration_below_min_seconds"

@@ -1,6 +1,7 @@
 # src/adapters/storage_qdrant.py
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Dict, List, Optional
 
 from qdrant_client import QdrantClient
@@ -27,8 +28,10 @@ class QdrantStorage:
 
     def upsert(self, call_id: str, embedding: List[float], payload: Dict[str, Any]) -> None:
         """Store a call transcript embedding with metadata payload."""
+        # Use deterministic hash instead of built-in hash() to avoid randomization across restarts
+        point_id = int(hashlib.sha256(call_id.encode()).hexdigest(), 16) % (2**63)
         point = PointStruct(
-            id=abs(hash(call_id)) % (2**63),  # Qdrant requires uint64
+            id=point_id,  # Qdrant requires uint64
             vector=embedding,
             payload={"call_id": call_id, **payload},
         )

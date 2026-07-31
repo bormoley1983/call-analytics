@@ -133,11 +133,19 @@ def _ollama_generate(prompt: str, config: AppConfig, temperature: float = 0.2, f
 
 
 def _extract_json_object(raw: str) -> Dict[str, Any]:
-    """Extract JSON object from text response."""
-    m = re.search(r"\{.*\}", raw, flags=re.S)
-    if not m:
+    """Extract JSON object from text response using brace-counting."""
+    start = raw.find("{")
+    if start == -1:
         raise ValueError("No JSON object found in response")
-    return json.loads(m.group(0))
+    depth = 0
+    for i in range(start, len(raw)):
+        if raw[i] == "{":
+            depth += 1
+        elif raw[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(raw[start : i + 1])
+    raise ValueError("No valid JSON object found in response")
 
 
 def translate_segments_to_uk(segments: List[Dict[str, Any]], config: AppConfig) -> List[str] | None:

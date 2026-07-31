@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Iterable
 
 from adapters.postgres_single_connection import (
-    RETRYABLE_CONNECTION_ERRORS, SingleConnectionPostgresAdapter)
+    RETRYABLE_CONNECTION_ERRORS,
+    SingleConnectionPostgresAdapter,
+)
 from domain.reporting import ReportCallRecord, ReportFilters
 
 
@@ -13,7 +15,9 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
     @staticmethod
     def _normalize_phone_sql(column: str) -> str:
         digits = f"regexp_replace(COALESCE({column}, ''), '[^0-9]', '', 'g')"
-        trimmed = f"CASE WHEN {digits} LIKE '00%' THEN substr({digits}, 3) ELSE {digits} END"
+        trimmed = (
+            f"CASE WHEN {digits} LIKE '00%' THEN substr({digits}, 3) ELSE {digits} END"
+        )
         return (
             "CASE "
             f"WHEN {trimmed} = '' THEN '' "
@@ -32,12 +36,12 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
         clauses = ["1=1"]
         params: list[object] = []
 
-        if filters.call_date_from:
-            clauses.append("call_date >= %s")
-            params.append(filters.call_date_from)
-        if filters.call_date_to:
-            clauses.append("call_date <= %s")
-            params.append(filters.call_date_to)
+        if filters.date_from:
+            clauses.append("call_datetime::date >= %s")
+            params.append(filters.date_from)
+        if filters.date_to:
+            clauses.append("call_datetime::date <= %s")
+            params.append(filters.date_to)
         if filters.manager_id:
             clauses.append("manager_id = %s")
             params.append(filters.manager_id)
@@ -61,7 +65,9 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
 
         return " AND ".join(clauses), params
 
-    def _base_cte_sql(self, filters: ReportFilters, spam_threshold: float) -> tuple[str, list[object]]:
+    def _base_cte_sql(
+        self, filters: ReportFilters, spam_threshold: float
+    ) -> tuple[str, list[object]]:
         where_clause, params = self._build_where_clauses(filters, spam_threshold)
         sql = f"""
             WITH base AS (
@@ -77,7 +83,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                     COALESCE(outcome, 'невідомо') AS outcome,
                     COALESCE(summary, '') AS summary,
                     COALESCE(audio_seconds, 0.0)::double precision AS audio_seconds,
-                    COALESCE(call_date, '') AS call_date,
+                    COALESCE(call_datetime::date, '')::text AS call_date,
                     COALESCE(src_number, '') AS src_number,
                     COALESCE(dst_number, '') AS dst_number,
                     CASE
@@ -94,14 +100,15 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
         """
         return sql, params
 
-    def build_overall_report_data(self, filters: ReportFilters, spam_threshold: float) -> dict[str, object]:
+    def build_overall_report_data(
+        self, filters: ReportFilters, spam_threshold: float
+    ) -> dict[str, object]:
         base_cte, base_params = self._base_cte_sql(filters, spam_threshold)
 
         def _fetch(conn):
             with conn.cursor() as cur:
                 cur.execute(
-                    base_cte
-                    + """
+                    base_cte + """
                     SELECT
                         COUNT(*)::bigint AS total_calls,
                         COUNT(DISTINCT manager_id)::bigint AS unique_managers,
@@ -120,8 +127,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 total_duration = float(row[4] or 0.0)
 
                 cur.execute(
-                    base_cte
-                    + """
+                    base_cte + """
                     SELECT intent, COUNT(*)::bigint AS cnt
                     FROM base
                     GROUP BY intent
@@ -130,11 +136,12 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                     """,
                     base_params,
                 )
-                top_intents = [(str(item[0]), int(item[1] or 0)) for item in cur.fetchall()]
+                top_intents = [
+                    (str(item[0]), int(item[1] or 0)) for item in cur.fetchall()
+                ]
 
                 cur.execute(
-                    base_cte
-                    + """
+                    base_cte + """
                     SELECT outcome, COUNT(*)::bigint AS cnt
                     FROM base
                     GROUP BY outcome
@@ -143,11 +150,12 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                     """,
                     base_params,
                 )
-                top_outcomes = [(str(item[0]), int(item[1] or 0)) for item in cur.fetchall()]
+                top_outcomes = [
+                    (str(item[0]), int(item[1] or 0)) for item in cur.fetchall()
+                ]
 
                 cur.execute(
-                    base_cte
-                    + """
+                    base_cte + """
                     SELECT normalized_question, COUNT(*)::bigint AS cnt
                     FROM (
                         SELECT lower(btrim(q.value)) AS normalized_question
@@ -161,7 +169,9 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                     """,
                     base_params,
                 )
-                top_questions = [(str(item[0]), int(item[1] or 0)) for item in cur.fetchall()]
+                top_questions = [
+                    (str(item[0]), int(item[1] or 0)) for item in cur.fetchall()
+                ]
 
             return {
                 "total_calls": total_calls,
@@ -189,8 +199,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
         def _fetch(conn):
             with conn.cursor() as cur:
                 cur.execute(
-                    base_cte
-                    + """
+                    base_cte + """
                     SELECT
                         manager_id,
                         manager_name,
@@ -210,8 +219,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 aggregate_rows = cur.fetchall()
 
                 cur.execute(
-                    base_cte
-                    + """
+                    base_cte + """
                     SELECT role, COUNT(*)::bigint AS total_calls
                     FROM base
                     GROUP BY role
@@ -225,8 +233,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 }
 
                 cur.execute(
-                    base_cte
-                    + """
+                    base_cte + """
                     SELECT manager_id, intent, COUNT(*)::bigint AS cnt
                     FROM base
                     GROUP BY manager_id, intent
@@ -237,8 +244,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 intent_rows = cur.fetchall()
 
                 cur.execute(
-                    base_cte
-                    + """
+                    base_cte + """
                     SELECT manager_id, outcome, COUNT(*)::bigint AS cnt
                     FROM base
                     GROUP BY manager_id, outcome
@@ -249,8 +255,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 outcome_rows = cur.fetchall()
 
                 cur.execute(
-                    base_cte
-                    + """
+                    base_cte + """
                     SELECT manager_id, normalized_question, COUNT(*)::bigint AS cnt
                     FROM (
                         SELECT
@@ -323,7 +328,10 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
             reverse = order == "desc"
             if sort_by == "manager_name":
                 all_managers.sort(
-                    key=lambda item: (str(item["manager_name"]), str(item["manager_id"])),
+                    key=lambda item: (
+                        str(item["manager_name"]),
+                        str(item["manager_id"]),
+                    ),
                     reverse=reverse,
                 )
             else:
@@ -360,9 +368,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
         src_norm = self._normalize_phone_sql("src_number")
         dst_norm = self._normalize_phone_sql("dst_number")
 
-        enriched_cte = (
-            base_cte
-            + f"""
+        enriched_cte = base_cte + f"""
             , enriched AS (
                 SELECT
                     base.*,
@@ -411,13 +417,11 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 FROM base
             )
             """
-        )
 
         def _fetch(conn):
             with conn.cursor() as cur:
                 cur.execute(
-                    enriched_cte
-                    + """
+                    enriched_cte + """
                     SELECT
                         customer_phone,
                         COUNT(*)::bigint AS total_calls,
@@ -426,8 +430,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                         SUM(CASE WHEN spam_probability >= %s THEN 1 ELSE 0 END)::bigint AS spam_calls,
                         SUM(CASE WHEN effective_call THEN 1 ELSE 0 END)::bigint AS effective_calls,
                         COALESCE(SUM(audio_seconds), 0.0)::double precision AS total_duration_seconds,
-                        MIN(NULLIF(call_date, '')) AS first_call_date,
-                        MAX(NULLIF(call_date, '')) AS last_call_date,
+                        MIN(NULLIF(call_datetime::date, ''))::text AS first_call_date,
+                        MAX(NULLIF(call_datetime::date, ''))::text AS last_call_date,
                         MAX(display_phone) AS display_phone
                     FROM enriched
                     GROUP BY customer_phone
@@ -438,8 +442,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 aggregate_rows = cur.fetchall()
 
                 cur.execute(
-                    enriched_cte
-                    + """
+                    enriched_cte + """
                     SELECT
                         customer_phone,
                         manager_id,
@@ -455,8 +458,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 manager_rows = cur.fetchall()
 
                 cur.execute(
-                    enriched_cte
-                    + """
+                    enriched_cte + """
                     SELECT customer_phone, intent, COUNT(*)::bigint AS cnt
                     FROM enriched
                     GROUP BY customer_phone, intent
@@ -467,8 +469,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 intent_rows = cur.fetchall()
 
                 cur.execute(
-                    enriched_cte
-                    + """
+                    enriched_cte + """
                     SELECT customer_phone, outcome, COUNT(*)::bigint AS cnt
                     FROM enriched
                     GROUP BY customer_phone, outcome
@@ -479,8 +480,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 outcome_rows = cur.fetchall()
 
                 cur.execute(
-                    enriched_cte
-                    + """
+                    enriched_cte + """
                     SELECT customer_phone, normalized_question, COUNT(*)::bigint AS cnt
                     FROM (
                         SELECT
@@ -520,7 +520,9 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                     "spam_calls": int(spam_calls or 0),
                     "effective_calls": int(effective_calls or 0),
                     "total_duration_seconds": float(total_duration or 0.0),
-                    "first_call_date": str(first_call_date) if first_call_date else None,
+                    "first_call_date": (
+                        str(first_call_date) if first_call_date else None
+                    ),
                     "last_call_date": str(last_call_date) if last_call_date else None,
                     "top_intents": [],
                     "top_outcomes": [],
@@ -567,9 +569,17 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
 
             all_customers = [customer_map[key] for key in sorted(customer_map)]
             reverse = order == "desc"
-            if sort_by in {"customer_phone", "display_phone", "first_call_date", "last_call_date"}:
+            if sort_by in {
+                "customer_phone",
+                "display_phone",
+                "first_call_date",
+                "last_call_date",
+            }:
                 all_customers.sort(
-                    key=lambda item: (str(item.get(sort_by) or ""), str(item["customer_phone"])),
+                    key=lambda item: (
+                        str(item.get(sort_by) or ""),
+                        str(item["customer_phone"]),
+                    ),
                     reverse=reverse,
                 )
             else:
@@ -609,14 +619,14 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 outcome,
                 summary,
                 audio_seconds,
-                call_date,
+                call_datetime::date,
                 src_number,
                 dst_number,
                 key_questions,
                 objections
             FROM analyses
             WHERE {where_clause}
-            ORDER BY call_date NULLS LAST, call_id
+            ORDER BY call_datetime NULLS LAST, call_id
         """
 
         rows_yielded = 0
@@ -643,7 +653,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                                 outcome=row[8] or "невідомо",
                                 summary=row[9] or "",
                                 audio_seconds=float(row[10] or 0.0),
-                                call_date=row[11] or "",
+                                call_datetime=row[11],
                                 src_number=row[12] or "",
                                 dst_number=row[13] or "",
                                 key_questions=list(row[14] or []),

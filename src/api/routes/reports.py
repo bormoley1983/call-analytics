@@ -4,27 +4,21 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 
-from adapters.keyword_ai_analysis_postgres import PostgresKeywordAiAnalysisStore
+from adapters.keyword_ai_analysis_postgres import \
+    PostgresKeywordAiAnalysisStore
 from adapters.keywords_postgres import PostgresKeywordSource
 from adapters.keywords_yaml import YamlKeywordSource
 from adapters.reporting_json import JsonReportingSource
 from adapters.reporting_postgres import PostgresReportingSource
-from api.schemas import (
-    CustomersSortQuery,
-    KeywordCallsSortQuery,
-    KeywordManagersSortQuery,
-    KeywordsSortQuery,
-    ManagersSortQuery,
-    PaginationQuery,
-    ReportFiltersQuery,
-)
+from api.schemas import (CustomersSortQuery, KeywordCallsSortQuery,
+                         KeywordManagersSortQuery, KeywordsSortQuery,
+                         ManagersSortQuery, PaginationQuery,
+                         ReportFiltersQuery)
 from core.keywords_service import build_keywords_report
-from core.reporting_service import (
-    build_customer_followup_report,
-    build_customers_report,
-    build_managers_report,
-    build_overall_report,
-)
+from core.reporting_service import (build_customer_followup_report,
+                                    build_customers_report,
+                                    build_managers_report,
+                                    build_overall_report)
 from domain.config import ANALYSIS, KEYWORDS_CONFIG
 from domain.reporting import ReportFilters
 
@@ -153,6 +147,110 @@ def _get_materialized_keyword_source() -> PostgresKeywordSource:
     return source
 
 
+"""Freshness metadata helpers"""
+
+def _get_freshness_metadata() -> dict[str, Any] | None:
+    """Query freshness timestamps from Postgres.
+    
+    Returns None when POSTGRES_DSN is not configured (JSON mode).
+    Otherwise returns a dict with:
+    - latest_processed_at: most recent analyzed_at timestamp
+    - latest_materialized_at: most recent materialization timestamp  
+    - latest_keyword_ai_analysis_at: most recent AI analysis timestamp
+    - keyword_ai_analysis_status: 'available' | 'missing' | 'stale'
+      - 'available': AI analysis exists and is up-to-date with latest data
+      - 'missing': No AI analysis has been run yet
+      - 'stale': AI analysis exists but is older than the latest processed/materialized data
+    """
+    dsn = os.getenv("POSTGRES_DSN")
+    if not dsn:
+        return None
+
+    from adapters.postgres_single_connection import \
+        SingleConnectionPostgresAdapter
+    
+    class FreshnessQuery(SingleConnectionPostgresAdapter):
+        def _initialize_connection(self, conn):
+            pass  # No DDL needed for reads
+        
+        def query_freshness(self) -> dict[str, Any]:
+            def _query(conn):
+                with conn.cursor() as cur:
+                    results = {}
+                    
+                    # Latest processed (analyzed) timestamp
+                    cur.execute(
+                        "SELECT MAX(analyzed_at) FROM calls WHERE analyzed_at IS NOT NULL"
+                    )
+                    row = cur.fetchone()
+                    results["latest_processed_at"] = row[0].isoformat() if row and row[0] else None
+                    
+                    # Latest materialization timestamp
+                    cur.execute(
+                        "SELECT last_materialized_at FROM keyword_materialization_state WHERE state_key = 'current' LIMIT 1"
+                    )
+                    row = cur.fetchone()
+                    results["latest_materialized_at"] = row[0].isoformat() if row and row[0] else None
+                    
+                    # Latest keyword AI analysis timestamp
+                    cur.execute(
+                        "SELECT created_at FROM keyword_ai_analyses ORDER BY created_at DESC LIMIT 1"
+                    )
+                    row = cur.fetchone()
+                    results["latest_keyword_ai_analysis_at"] = row[0].isoformat() if row and row[0] else None
+                    results["_latest_keyword_ai_analysis_at"] = row[0] if row and row[0] else None  # Raw datetime for comparison
+                    
+                    return results
+            
+            return self._run_read(_query)
+
+    adapter = FreshnessQuery(dsn)
+    try:
+        data = adapter.query_freshness()
+        
+        # Determine AI analysis status with stale detection
+        latest_analysis = data.pop("_latest_keyword_ai_analysis_at")  # Remove internal field
+        
+        if not latest_analysis:
+            # No AI analysis has ever been run
+            data["keyword_ai_analysis_status"] = "missing"
+        else:
+            # Check if analysis is stale compared to latest processing or materialization
+            latest_processed = data.get("latest_processed_at")
+            latest_materialized = data.get("latest_materialized_at")
+            
+            # Parse ISO strings back to datetime for comparison
+            from datetime import datetime
+            analysis_dt = latest_analysis
+            
+            is_stale = False
+            if latest_processed:
+                processed_dt = datetime.fromisoformat(latest_processed)
+                if processed_dt > analysis_dt:
+                    is_stale = True
+            
+            if latest_materialized:
+                materialized_dt = datetime.fromisoformat(latest_materialized)
+                if materialized_dt > analysis_dt:
+                    is_stale = True
+            
+            data["keyword_ai_analysis_status"] = "stale" if is_stale else "available"
+            
+        return data
+    finally:
+        adapter.close()
+
+
+def _attach_freshness_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach freshness metadata to a report payload."""
+    freshness = _get_freshness_metadata()
+    if freshness is not None:
+        payload["freshness"] = freshness
+    return payload
+
+"""End freshness metadata helpers"""
+
+
 @router.get(
     "/overall",
     summary="Overall KPI report",
@@ -177,7 +275,7 @@ def overall_report(query: Annotated[ReportFiltersQuery, Depends()]):
         data = build_overall_report(source, filters, spam_threshold)
     finally:
         source.close()
-    return _attach_keyword_ai_analysis(data)
+    return _attach_freshness_metadata(_attach_keyword_ai_analysis(data))
 
 
 @router.get(
@@ -207,7 +305,7 @@ def managers_report(
         data = build_managers_report(source, filters, spam_threshold, sorting.sort_by.value, sorting.order.value)
     finally:
         source.close()
-    return _attach_keyword_ai_analysis(data)
+    return _attach_freshness_metadata(_attach_keyword_ai_analysis(data))
 
 
 @router.get(
@@ -237,7 +335,7 @@ def customers_report(
         data = build_customers_report(source, filters, spam_threshold, sorting.sort_by.value, sorting.order.value)
     finally:
         source.close()
-    return _attach_keyword_ai_analysis(data)
+    return _attach_freshness_metadata(_attach_keyword_ai_analysis(data))
 
 
 @router.get(
@@ -285,7 +383,7 @@ def customer_report(
 
     if data is None:
         raise HTTPException(status_code=404, detail="Customer report not found")
-    return _attach_keyword_ai_analysis(data)
+    return _attach_freshness_metadata(_attach_keyword_ai_analysis(data))
 
 
 @router.get(
@@ -343,7 +441,7 @@ def manager_report(
         source.close()
     for manager in data.get("all_managers", []):
         if manager.get("manager_id") == manager_id:
-            return _attach_keyword_ai_analysis(manager)
+            return _attach_freshness_metadata(_attach_keyword_ai_analysis(manager))
 
     raise HTTPException(status_code=404, detail="Manager report not found")
 
@@ -398,7 +496,7 @@ def keywords_report(
     finally:
         reporting_source.close()
         keyword_source.close()
-    return _attach_keyword_ai_analysis(data)
+    return _attach_freshness_metadata(_attach_keyword_ai_analysis(data))
 
 
 @router.get(
@@ -455,7 +553,7 @@ def keyword_detail_report(
 
     for keyword in data.get("keywords", []):
         if keyword.get("keyword_id") == keyword_id:
-            return _attach_keyword_ai_analysis(keyword, keyword_id=keyword_id)
+            return _attach_freshness_metadata(_attach_keyword_ai_analysis(keyword, keyword_id=keyword_id))
 
     raise HTTPException(status_code=404, detail="Keyword report not found")
 
@@ -470,7 +568,7 @@ def keyword_detail_report(
         "- Keyword data must be refreshed (`POST /keywords/refresh`) or produced by a successful processing job.\n\n"
         "**Defaults**\n"
         "- `limit=50`, `offset=0`\n"
-        "- `sort_by=call_date`, `order=desc`\n\n"
+        "- `sort_by=call_datetime`, `order=desc`\n\n"
         "**Example**\n"
         "`GET /reports/keywords/delivery/calls?limit=25&offset=0&sort_by=match_count&order=desc`"
     ),
@@ -531,7 +629,7 @@ def keyword_calls_report(
         )
     finally:
         source.close()
-    return _attach_keyword_ai_analysis(data, keyword_id=keyword_id)
+    return _attach_freshness_metadata(_attach_keyword_ai_analysis(data, keyword_id=keyword_id))
 
 
 @router.get(
@@ -592,7 +690,7 @@ def keyword_trend_report(
         data = source.build_keyword_trend_report(keyword_id=keyword_id, filters=filters, spam_threshold=spam_threshold)
     finally:
         source.close()
-    return _attach_keyword_ai_analysis(data, keyword_id=keyword_id)
+    return _attach_freshness_metadata(_attach_keyword_ai_analysis(data, keyword_id=keyword_id))
 
 
 @router.get(
@@ -663,4 +761,4 @@ def keyword_managers_report(
         )
     finally:
         source.close()
-    return _attach_keyword_ai_analysis(data, keyword_id=keyword_id)
+    return _attach_freshness_metadata(_attach_keyword_ai_analysis(data, keyword_id=keyword_id))

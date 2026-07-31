@@ -205,11 +205,68 @@ When editing documentation, examples, or test instructions:
 
 ## Testing Strategy
 
-Current local checks:
+### Unit Tests
+
+Run unit tests (no external services required):
 
 ```bash
 pytest
+```
+
+### Integration Tests
+
+Integration tests require a PostgreSQL instance. Two options are available:
+
+**Option A — testcontainers (default, recommended)**
+
+The fixtures automatically manage a Postgres container via `testcontainers`. Just pass the flag:
+
+```bash
+pytest --run-integration
+```
+
+Docker must be running, but no manual setup is needed. Containers are cleaned up after the test session.
+
+**Option B — Docker Compose (persistent database)**
+
+Start a dedicated test database manually:
+
+```bash
+docker compose --profile test up -d
+```
+
+This starts `postgres:16-alpine` on port **54322** with the credentials:
+
+| Setting | Value |
+|---------|-------|
+| User | `call_analytics_test` |
+| Password | `test_pass` |
+| Database | `call_analytics_test` |
+| Port | `54322` |
+
+Then run tests with the DSN override:
+
+```bash
+PG_DSN=postgresql://call_analytics_test:test_pass@localhost:54322/call_analytics_test pytest --run-integration
+```
+
+Stop the test database when done:
+
+```bash
+docker compose --profile test down
+```
+
+Use Option B when you want to inspect the database state after tests or avoid container startup overhead across multiple test runs.
+
+### Type Checking
+
+```bash
 mypy --no-incremental src tests
+```
+
+### Import Validation
+
+```bash
 PYTHONPATH=src ./.venv/bin/python -c "import api.app as app; print(bool(app.app))"
 ```
 

@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
 from domain.reporting import ReportCallRecord, ReportFilters
+
+
+def _parse_date(date_str: Any) -> datetime | None:
+    """Parse YYYYMMDD string (PBX date format) into a datetime."""
+    if not date_str:
+        return None
+    try:
+        return datetime.strptime(str(date_str), "%Y%m%d")
+    except (ValueError, TypeError):
+        return None
 
 
 def _as_str_list(value: Any) -> list[str]:
@@ -46,7 +57,7 @@ def _record_from_analysis(call_id: str, data: dict[str, Any]) -> ReportCallRecor
         outcome=str(data.get("outcome") or "невідомо"),
         summary=str(data.get("summary") or ""),
         audio_seconds=audio_seconds,
-        call_date=str(call_meta.get("date") or ""),
+        call_datetime=_parse_date(call_meta.get("date")),
         src_number=str(call_meta.get("src_number") or ""),
         dst_number=str(call_meta.get("dst_number") or ""),
         key_questions=_as_str_list(data.get("key_questions")),

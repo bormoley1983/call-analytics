@@ -1,8 +1,11 @@
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+_process_env_lock = threading.Lock()
 
 from adapters.audio_ffmpeg import FfmpegAudio
 from adapters.keywords_postgres import PostgresKeywordSource
@@ -186,75 +189,78 @@ def _run_keyword_materialization_once() -> dict | None:
 def _run_process_once(req: ProcessRequest) -> dict:
     env_keys = ["DAYS", "PROCESS_LIMIT", "FORCE_REANALYZE", "FORCE_RETRANSCRIBE"]
     old_env = {k: os.environ.get(k) for k in env_keys}
-    try:
-        _configure_process_env(req)
-        config = load_app_config()
-        storage: StoragePort
-        if os.getenv("POSTGRES_DSN"):
-            logger.info("Postgres storage driver loaded")
-            storage = PostgresStorage(os.environ["POSTGRES_DSN"])
-        else:
-            logger.info("JSON storage driver loaded")
-            storage = JsonStorage(config.out, config.norm, config.trans, config.analysis)
-        
-        storage.ensure_ready()
+    
+    # Serialize process jobs to prevent cross-job env var contamination
+    with _process_env_lock:
         try:
-            pipeline = Pipeline(
-                config=config,
-                storage=storage,
-                audio=FfmpegAudio(),
-                llm=OllamaLlm(config),
-                pbx=AsteriskPbx(),
-            )
-            pipeline.run()
-            result: dict[str, Any] = {"ok": True}
-            keywords_refresh: dict[str, Any] | None = None
+            _configure_process_env(req)
+            config = load_app_config()
+            storage: StoragePort
+            if os.getenv("POSTGRES_DSN"):
+                logger.info("Postgres storage driver loaded")
+                storage = PostgresStorage(os.environ["POSTGRES_DSN"])
+            else:
+                logger.info("JSON storage driver loaded")
+                storage = JsonStorage(config.out, config.norm, config.trans, config.analysis)
+            
+            storage.ensure_ready()
             try:
-                keywords_refresh = _run_keyword_refresh_once()
-            except FileNotFoundError as exc:
-                logger.warning(
-                    "Skipping keyword refresh after processing because keyword config is missing: %s",
-                    exc,
+                pipeline = Pipeline(
+                    config=config,
+                    storage=storage,
+                    audio=FfmpegAudio(),
+                    llm=OllamaLlm(config),
+                    pbx=AsteriskPbx(),
                 )
+                pipeline.run()
+                result: dict[str, Any] = {"ok": True}
+                keywords_refresh: dict[str, Any] | None = None
                 try:
-                    materialize_result = _run_keyword_materialization_once()
-                except Exception as fallback_exc:
-                    logger.exception(
-                        "Keyword materialization fallback failed after missing keyword config"
+                    keywords_refresh = _run_keyword_refresh_once()
+                except FileNotFoundError as exc:
+                    logger.warning(
+                        "Skipping keyword refresh after processing because keyword config is missing: %s",
+                        exc,
                     )
-                    result["keywords_refresh_error"] = str(fallback_exc)
+                    try:
+                        materialize_result = _run_keyword_materialization_once()
+                    except Exception as fallback_exc:
+                        logger.exception(
+                            "Keyword materialization fallback failed after missing keyword config"
+                        )
+                        result["keywords_refresh_error"] = str(fallback_exc)
+                    else:
+                        if materialize_result is not None:
+                            keywords_refresh = {
+                                "sync": {
+                                    "skipped": True,
+                                    "reason": "keyword_config_missing",
+                                    "detail": str(exc),
+                                },
+                                "materialize": materialize_result,
+                            }
+                except Exception as exc:
+                    logger.exception("Keyword refresh failed after processing")
+                    result["keywords_refresh_error"] = str(exc)
+                if keywords_refresh is not None:
+                    result["keywords_refresh"] = keywords_refresh
+                try:
+                    keyword_ai_analysis = _run_keyword_ai_analysis_once(trigger="process")
+                except Exception as exc:
+                    logger.exception("AI keyword analysis failed after processing")
+                    result["keyword_ai_analysis_error"] = str(exc)
                 else:
-                    if materialize_result is not None:
-                        keywords_refresh = {
-                            "sync": {
-                                "skipped": True,
-                                "reason": "keyword_config_missing",
-                                "detail": str(exc),
-                            },
-                            "materialize": materialize_result,
-                        }
-            except Exception as exc:
-                logger.exception("Keyword refresh failed after processing")
-                result["keywords_refresh_error"] = str(exc)
-            if keywords_refresh is not None:
-                result["keywords_refresh"] = keywords_refresh
-            try:
-                keyword_ai_analysis = _run_keyword_ai_analysis_once(trigger="process")
-            except Exception as exc:
-                logger.exception("AI keyword analysis failed after processing")
-                result["keyword_ai_analysis_error"] = str(exc)
-            else:
-                if keyword_ai_analysis is not None:
-                    result["keyword_ai_analysis"] = keyword_ai_analysis
-            return result
+                    if keyword_ai_analysis is not None:
+                        result["keyword_ai_analysis"] = keyword_ai_analysis
+                return result
+            finally:
+                storage.close()
         finally:
-            storage.close()
-    finally:
-        for k, v in old_env.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+            for k, v in old_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
 
 def run_sync(job_id: str, req: SyncRequest) -> None:

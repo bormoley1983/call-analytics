@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from api.schemas import KeywordGenerationRequest
-from core.keywords_generate import generate_keyword_candidates, publish_generated_keywords
+from core.keywords_generate import (
+    generate_keyword_candidates,
+    publish_generated_keywords,
+)
 from domain.keywords import KeywordDefinition
 from domain.reporting import ReportCallRecord, ReportFilters
 
@@ -11,7 +16,9 @@ class FakeReportingSource:
         self.records = records
 
     def iter_call_records(self, filters: ReportFilters):
-        return iter([record for record in self.records if filters.matches_record(record)])
+        return iter(
+            [record for record in self.records if filters.matches_record(record)]
+        )
 
     def close(self):
         return None
@@ -35,7 +42,9 @@ class FakeKeywordSource:
         return None
 
 
-def _record(call_id: str, summary: str, key_questions: list[str] | None = None) -> ReportCallRecord:
+def _record(
+    call_id: str, summary: str, key_questions: list[str] | None = None
+) -> ReportCallRecord:
     return ReportCallRecord(
         call_id=call_id,
         manager_id="m1",
@@ -48,7 +57,7 @@ def _record(call_id: str, summary: str, key_questions: list[str] | None = None) 
         outcome="outcome",
         summary=summary,
         audio_seconds=10.0,
-        call_date="20260320",
+        call_datetime=datetime(2026, 3, 20, tzinfo=timezone.utc),
         src_number="1",
         dst_number="2",
         key_questions=key_questions or [],
@@ -67,8 +76,14 @@ def test_keyword_generation_request_defaults_to_effective_only_without_dates():
 def test_generate_keyword_candidates_from_analysis_texts():
     reporting = FakeReportingSource(
         [
-            _record("call-1", "Customer asks refund for delayed delivery", ["Refund status update?"]),
-            _record("call-2", "Refund needed due to wrong shipment", ["Can I get refund?"]),
+            _record(
+                "call-1",
+                "Customer asks refund for delayed delivery",
+                ["Refund status update?"],
+            ),
+            _record(
+                "call-2", "Refund needed due to wrong shipment", ["Can I get refund?"]
+            ),
             _record("call-3", "Delivery delayed again", ["Where is delivery"]),
         ]
     )

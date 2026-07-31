@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Iterable
 
@@ -41,6 +42,7 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
             FROM keywords k
             ORDER BY k.category, k.label, k.keyword_id
         """
+
         def _list(conn):
             with conn.cursor() as cur:
                 cur.execute(query)
@@ -80,6 +82,7 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
             FROM keywords k
             WHERE k.keyword_id = %s
         """
+
         def _get(conn):
             with conn.cursor() as cur:
                 cur.execute(query, (keyword_id,))
@@ -103,7 +106,7 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
                 cur.execute(
                     """
                     INSERT INTO keywords (keyword_id, label, category, match_fields, is_active)
-                    VALUES (%s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s::jsonb, %s)
                     ON CONFLICT (keyword_id) DO UPDATE SET
                         label = EXCLUDED.label,
                         category = EXCLUDED.category,
@@ -114,11 +117,17 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
                         keyword.keyword_id,
                         keyword.label,
                         keyword.category,
-                        keyword.match_fields or list(DEFAULT_MATCH_FIELDS),
+                        json.dumps(
+                            keyword.match_fields or list(DEFAULT_MATCH_FIELDS),
+                            ensure_ascii=False,
+                        ),
                         keyword.is_active,
                     ),
                 )
-                cur.execute("DELETE FROM keyword_aliases WHERE keyword_id = %s", (keyword.keyword_id,))
+                cur.execute(
+                    "DELETE FROM keyword_aliases WHERE keyword_id = %s",
+                    (keyword.keyword_id,),
+                )
                 for term in keyword.terms:
                     cur.execute(
                         """
@@ -175,7 +184,9 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
 
         return self._run_read(_is_materialized)
 
-    def mark_materialization_completed(self, processed_calls: int, matched_calls: int, stored_rows: int) -> None:
+    def mark_materialization_completed(
+        self, processed_calls: int, matched_calls: int, stored_rows: int
+    ) -> None:
         def _mark(conn):
             with conn.cursor() as cur:
                 cur.execute(
@@ -204,12 +215,12 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
         clauses = ["1=1"]
         params: list[object] = []
 
-        if filters.call_date_from:
-            clauses.append("a.call_date >= %s")
-            params.append(filters.call_date_from)
-        if filters.call_date_to:
-            clauses.append("a.call_date <= %s")
-            params.append(filters.call_date_to)
+        if filters.date_from:
+            clauses.append("a.call_datetime::date >= %s")
+            params.append(filters.date_from)
+        if filters.date_to:
+            clauses.append("a.call_datetime::date <= %s")
+            params.append(filters.date_to)
         if filters.manager_id:
             clauses.append("a.manager_id = %s")
             params.append(filters.manager_id)
@@ -259,6 +270,7 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
         """
 
         buckets: dict[str, dict] = {}
+
         def _fetch_rows(conn):
             with conn.cursor() as cur:
                 cur.execute(query, params)
@@ -283,11 +295,19 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
             bucket["matched_calls"] += 1
             bucket["total_matches"] += int(row[6] or 0)
             bucket["matched_managers"].add(row[7] or "manager_unknown")
-            bucket["intents"][row[8] or "інше"] = bucket["intents"].get(row[8] or "інше", 0) + 1
-            bucket["outcomes"][row[9] or "невідомо"] = bucket["outcomes"].get(row[9] or "невідомо", 0) + 1
+            bucket["intents"][row[8] or "інше"] = (
+                bucket["intents"].get(row[8] or "інше", 0) + 1
+            )
+            bucket["outcomes"][row[9] or "невідомо"] = (
+                bucket["outcomes"].get(row[9] or "невідомо", 0) + 1
+            )
 
         all_keywords = []
-        for keyword in [keyword for keyword in self.list_keywords() if keyword.is_active and keyword.terms]:
+        for keyword in [
+            keyword
+            for keyword in self.list_keywords()
+            if keyword.is_active and keyword.terms
+        ]:
             bucket = buckets.get(
                 keyword.keyword_id,
                 {
@@ -313,8 +333,12 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
                     "matched_calls": bucket["matched_calls"],
                     "total_matches": bucket["total_matches"],
                     "matched_managers": len(bucket["matched_managers"]),
-                    "top_intents": sorted(bucket["intents"].items(), key=lambda kv: kv[1], reverse=True)[:10],
-                    "top_outcomes": sorted(bucket["outcomes"].items(), key=lambda kv: kv[1], reverse=True)[:5],
+                    "top_intents": sorted(
+                        bucket["intents"].items(), key=lambda kv: kv[1], reverse=True
+                    )[:10],
+                    "top_outcomes": sorted(
+                        bucket["outcomes"].items(), key=lambda kv: kv[1], reverse=True
+                    )[:5],
                 }
             )
 
@@ -326,7 +350,12 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
             )
         else:
             all_keywords.sort(
-                key=lambda item: (item.get(sort_by, 0), item["category"], item["label"], item["keyword_id"]),
+                key=lambda item: (
+                    item.get(sort_by, 0),
+                    item["category"],
+                    item["label"],
+                    item["keyword_id"],
+                ),
                 reverse=reverse,
             )
 
@@ -336,20 +365,24 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
             "keyword_data_source": self.source_name,
             "filters": filters.as_dict(),
             "total_keywords": len(all_keywords),
-            "keywords_with_matches": sum(1 for item in all_keywords if item["matched_calls"] > 0),
+            "keywords_with_matches": sum(
+                1 for item in all_keywords if item["matched_calls"] > 0
+            ),
             "keywords": all_keywords,
         }
 
-    def _analysis_filter_clauses(self, filters: ReportFilters, spam_threshold: float) -> tuple[list[str], list[object]]:
+    def _analysis_filter_clauses(
+        self, filters: ReportFilters, spam_threshold: float
+    ) -> tuple[list[str], list[object]]:
         clauses = ["1=1"]
         params: list[object] = []
 
-        if filters.call_date_from:
-            clauses.append("a.call_date >= %s")
-            params.append(filters.call_date_from)
-        if filters.call_date_to:
-            clauses.append("a.call_date <= %s")
-            params.append(filters.call_date_to)
+        if filters.date_from:
+            clauses.append("a.call_datetime::date >= %s")
+            params.append(filters.date_from)
+        if filters.date_to:
+            clauses.append("a.call_datetime::date <= %s")
+            params.append(filters.date_to)
         if filters.manager_id:
             clauses.append("a.manager_id = %s")
             params.append(filters.manager_id)
@@ -379,7 +412,7 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
         spam_threshold: float,
         limit: int,
         offset: int,
-        sort_by: str = "call_date",
+        sort_by: str = "call_datetime",
         order: str = "desc",
     ) -> dict:
         clauses, params = self._analysis_filter_clauses(filters, spam_threshold)
@@ -388,13 +421,13 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
         params.extend([limit, offset])
 
         order_by_map = {
-            "call_date": "a.call_date",
+            "call_datetime": "a.call_datetime",
             "match_count": "ck.match_count",
             "manager_name": "a.manager_name",
             "intent": "a.intent",
             "outcome": "a.outcome",
         }
-        order_by = order_by_map.get(sort_by, "a.call_date")
+        order_by = order_by_map.get(sort_by, "a.call_datetime")
         order_dir = "ASC" if order == "asc" else "DESC"
         count_query = f"""
             SELECT COUNT(*)
@@ -408,7 +441,7 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
                 ck.match_count,
                 ck.matched_fields,
                 ck.matched_terms,
-                a.call_date,
+                a.call_datetime::date,
                 a.manager_id,
                 a.manager_name,
                 a.role,
@@ -425,6 +458,7 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
             ORDER BY {order_by} {order_dir} NULLS LAST, ck.call_id DESC
             LIMIT %s OFFSET %s
         """
+
         def _fetch(conn):
             with conn.cursor() as cur:
                 cur.execute(count_query, count_params)
@@ -440,7 +474,7 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
                 "match_count": int(row[1] or 0),
                 "matched_fields": list(row[2] or []),
                 "matched_terms": list(row[3] or []),
-                "call_date": row[4] or "",
+                "call_datetime": row[4] or "",
                 "manager_id": row[5] or "manager_unknown",
                 "manager_name": row[6] or "Unknown/General",
                 "role": row[7] or "unknown",
@@ -465,20 +499,23 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
             "calls": calls,
         }
 
-    def build_keyword_trend_report(self, keyword_id: str, filters: ReportFilters, spam_threshold: float) -> dict:
+    def build_keyword_trend_report(
+        self, keyword_id: str, filters: ReportFilters, spam_threshold: float
+    ) -> dict:
         clauses, params = self._analysis_filter_clauses(filters, spam_threshold)
         params = [keyword_id, *params]
         query = f"""
             SELECT
-                a.call_date,
+                a.call_datetime::date,
                 COUNT(*) AS matched_calls,
                 COALESCE(SUM(ck.match_count), 0) AS total_matches
             FROM call_keywords ck
             JOIN analyses a ON a.call_id = ck.call_id
             WHERE ck.keyword_id = %s AND {" AND ".join(clauses)}
-            GROUP BY a.call_date
-            ORDER BY a.call_date
+            GROUP BY a.call_datetime::date
+            ORDER BY a.call_datetime::date
         """
+
         def _fetch(conn):
             with conn.cursor() as cur:
                 cur.execute(query, params)
@@ -492,7 +529,7 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
             "keyword_id": keyword_id,
             "points": [
                 {
-                    "call_date": row[0] or "",
+                    "call_datetime": row[0] or "",
                     "matched_calls": int(row[1] or 0),
                     "total_matches": int(row[2] or 0),
                 }
@@ -530,6 +567,7 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
             GROUP BY a.manager_id, a.manager_name, a.role
             ORDER BY {order_by} {order_dir}, total_matches DESC, a.manager_name, a.manager_id
         """
+
         def _fetch(conn):
             with conn.cursor() as cur:
                 cur.execute(query, params)

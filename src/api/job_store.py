@@ -43,11 +43,15 @@ def list_jobs(limit: int = 50) -> list:
         return sorted(_jobs.values(), key=lambda j: j.created_at, reverse=True)[:limit]
 
 
-def update_job(job_id: str, **kwargs) -> None:
+def update_job(job_id: str, **kwargs) -> bool:
+    """Update a job's attributes. Returns True if the job was found and updated."""
     with _lock:
-        job = _jobs[job_id]
+        job = _jobs.get(job_id)
+        if job is None:
+            return False
         for k, v in kwargs.items():
             setattr(job, k, v)
+        return True
 
 
 def create_sync_job_if_none_running() -> JobResponse | None:

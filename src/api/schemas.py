@@ -22,7 +22,9 @@ class SortOrder(str, Enum):
 def _normalize_days(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
-    normalized = value.strip()
+    if isinstance(value, int):
+        return str(value)
+    normalized = str(value).strip()
     if not normalized:
         return None
     if normalized.lower() in {"string", "none", "null"}:
@@ -57,6 +59,7 @@ class ProcessRequest(BaseModel):
     def validate_days(cls, value: Optional[str]) -> Optional[str]:
         return _normalize_days(value)
 
+
 class SyncRequest(BaseModel):
     days: Optional[str] = Field(
         default=None,
@@ -69,21 +72,30 @@ class SyncRequest(BaseModel):
     def validate_days(cls, value: Optional[str]) -> Optional[str]:
         return _normalize_days(value)
 
+
 class JobResponse(BaseModel):
-    job_id: str = Field(description="Unique job identifier.", examples=["job_20260320_101530_a1b2"])
+    job_id: str = Field(
+        description="Unique job identifier.", examples=["job_20260320_101530_a1b2"]
+    )
     type: str = Field(
         description="Job type, for example `sync`, `process`, or `sync-and-process`.",
         examples=["process"],
     )
     status: JobStatus = Field(description="Current job execution status.")
     created_at: datetime = Field(description="UTC timestamp when the job was created.")
-    started_at: Optional[datetime] = Field(default=None, description="UTC timestamp when execution started.")
-    finished_at: Optional[datetime] = Field(default=None, description="UTC timestamp when execution finished.")
+    started_at: Optional[datetime] = Field(
+        default=None, description="UTC timestamp when execution started."
+    )
+    finished_at: Optional[datetime] = Field(
+        default=None, description="UTC timestamp when execution finished."
+    )
     result: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Optional result payload returned by the completed job.",
     )
-    error: Optional[str] = Field(default=None, description="Error details when `status=failed`.")
+    error: Optional[str] = Field(
+        default=None, description="Error details when `status=failed`."
+    )
 
 
 class ReportFiltersQuery(BaseModel):
@@ -133,7 +145,9 @@ class ReportFiltersQuery(BaseModel):
         examples=[False],
     )
 
-    @field_validator("manager_id", "role", "direction", "intent", "outcome", mode="before")
+    @field_validator(
+        "manager_id", "role", "direction", "intent", "outcome", mode="before"
+    )
     @classmethod
     def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -290,7 +304,9 @@ class KeywordGenerationRequest(BaseModel):
         description="Skip phrases that already exist in current keyword terms.",
     )
 
-    @field_validator("manager_id", "role", "direction", "intent", "outcome", mode="before")
+    @field_validator(
+        "manager_id", "role", "direction", "intent", "outcome", mode="before"
+    )
     @classmethod
     def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -300,7 +316,11 @@ class KeywordGenerationRequest(BaseModel):
 
     @model_validator(mode="after")
     def ensure_at_least_one_source_field(self) -> "KeywordGenerationRequest":
-        if not (self.include_summary or self.include_key_questions or self.include_objections):
+        if not (
+            self.include_summary
+            or self.include_key_questions
+            or self.include_objections
+        ):
             raise ValueError(
                 "At least one field source must be enabled: include_summary, include_key_questions, include_objections"
             )
@@ -500,6 +520,7 @@ class KeywordCatalogAnalysisRequest(BaseModel):
                 result.append(normalized)
         return result or None
 
+
 class PaginationQuery(BaseModel):
     limit: int = Field(
         default=50,
@@ -532,7 +553,7 @@ class KeywordSortBy(str, Enum):
 
 
 class KeywordCallSortBy(str, Enum):
-    call_date = "call_date"
+    call_datetime = "call_datetime"
     match_count = "match_count"
     manager_name = "manager_name"
     intent = "intent"
@@ -573,7 +594,7 @@ class KeywordsSortQuery(BaseModel):
 
 class KeywordCallsSortQuery(BaseModel):
     sort_by: KeywordCallSortBy = Field(
-        default=KeywordCallSortBy.call_date,
+        default=KeywordCallSortBy.call_datetime,
         description="Keyword calls report sorting field.",
     )
     order: SortOrder = Field(default=SortOrder.desc, description="Sort direction.")
@@ -593,3 +614,211 @@ class CustomersSortQuery(BaseModel):
         description="Customers report sorting field.",
     )
     order: SortOrder = Field(default=SortOrder.desc, description="Sort direction.")
+
+
+# ---------------------------------------------------------------------------
+# AI Apply schemas — apply approved catalog actions
+# ---------------------------------------------------------------------------
+
+
+class AIApplyAction(BaseModel):
+    """Single action to apply, referenced by group/action index from analysis."""
+
+    group_index: int = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Zero-based index of the group in the analysis. "
+            "Required for grouped actions (merge, rename, deactivate, expand_aliases). "
+            "Use -1 or omit for ungrouped keyword actions."
+        ),
+    )
+    action_index: int = Field(
+        default=None,
+        ge=0,
+        description="Zero-based index of the action within the group. Required for grouped actions.",
+    )
+    keyword_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Direct keyword_id to apply action on. "
+            "Alternative to group_index/action_index for direct referencing."
+        ),
+    )
+
+    @field_validator("group_index", mode="before")
+    @classmethod
+    def normalize_group_index(cls, value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            raise ValueError("group_index must be an integer")
+
+    @field_validator("action_index", mode="before")
+    @classmethod
+    def normalize_action_index(cls, value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            raise ValueError("action_index must be an integer")
+
+    @field_validator("keyword_id", mode="before")
+    @classmethod
+    def normalize_keyword_id(cls, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def validate_reference_method(self) -> "AIApplyAction":
+        """Ensure either index-based or keyword_id-based referencing is used."""
+        has_indices = self.group_index is not None and self.action_index is not None
+        has_keyword_id = bool(self.keyword_id)
+        if not has_indices and not has_keyword_id:
+            raise ValueError(
+                "AIApplyAction requires either (group_index + action_index) or keyword_id"
+            )
+        return self
+
+
+class AIApplyRequest(BaseModel):
+    """Request to apply selected actions from a catalog analysis."""
+
+    actions: List[AIApplyAction] = Field(
+        min_length=1,
+        description="Selected actions to apply from the analysis.",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="If true, only preview mutations without applying them.",
+    )
+    refresh_after: bool = Field(
+        default=True,
+        description="Trigger keyword materialization after successful apply.",
+    )
+    rerun_analysis: bool = Field(
+        default=False,
+        description="Re-run catalog analysis after apply to find new opportunities.",
+    )
+
+    @field_validator("actions", mode="before")
+    @classmethod
+    def normalize_actions(cls, value: Any) -> List[AIApplyAction]:
+        if value is None or not isinstance(value, list):
+            raise ValueError("actions must be a non-empty list")
+        if len(value) == 0:
+            raise ValueError("actions must contain at least one action")
+        return value
+
+
+class AIMutation(BaseModel):
+    """Single mutation performed or previewed."""
+
+    action_type: str = Field(
+        description="Type of action: keep, merge, rename, expand_aliases, deactivate.",
+        examples=["merge"],
+    )
+    keyword_id: str = Field(
+        description="Primary keyword_id affected by this mutation.",
+        examples=["old_keyword_id"],
+    )
+    detail: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Action-specific details (target_keyword_id, suggested_label, etc.).",
+    )
+
+
+class AISkippedAction(BaseModel):
+    """Action that was skipped during apply with reason."""
+
+    action: Dict[str, Any] = Field(
+        description="The original action data that was skipped.",
+    )
+    reason: str = Field(
+        description="Human-readable reason why the action was skipped.",
+        examples=["Keyword 'test_kw' not found in catalog"],
+    )
+
+
+class AIApplyResult(BaseModel):
+    """Result of an apply operation."""
+
+    apply_id: str = Field(
+        description="UUID of the apply record in the database.",
+    )
+    analysis_id: str = Field(
+        description="Analysis ID that these actions were drawn from.",
+    )
+    applied_at: str = Field(
+        description="ISO 8601 timestamp of when the apply was executed.",
+    )
+    dry_run: bool = Field(
+        description="Whether this was a dry-run (no mutations applied).",
+    )
+    actions_applied: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of actions that were successfully applied.",
+    )
+    actions_skipped: List[AISkippedAction] = Field(
+        default_factory=list,
+        description="List of actions that were skipped with reasons.",
+    )
+    mutations: List[AIMutation] = Field(
+        default_factory=list,
+        description="List of mutations that were performed (or previewed in dry-run).",
+    )
+    keyword_refreshed: bool = Field(
+        default=False,
+        description="Whether keyword materialization was triggered after apply.",
+    )
+    follow_up_ran: bool = Field(
+        default=False,
+        description="Whether a follow-up analysis was triggered after apply.",
+    )
+
+
+class AIApplyDryRunResult(BaseModel):
+    """Preview of mutations without applying them."""
+
+    analysis_id: str = Field(
+        description="Analysis ID that these actions were drawn from.",
+    )
+    dry_run: bool = Field(default=True, description="Always true for dry-run results.")
+    actions_validated: int = Field(
+        description="Number of actions that passed validation.",
+    )
+    actions_skipped: List[AISkippedAction] = Field(
+        default_factory=list,
+        description="Actions that would be skipped with reasons.",
+    )
+    mutations_preview: List[AIMutation] = Field(
+        default_factory=list,
+        description="Preview of mutations that would be performed.",
+    )
+    would_refresh: bool = Field(
+        default=True,
+        description="Whether keyword materialization would be triggered.",
+    )
+
+
+class AIApplyHistoryEntry(BaseModel):
+    """Single entry from the apply history for an analysis."""
+
+    apply_id: str = Field(description="UUID of the apply record.")
+    applied_at: str = Field(description="ISO 8601 timestamp.")
+    applied_by: Optional[str] = Field(
+        default=None, description="User who triggered the apply."
+    )
+    dry_run: bool = Field(description="Whether this was a dry-run.")
+    actions_count: int = Field(description="Number of actions in this apply.")
+    mutations_count: int = Field(description="Number of mutations performed.")
+    keyword_refreshed: bool = Field(description="Whether refresh was triggered.")
+    follow_up_ran: bool = Field(description="Whether follow-up analysis ran.")
+    error: Optional[str] = Field(
+        default=None, description="Error message if apply failed."
+    )

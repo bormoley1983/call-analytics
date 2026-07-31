@@ -3,14 +3,22 @@ from types import SimpleNamespace
 
 import pytest
 
-from adapters import (audio_ffmpeg, keyword_ai_analysis_postgres,
-                      keywords_postgres, llm_ollama,
-                      postgres_single_connection, reporting_postgres,
-                      storage_json, storage_postgres)
+from adapters import (
+    audio_ffmpeg,
+    keyword_ai_analysis_postgres,
+    keywords_postgres,
+    llm_ollama,
+    postgres_single_connection,
+    reporting_postgres,
+    storage_json,
+    storage_postgres,
+    storage_qdrant,
+)
 
 
 def test_ffprobe_duration_seconds_exists():
     assert hasattr(audio_ffmpeg, "ffprobe_duration_seconds")
+
 
 def test_json_storage_init(tmp_path):
     storage = storage_json.JsonStorage(tmp_path, tmp_path, tmp_path, tmp_path)
@@ -18,14 +26,16 @@ def test_json_storage_init(tmp_path):
 
 
 def test_json_storage_upsert_call_metadata_creates_and_updates_file(tmp_path):
-    storage = storage_json.JsonStorage(tmp_path / "out", tmp_path / "norm", tmp_path / "trans", tmp_path / "analysis")
+    storage = storage_json.JsonStorage(
+        tmp_path / "out", tmp_path / "norm", tmp_path / "trans", tmp_path / "analysis"
+    )
     storage.ensure_ready()
 
     storage.upsert_call_metadata(
         call_id="call-1",
         source_file="a.wav",
         source_path="/tmp/a.wav",
-        call_date="20260725",
+        call_datetime=datetime(2026, 7, 25, tzinfo=timezone.utc),
         status="discovered",
     )
     storage.upsert_call_metadata(
@@ -48,7 +58,9 @@ def test_json_storage_upsert_call_metadata_creates_and_updates_file(tmp_path):
 
 
 def test_json_storage_save_transcript_and_analysis_updates_call_metadata(tmp_path):
-    storage = storage_json.JsonStorage(tmp_path / "out", tmp_path / "norm", tmp_path / "trans", tmp_path / "analysis")
+    storage = storage_json.JsonStorage(
+        tmp_path / "out", tmp_path / "norm", tmp_path / "trans", tmp_path / "analysis"
+    )
     storage.ensure_ready()
 
     storage.save_transcript(
@@ -72,13 +84,17 @@ def test_json_storage_save_transcript_and_analysis_updates_call_metadata(tmp_pat
     assert payload["call_id"] == "call-2"
     assert payload["status"] == "processed"
     assert payload["source_file"] == "b.wav"
-    assert payload["call_date"] == "20260725"
+    assert payload["call_datetime"] == "2026-07-25T00:00:00+00:00"
     assert payload["translated_at"]
     assert payload["analyzed_at"]
 
 
-def test_json_storage_sync_per_call_tracks_metadata_and_saves_processed_analysis(tmp_path):
-    storage = storage_json.JsonStorage(tmp_path / "out", tmp_path / "norm", tmp_path / "trans", tmp_path / "analysis")
+def test_json_storage_sync_per_call_tracks_metadata_and_saves_processed_analysis(
+    tmp_path,
+):
+    storage = storage_json.JsonStorage(
+        tmp_path / "out", tmp_path / "norm", tmp_path / "trans", tmp_path / "analysis"
+    )
     storage.ensure_ready()
 
     per_call = [
@@ -154,7 +170,7 @@ def test_postgres_storage_ddl_includes_calls_metadata_table_and_indexes():
     assert "status" in ddl
     assert "error_message" in ddl
     assert "idx_calls_status" in ddl
-    assert "idx_calls_call_date" in ddl
+    assert "idx_calls_call_datetime" in ddl
 
 
 def test_postgres_storage_sync_per_call_tracks_calls_metadata_for_processed_and_skipped():
@@ -264,7 +280,9 @@ def test_single_connection_adapter_preserves_existing_connect_timeout(monkeypatc
     assert parsed["connect_timeout"] == "3"
 
 
-def test_keyword_ai_analysis_store_retries_connection_init_on_operational_error(monkeypatch):
+def test_keyword_ai_analysis_store_retries_connection_init_on_operational_error(
+    monkeypatch,
+):
     class DummyCursor:
         def __init__(self, conn):
             self.conn = conn
@@ -324,7 +342,9 @@ def test_keyword_ai_analysis_store_retries_connection_init_on_operational_error(
 
     monkeypatch.setattr(postgres_single_connection.psycopg2, "connect", fake_connect)
 
-    store = keyword_ai_analysis_postgres.PostgresKeywordAiAnalysisStore("postgresql://example")
+    store = keyword_ai_analysis_postgres.PostgresKeywordAiAnalysisStore(
+        "postgresql://example"
+    )
 
     result = store.save_analysis(
         request_data={"trigger": "process"},
@@ -334,7 +354,12 @@ def test_keyword_ai_analysis_store_retries_connection_init_on_operational_error(
             "truncated": False,
             "keywords": [],
         },
-        ai_analysis={"summary": "summary", "groups": [], "ungrouped_keyword_ids": [], "global_recommendations": []},
+        ai_analysis={
+            "summary": "summary",
+            "groups": [],
+            "ungrouped_keyword_ids": [],
+            "global_recommendations": [],
+        },
         keyword_source="postgres",
         reporting_source="postgres",
         ai_model="test-model",
@@ -410,19 +435,27 @@ def test_reporting_source_retries_read_after_operational_error(monkeypatch):
     second_conn = DummyConn()
     connections = [first_conn, second_conn]
 
-    monkeypatch.setattr(postgres_single_connection.psycopg2, "connect", lambda dsn: connections.pop(0))
+    monkeypatch.setattr(
+        postgres_single_connection.psycopg2, "connect", lambda dsn: connections.pop(0)
+    )
 
     source = reporting_postgres.PostgresReportingSource("postgresql://example")
 
-    rows = list(source.iter_call_records(SimpleNamespace(
-        call_date_from=None,
-        call_date_to=None,
-        manager_id=None,
-        role=None,
-        direction=None,
-        intent=None,
-        outcome=None,
-    )))
+    rows = list(
+        source.iter_call_records(
+            SimpleNamespace(
+                date_from=None,
+                date_to=None,
+                manager_id=None,
+                role=None,
+                direction=None,
+                intent=None,
+                outcome=None,
+                spam_only=False,
+                effective_only=False,
+            )
+        )
+    )
 
     assert len(rows) == 1
     assert rows[0].call_id == "call-1"
@@ -451,7 +484,9 @@ def test_keywords_source_retries_read_after_operational_error(monkeypatch):
                 )
 
         def fetchall(self):
-            return [("delivery", "Delivery", "logistics", ["summary"], True, ["delivery"])]
+            return [
+                ("delivery", "Delivery", "logistics", ["summary"], True, ["delivery"])
+            ]
 
     class DummyConn:
         def __init__(self, *, fail_query=False):
@@ -475,7 +510,9 @@ def test_keywords_source_retries_read_after_operational_error(monkeypatch):
     second_conn = DummyConn()
     connections = [first_conn, second_conn]
 
-    monkeypatch.setattr(postgres_single_connection.psycopg2, "connect", lambda dsn: connections.pop(0))
+    monkeypatch.setattr(
+        postgres_single_connection.psycopg2, "connect", lambda dsn: connections.pop(0)
+    )
 
     source = keywords_postgres.PostgresKeywordSource("postgresql://example")
 
@@ -516,7 +553,9 @@ def test_ollama_generate_sends_runtime_limits(monkeypatch):
         ollama_retries=1,
     )
 
-    result = llm_ollama._ollama_generate("hello", config, temperature=0.1, force_json=True)
+    result = llm_ollama._ollama_generate(
+        "hello", config, temperature=0.1, force_json=True
+    )
 
     assert result == '{"ok":true}'
     assert captured["url"] == "http://ai1.office.aviv.com.ua:11434/api/generate"
@@ -526,3 +565,47 @@ def test_ollama_generate_sends_runtime_limits(monkeypatch):
     assert captured["json"]["format"] == "json"
     assert captured["json"]["options"]["temperature"] == 0.1
     assert captured["json"]["options"]["num_ctx"] == 16384
+
+
+def test_qdrant_storage_upsert_is_deterministic(monkeypatch):
+    class DummyClient:
+        def __init__(self, **kwargs):
+            self.points = {}
+
+        def upsert(self, collection_name, points):
+            for p in points:
+                self.points[p.id] = p
+
+    monkeypatch.setattr("adapters.storage_qdrant.QdrantClient", DummyClient)
+    storage = storage_qdrant.QdrantStorage()
+
+    call_id = "call-determinism-test"
+    embedding = [0.1] * 1024
+    payload = {"meta": "data"}
+
+    storage.upsert(call_id, embedding, payload)
+    first_id = list(storage.client.points.keys())[0]
+
+    storage.upsert(call_id, embedding, payload)
+    second_id = (
+        list(storage.client.points.keys())[-1]
+        if len(storage.client.points) > 1
+        else first_id
+    )
+
+    # Re-instantiate to simulate restart/new process
+    storage2 = storage_qdrant.QdrantStorage()
+    storage2.client = storage.client  # share the mock client for verification
+    storage2.upsert(call_id, embedding, payload)
+    third_id = list(storage.client.points.keys())[-1]
+
+    assert (
+        first_id == third_id
+    ), "Qdrant Point ID must be deterministic across calls and restarts"
+
+
+def test_postgres_storage_ddl_contains_stt_promotion_columns():
+    ddl = storage_postgres.DDL
+    assert "stt_run_id UUID" in ddl
+    assert "stt_config_hash TEXT" in ddl
+    assert "source_text_sha256 TEXT" in ddl

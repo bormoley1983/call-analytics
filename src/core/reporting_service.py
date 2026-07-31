@@ -266,7 +266,7 @@ def _accumulate_customer_stats(
     if record.effective_call:
         stats["effective_calls"] += 1
 
-    call_date = (record.call_date or "").strip()
+    call_date = (record.call_datetime.date().isoformat() if record.call_datetime else "").strip()
     if call_date:
         first_call_date = stats.get("first_call_date")
         last_call_date = stats.get("last_call_date")
@@ -396,7 +396,7 @@ def build_customer_followup_report(
         calls.append(
             {
                 "call_id": record.call_id,
-                "call_date": record.call_date,
+                "call_date": record.call_datetime.date().isoformat() if record.call_datetime else "",
                 "direction": record.direction,
                 "manager_id": record.manager_id,
                 "manager_name": record.manager_name,

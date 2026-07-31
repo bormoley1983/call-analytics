@@ -17,6 +17,12 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+# Keys that must never be loaded from .env because they are environment-specific.
+# PROJECT_ROOT is auto-detected from the source tree; overwriting it with a
+# Docker-only path (/work) breaks local development and tests.
+_ENV_KEYS_SKIP = {"PROJECT_ROOT"}
+
+
 def _load_env_defaults() -> None:
     """
     Load env defaults from config/.env when process env is missing keys.
@@ -48,7 +54,7 @@ def _load_env_defaults() -> None:
 
                 key, value = line.split("=", 1)
                 key = key.strip()
-                if not key:
+                if not key or key in _ENV_KEYS_SKIP:
                     continue
 
                 value = value.strip()

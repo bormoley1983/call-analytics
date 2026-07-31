@@ -13,7 +13,9 @@ T = TypeVar("T")
 
 
 def _resolve_connect_timeout_seconds() -> int:
-    raw_value = os.getenv("POSTGRES_CONNECT_TIMEOUT", str(DEFAULT_CONNECT_TIMEOUT_SECONDS)).strip()
+    raw_value = os.getenv(
+        "POSTGRES_CONNECT_TIMEOUT", str(DEFAULT_CONNECT_TIMEOUT_SECONDS)
+    ).strip()
     try:
         return max(1, int(raw_value))
     except ValueError:
@@ -50,7 +52,9 @@ class SingleConnectionPostgresAdapter:
             pass
 
     def _connect(self):
-        conn = _ensure_utf8_client_encoding(psycopg2.connect(_dsn_with_connect_timeout(self.dsn)))
+        conn = _ensure_utf8_client_encoding(
+            psycopg2.connect(_dsn_with_connect_timeout(self.dsn))
+        )
         try:
             self._initialize_connection(conn)
         except Exception:
@@ -86,13 +90,18 @@ class SingleConnectionPostgresAdapter:
             self._close_conn()
 
     def _run_read(self, fn: Callable[[Any], T]) -> T:
+        conn = None
         last_error = None
         for attempt in range(2):
             try:
-                return fn(self._getconn())
+                conn = self._getconn()
+                result = fn(conn)
+                self._rollback_quietly(conn)
+                return result
             except RETRYABLE_CONNECTION_ERRORS as exc:
                 last_error = exc
                 self._close_conn()
+                conn = None
                 if attempt == 1:
                     raise
         if last_error is not None:

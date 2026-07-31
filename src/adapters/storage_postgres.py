@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from psycopg2 import extensions as pg_extensions
@@ -9,12 +11,36 @@ from psycopg2.extras import Json
 
 from adapters.stt_runs_schema import STT_RUNS_DDL
 
-DDL = """
+
+def parse_call_datetime(
+    date_str: str, time_str: Optional[str] = None
+) -> Optional[datetime]:
+    """Parse PBX date (YYYYMMDD) and optional time (HHMMSS) into a timezone-aware datetime.
+
+    Uses UTC as the default timezone since PBX systems typically report in UTC.
+    Returns None if date_str is empty or invalid.
+    """
+    if not date_str:
+        return None
+    try:
+        dt = datetime.strptime(date_str, "%Y%m%d")
+        if time_str:
+            dt = datetime.strptime(f"{date_str}{time_str}", "%Y%m%d%H%M%S")
+        # PBX systems typically report in UTC; attach UTC timezone for TIMESTAMPTZ
+        return dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+DDL = r"""
 CREATE TABLE IF NOT EXISTS transcripts (
-    call_id     TEXT PRIMARY KEY,
-    pipeline_stage TEXT,
-    data        JSONB NOT NULL,
-    created_at  TIMESTAMPTZ DEFAULT now()
+    call_id             TEXT PRIMARY KEY,
+    pipeline_stage       TEXT,
+    stt_run_id           UUID,
+    stt_config_hash      TEXT,
+    source_text_sha256   TEXT,
+    data                JSONB NOT NULL,
+    created_at          TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS analyses (
@@ -29,7 +55,7 @@ CREATE TABLE IF NOT EXISTS analyses (
     outcome         TEXT,
     summary         TEXT,
     audio_seconds   FLOAT,
-    call_date       TEXT,
+    call_datetime   TIMESTAMPTZ,
     src_number       TEXT,
     dst_number       TEXT,
     key_questions    JSONB,
@@ -43,7 +69,7 @@ CREATE TABLE IF NOT EXISTS calls (
     call_id         TEXT PRIMARY KEY,
     source_file     TEXT,
     source_path     TEXT,
-    call_date       TEXT,
+    call_datetime   TIMESTAMPTZ,
     status          TEXT NOT NULL DEFAULT 'discovered',
     error_message   TEXT,
     discovered_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -114,6 +140,9 @@ CREATE TABLE IF NOT EXISTS keyword_ai_analysis_items (
 );
 
 ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS pipeline_stage TEXT;
+ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS stt_run_id UUID;
+ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS stt_config_hash TEXT;
+ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS source_text_sha256 TEXT;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS direction TEXT;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS manager_id TEXT;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS manager_name TEXT;
@@ -124,7 +153,6 @@ ALTER TABLE analyses ADD COLUMN IF NOT EXISTS intent TEXT;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS outcome TEXT;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS summary TEXT;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS audio_seconds FLOAT;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS call_date TEXT;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS src_number TEXT;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS dst_number TEXT;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS key_questions JSONB;
@@ -132,7 +160,6 @@ ALTER TABLE analyses ADD COLUMN IF NOT EXISTS objections JSONB;
 ALTER TABLE analyses ADD COLUMN IF NOT EXISTS analysis_error TEXT;
 ALTER TABLE calls ADD COLUMN IF NOT EXISTS source_file TEXT;
 ALTER TABLE calls ADD COLUMN IF NOT EXISTS source_path TEXT;
-ALTER TABLE calls ADD COLUMN IF NOT EXISTS call_date TEXT;
 ALTER TABLE calls ADD COLUMN IF NOT EXISTS status TEXT;
 ALTER TABLE calls ADD COLUMN IF NOT EXISTS error_message TEXT;
 ALTER TABLE calls ADD COLUMN IF NOT EXISTS discovered_at TIMESTAMPTZ;
@@ -166,24 +193,65 @@ ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS ai_analysis JSONB;
 ALTER TABLE keyword_ai_analysis_items ADD COLUMN IF NOT EXISTS data JSONB;
 ALTER TABLE keyword_ai_analysis_items ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;
 
-CREATE INDEX IF NOT EXISTS idx_analyses_call_date ON analyses(call_date);
+-- Migration: add call_datetime TIMESTAMPTZ, backfill from call_date (YYYYMMDD) if it exists, then drop call_date
+ALTER TABLE analyses ADD COLUMN IF NOT EXISTS call_datetime TIMESTAMPTZ;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS call_datetime TIMESTAMPTZ;
+
+-- Safe backfill: only run if call_date column still exists
+DO $$
+BEGIN
+  -- Backfill analyses
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='analyses' AND column_name='call_date') THEN
+    UPDATE analyses SET call_datetime = to_timestamp(call_date, 'YYYYMMDD') AT TIME ZONE 'UTC'
+    WHERE call_datetime IS NULL AND call_date ~ '^\d{8}$';
+  END IF;
+  -- Backfill calls
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='calls' AND column_name='call_date') THEN
+    UPDATE calls SET call_datetime = to_timestamp(call_date, 'YYYYMMDD') AT TIME ZONE 'UTC'
+    WHERE call_datetime IS NULL AND call_date ~ '^\d{8}$';
+  END IF;
+END $$;
+
+ALTER TABLE analyses DROP COLUMN IF EXISTS call_date;
+ALTER TABLE calls DROP COLUMN IF EXISTS call_date;
+
 CREATE INDEX IF NOT EXISTS idx_analyses_manager_id ON analyses(manager_id);
 CREATE INDEX IF NOT EXISTS idx_analyses_role ON analyses(role);
 CREATE INDEX IF NOT EXISTS idx_analyses_intent ON analyses(intent);
 CREATE INDEX IF NOT EXISTS idx_analyses_outcome ON analyses(outcome);
 CREATE INDEX IF NOT EXISTS idx_analyses_direction ON analyses(direction);
-CREATE INDEX IF NOT EXISTS idx_analyses_filter_path ON analyses(call_date, manager_id, role, direction);
-CREATE INDEX IF NOT EXISTS idx_analyses_effective_filter ON analyses(call_date, manager_id) WHERE effective_call IS TRUE;
-CREATE INDEX IF NOT EXISTS idx_analyses_spam_filter ON analyses(spam_probability, call_date) WHERE spam_probability IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_analyses_filter_path ON analyses(call_datetime, manager_id, role, direction);
+CREATE INDEX IF NOT EXISTS idx_analyses_effective_filter ON analyses(call_datetime, manager_id) WHERE effective_call IS TRUE;
+CREATE INDEX IF NOT EXISTS idx_analyses_spam_filter ON analyses(spam_probability, call_datetime) WHERE spam_probability IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
-CREATE INDEX IF NOT EXISTS idx_calls_call_date ON calls(call_date);
 CREATE INDEX IF NOT EXISTS idx_calls_updated_at ON calls(updated_at DESC);
+-- New indexes on call_datetime for efficient temporal queries
+CREATE INDEX IF NOT EXISTS idx_analyses_call_datetime ON analyses(call_datetime);
+CREATE INDEX IF NOT EXISTS idx_calls_call_datetime ON calls(call_datetime);
 CREATE INDEX IF NOT EXISTS idx_call_keywords_keyword_id ON call_keywords(keyword_id);
 CREATE INDEX IF NOT EXISTS idx_call_keywords_call_id ON call_keywords(call_id);
 CREATE INDEX IF NOT EXISTS idx_call_keywords_keyword_call ON call_keywords(keyword_id, call_id);
 CREATE INDEX IF NOT EXISTS idx_call_keywords_keyword_match_sort ON call_keywords(keyword_id, match_count DESC, call_id DESC);
 CREATE INDEX IF NOT EXISTS idx_keyword_ai_analyses_created_at ON keyword_ai_analyses(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_keyword_ai_analysis_items_analysis_id ON keyword_ai_analysis_items(analysis_id);
+
+-- AI Apply table: track applied actions from catalog analyses with audit metadata
+CREATE TABLE IF NOT EXISTS ai_apply (
+    apply_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    analysis_id       TEXT NOT NULL REFERENCES keyword_ai_analyses(analysis_id) ON DELETE CASCADE,
+    applied_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    applied_by        TEXT DEFAULT current_user,
+    dry_run           BOOLEAN NOT NULL DEFAULT false,
+    actions_applied   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    actions_skipped   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    mutations         JSONB NOT NULL DEFAULT '[]'::jsonb,
+    keyword_refreshed BOOLEAN NOT NULL DEFAULT false,
+    follow_up_ran     BOOLEAN NOT NULL DEFAULT false,
+    error             TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_apply_analysis_id ON ai_apply(analysis_id);
+CREATE INDEX IF NOT EXISTS idx_ai_apply_applied_at ON ai_apply(applied_at);
 """
 
 DDL += "\n" + STT_RUNS_DDL
@@ -228,7 +296,13 @@ def _analysis_row(call_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
 
     effective_call = data.get("effective_call")
     if isinstance(effective_call, str):
-        effective_call = effective_call.strip().lower() in {"1", "true", "yes", "tak", "так"}
+        effective_call = effective_call.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "tak",
+            "так",
+        }
     else:
         effective_call = bool(effective_call)
 
@@ -244,7 +318,10 @@ def _analysis_row(call_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         "outcome": data.get("outcome"),
         "summary": data.get("summary", ""),
         "audio_seconds": call_meta.get("audio_seconds"),
-        "call_date": call_meta.get("date"),
+        "call_datetime": parse_call_datetime(
+            call_meta.get("date") or "",
+            call_meta.get("time"),
+        ),
         "src_number": call_meta.get("src_number"),
         "dst_number": call_meta.get("dst_number"),
         "key_questions": _jsonb(data.get("key_questions") or []),
@@ -269,7 +346,9 @@ class PostgresStorage:
 
     def _require_pool(self) -> pg_pool.ThreadedConnectionPool:
         if self._pool is None:
-            raise RuntimeError("PostgresStorage is not initialized. Call ensure_ready() first.")
+            raise RuntimeError(
+                "PostgresStorage is not initialized. Call ensure_ready() first."
+            )
         return self._pool
 
     def _getconn(self) -> pg_extensions.connection:
@@ -278,8 +357,8 @@ class PostgresStorage:
     def _putconn(self, conn: pg_extensions.connection) -> None:
         self._require_pool().putconn(conn)
 
-    # --- lifecycle ---   
-     
+    # --- lifecycle ---
+
     def ensure_ready(self) -> None:
         self._pool = pg_pool.ThreadedConnectionPool(1, self.max_connections, self.dsn)
         conn = self._getconn()
@@ -295,8 +374,8 @@ class PostgresStorage:
             self._pool.closeall()
             self._pool = None
 
-    # --- StoragePort interface ---  
-     
+    # --- StoragePort interface ---
+
     def transcript_exists(self, call_id: str) -> bool:
         conn = self._getconn()
         try:
@@ -353,13 +432,18 @@ class PostgresStorage:
         self.upsert_transcript(call_id, data)
 
     def save_analysis(self, call_id: str, data: Dict[str, Any]) -> None:
-        self.upsert_analysis(call_id, data)          
+        self.upsert_analysis(call_id, data)
 
-    def mark_analysis_stale_if_text_changed(self, call_id: str, text_sha256: str) -> bool:
+    def mark_analysis_stale_if_text_changed(
+        self, call_id: str, text_sha256: str
+    ) -> bool:
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT input_text_sha256 FROM analyses WHERE call_id = %s", (call_id,))
+                cur.execute(
+                    "SELECT input_text_sha256 FROM analyses WHERE call_id = %s",
+                    (call_id,),
+                )
                 row = cur.fetchone()
                 if row is None:
                     return False
@@ -436,25 +520,36 @@ class PostgresStorage:
                     (row["call_id"], row["pipeline_stage"], row["data"]),
                 )
                 raw_call_meta = data.get("call_meta")
-                call_meta: dict[str, Any] = raw_call_meta if isinstance(raw_call_meta, dict) else {}
+                call_meta: dict[str, Any] = (
+                    raw_call_meta if isinstance(raw_call_meta, dict) else {}
+                )
                 stage = row["pipeline_stage"] or "transcribed"
                 status = "translated" if stage == "translated" else "transcribed"
-                transcribed_at = "now()" if status in {"transcribed", "translated", "processed"} else "NULL"
-                translated_at = "now()" if status in {"translated", "processed"} else "NULL"
+                transcribed_at = (
+                    "now()"
+                    if status in {"transcribed", "translated", "processed"}
+                    else "NULL"
+                )
+                translated_at = (
+                    "now()" if status in {"translated", "processed"} else "NULL"
+                )
+                call_dt = parse_call_datetime(
+                    call_meta.get("date") or "", call_meta.get("time")
+                )
                 cur.execute(
                     f"""
                     INSERT INTO calls
-                        (call_id, call_date, status, transcribed_at, translated_at, updated_at)
+                        (call_id, call_datetime, status, transcribed_at, translated_at, updated_at)
                     VALUES
                         (%s, %s, %s, {transcribed_at}, {translated_at}, now())
                     ON CONFLICT (call_id) DO UPDATE SET
-                        call_date = COALESCE(EXCLUDED.call_date, calls.call_date),
+                        call_datetime = COALESCE(EXCLUDED.call_datetime, calls.call_datetime),
                         status = EXCLUDED.status,
                         transcribed_at = COALESCE(calls.transcribed_at, EXCLUDED.transcribed_at),
                         translated_at = COALESCE(calls.translated_at, EXCLUDED.translated_at),
                         updated_at = now()
                     """,
-                    (call_id, call_meta.get("date"), status),
+                    (call_id, call_dt, status),
                 )
             conn.commit()
         except Exception:
@@ -472,7 +567,7 @@ class PostgresStorage:
                     """INSERT INTO analyses
                          (call_id, direction, manager_id, manager_name, role,
                           spam_probability, effective_call, intent, outcome,
-                          summary, audio_seconds, call_date, src_number,
+                          summary, audio_seconds, call_datetime, src_number,
                                   dst_number, key_questions, objections, analysis_error, input_text_sha256, data)
                               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                        ON CONFLICT (call_id) DO UPDATE SET
@@ -487,13 +582,14 @@ class PostgresStorage:
                          outcome          = EXCLUDED.outcome,
                          summary          = EXCLUDED.summary,
                          audio_seconds    = EXCLUDED.audio_seconds,
-                         call_date        = EXCLUDED.call_date,
+                         call_datetime    = EXCLUDED.call_datetime,
                          src_number       = EXCLUDED.src_number,
                          dst_number       = EXCLUDED.dst_number,
                          key_questions    = EXCLUDED.key_questions,
                          objections       = EXCLUDED.objections,
                          analysis_error   = EXCLUDED.analysis_error,
-                         input_text_sha256 = EXCLUDED.input_text_sha256""",
+                         input_text_sha256 = EXCLUDED.input_text_sha256,
+                         data             = EXCLUDED.data""",
                     (
                         row["call_id"],
                         row["direction"],
@@ -506,7 +602,7 @@ class PostgresStorage:
                         row["outcome"],
                         row["summary"],
                         row["audio_seconds"],
-                        row["call_date"],
+                        row["call_datetime"],
                         row["src_number"],
                         row["dst_number"],
                         row["key_questions"],
@@ -519,13 +615,13 @@ class PostgresStorage:
                 cur.execute(
                     """
                     INSERT INTO calls
-                        (call_id, source_file, source_path, call_date, status, error_message, analyzed_at, updated_at)
+                        (call_id, source_file, source_path, call_datetime, status, error_message, analyzed_at, updated_at)
                     VALUES
                         (%s, %s, %s, %s, %s, %s, now(), now())
                     ON CONFLICT (call_id) DO UPDATE SET
                         source_file = COALESCE(EXCLUDED.source_file, calls.source_file),
                         source_path = COALESCE(EXCLUDED.source_path, calls.source_path),
-                        call_date = COALESCE(EXCLUDED.call_date, calls.call_date),
+                        call_datetime = COALESCE(EXCLUDED.call_datetime, calls.call_datetime),
                         status = EXCLUDED.status,
                         error_message = COALESCE(NULLIF(EXCLUDED.error_message, ''), calls.error_message),
                         analyzed_at = COALESCE(calls.analyzed_at, EXCLUDED.analyzed_at),
@@ -535,7 +631,7 @@ class PostgresStorage:
                         call_id,
                         row.get("source_file"),
                         row.get("source_path"),
-                        row["call_date"],
+                        row["call_datetime"],
                         "processed",
                         row["analysis_error"],
                     ),
@@ -553,14 +649,20 @@ class PostgresStorage:
         call_id: str,
         source_file: str | None = None,
         source_path: str | None = None,
-        call_date: str | None = None,
+        call_datetime: datetime | None = None,
         status: str = "discovered",
         error_message: str | None = None,
         mark_synced: bool = False,
     ) -> None:
         stage_values = {
-            "transcribed_at": "now()" if status in {"transcribed", "translated", "processed"} else "NULL",
-            "translated_at": "now()" if status in {"translated", "processed"} else "NULL",
+            "transcribed_at": (
+                "now()"
+                if status in {"transcribed", "translated", "processed"}
+                else "NULL"
+            ),
+            "translated_at": (
+                "now()" if status in {"translated", "processed"} else "NULL"
+            ),
             "analyzed_at": "now()" if status == "processed" else "NULL",
             "synced_at": "now()" if mark_synced else "NULL",
         }
@@ -574,7 +676,7 @@ class PostgresStorage:
                         call_id,
                         source_file,
                         source_path,
-                        call_date,
+                        call_datetime,
                         status,
                         error_message,
                         {', '.join(stage_values.keys())},
@@ -588,7 +690,7 @@ class PostgresStorage:
                     ON CONFLICT (call_id) DO UPDATE SET
                         source_file = COALESCE(EXCLUDED.source_file, calls.source_file),
                         source_path = COALESCE(EXCLUDED.source_path, calls.source_path),
-                        call_date = COALESCE(EXCLUDED.call_date, calls.call_date),
+                        call_datetime = COALESCE(EXCLUDED.call_datetime, calls.call_datetime),
                         status = EXCLUDED.status,
                         error_message = COALESCE(NULLIF(EXCLUDED.error_message, ''), calls.error_message),
                         transcribed_at = COALESCE(calls.transcribed_at, EXCLUDED.transcribed_at),
@@ -597,7 +699,14 @@ class PostgresStorage:
                         synced_at = COALESCE(EXCLUDED.synced_at, calls.synced_at),
                         updated_at = now()
                     """,
-                    (call_id, source_file, source_path, call_date, status, error_message),
+                    (
+                        call_id,
+                        source_file,
+                        source_path,
+                        call_datetime,
+                        status,
+                        error_message,
+                    ),
                 )
             conn.commit()
         except Exception:
@@ -616,7 +725,9 @@ class PostgresStorage:
                     call_id=call_id,
                     source_file=meta.get("source_file"),
                     source_path=meta.get("source_path"),
-                    call_date=meta.get("date"),
+                    call_datetime=parse_call_datetime(
+                        meta.get("date") or "", meta.get("time")
+                    ),
                     status=item.get("status") or "discovered",
                     error_message=(
                         "duration_below_min_seconds"
@@ -630,3 +741,47 @@ class PostgresStorage:
             if not call_id:
                 continue
             self.upsert_analysis(call_id, item.get("analysis", {}))
+
+    # --- test-friendly helpers ---
+
+    def store_call(
+        self,
+        *,
+        call_id: str,
+        status: str = "discovered",
+        source_file: str | None = None,
+        source_path: str | None = None,
+        call_datetime: datetime | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Convenience wrapper around upsert_call_metadata for test fixtures."""
+        self.upsert_call_metadata(
+            call_id=call_id,
+            source_file=source_file,
+            source_path=source_path,
+            call_datetime=call_datetime,
+            status=status,
+            error_message=error_message,
+        )
+
+    def get_calls(self, call_ids: list[str]) -> list[Dict[str, Any]]:
+        """Return call rows for the given call IDs."""
+        placeholders = ",".join(["%s"] * len(call_ids))
+        sql = f"""
+            SELECT call_id, source_file, source_path, call_datetime, status, error_message,
+                   discovered_at, transcribed_at, translated_at, analyzed_at, synced_at,
+                   created_at, updated_at
+            FROM calls
+            WHERE call_id IN ({placeholders})
+        """
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, call_ids)
+                desc = cur.description
+                if desc is None:
+                    return []
+                columns = [d[0] for d in desc]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        finally:
+            self._putconn(conn)

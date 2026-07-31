@@ -1,5 +1,6 @@
 import copy
 import json
+from datetime import datetime, timezone
 
 import pytest
 import yaml
@@ -12,11 +13,16 @@ from adapters.reporting_postgres import PostgresReportingSource
 from api.routes import keywords as keyword_routes
 from api.routes import keywords_generation as keyword_generation_routes
 from api.routes import reports as report_routes
-from api.schemas import (KeywordCallsSortQuery,
-                         KeywordGenerationBootstrapRequest,
-                         KeywordManagersSortQuery, KeywordsSortQuery,
-                         KeywordSyncRequest, KeywordUpsertRequest,
-                         PaginationQuery, ReportFiltersQuery)
+from api.schemas import (
+    KeywordCallsSortQuery,
+    KeywordGenerationBootstrapRequest,
+    KeywordManagersSortQuery,
+    KeywordsSortQuery,
+    KeywordSyncRequest,
+    KeywordUpsertRequest,
+    PaginationQuery,
+    ReportFiltersQuery,
+)
 from core.keywords_materialize import materialize_call_keywords
 from core.keywords_service import build_keywords_report, list_keywords
 from core.keywords_sync import sync_keywords_to_postgres
@@ -66,7 +72,9 @@ def _write_keywords(path):
             "is_active": True,
         },
     ]
-    path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    path.write_text(
+        yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8"
+    )
 
 
 def _write_invalid_keywords(path):
@@ -122,9 +130,17 @@ def test_keyword_routes_use_storage_backed_sources(monkeypatch, tmp_path):
     _write_analysis(analysis_dir, "call-1")
 
     monkeypatch.setenv("SPAM_PROBABILITY_THRESHOLD", "0.7")
-    monkeypatch.setattr(report_routes, "_get_reporting_source", lambda: JsonReportingSource(analysis_dir))
-    monkeypatch.setattr(report_routes, "_get_keyword_source", lambda: YamlKeywordSource(keywords_path))
-    monkeypatch.setattr(keyword_routes, "_get_keyword_source", lambda: YamlKeywordSource(keywords_path))
+    monkeypatch.setattr(
+        report_routes,
+        "_get_reporting_source",
+        lambda: JsonReportingSource(analysis_dir),
+    )
+    monkeypatch.setattr(
+        report_routes, "_get_keyword_source", lambda: YamlKeywordSource(keywords_path)
+    )
+    monkeypatch.setattr(
+        keyword_routes, "_get_keyword_source", lambda: YamlKeywordSource(keywords_path)
+    )
 
     catalog = keyword_routes.keywords_catalog()
     report = report_routes.keywords_report(ReportFiltersQuery(), KeywordsSortQuery())
@@ -158,7 +174,11 @@ def test_keywords_report_fails_loudly_on_invalid_yaml(monkeypatch, tmp_path):
 
     monkeypatch.delenv("POSTGRES_DSN", raising=False)
     monkeypatch.setattr(report_routes, "KEYWORDS_CONFIG", keywords_path)
-    monkeypatch.setattr(report_routes, "_get_reporting_source", lambda: JsonReportingSource(analysis_dir))
+    monkeypatch.setattr(
+        report_routes,
+        "_get_reporting_source",
+        lambda: JsonReportingSource(analysis_dir),
+    )
 
     with pytest.raises(HTTPException) as exc:
         report_routes.keywords_report(ReportFiltersQuery(), KeywordsSortQuery())
@@ -194,7 +214,9 @@ class FakeWritableKeywordSource:
     def is_materialized(self):
         return self.materialized_state
 
-    def mark_materialization_completed(self, processed_calls, matched_calls, stored_rows):
+    def mark_materialization_completed(
+        self, processed_calls, matched_calls, stored_rows
+    ):
         self.materialized_state = True
         self.last_materialization = {
             "processed_calls": processed_calls,
@@ -231,7 +253,7 @@ def test_keywords_bootstrap_generates_publishes_and_materializes(monkeypatch):
                     "effective_call": True,
                     "intent": "консультація",
                     "outcome": "продаж",
-                    "call_date": "20260725",
+                    "call_datetime": datetime(2026, 7, 25, tzinfo=timezone.utc),
                 },
             )(),
             type(
@@ -247,15 +269,27 @@ def test_keywords_bootstrap_generates_publishes_and_materializes(monkeypatch):
                     "effective_call": True,
                     "intent": "консультація",
                     "outcome": "продаж",
-                    "call_date": "20260725",
+                    "call_datetime": datetime(2026, 7, 25, tzinfo=timezone.utc),
                 },
             )(),
         ]
     )
 
-    monkeypatch.setattr(keyword_generation_routes, "_get_postgres_reporting_source", lambda: reporting_source)
-    monkeypatch.setattr(keyword_generation_routes, "_get_postgres_keyword_source", lambda: keyword_source)
-    monkeypatch.setattr(keyword_generation_routes, "run_keyword_ai_analysis_once", lambda trigger, skip_if_empty=False: {"trigger": trigger})
+    monkeypatch.setattr(
+        keyword_generation_routes,
+        "_get_postgres_reporting_source",
+        lambda: reporting_source,
+    )
+    monkeypatch.setattr(
+        keyword_generation_routes,
+        "_get_postgres_keyword_source",
+        lambda: keyword_source,
+    )
+    monkeypatch.setattr(
+        keyword_generation_routes,
+        "run_keyword_ai_analysis_once",
+        lambda trigger, skip_if_empty=False: {"trigger": trigger},
+    )
 
     response = keyword_generation_routes.bootstrap_keywords(
         KeywordGenerationBootstrapRequest(
@@ -304,15 +338,27 @@ def test_keywords_bootstrap_skips_materialize_and_ai_without_changes(monkeypatch
                     "effective_call": True,
                     "intent": "консультація",
                     "outcome": "продаж",
-                    "call_date": "20260725",
+                    "call_datetime": datetime(2026, 7, 25, tzinfo=timezone.utc),
                 },
             )(),
         ]
     )
 
-    monkeypatch.setattr(keyword_generation_routes, "_get_postgres_reporting_source", lambda: reporting_source)
-    monkeypatch.setattr(keyword_generation_routes, "_get_postgres_keyword_source", lambda: keyword_source)
-    monkeypatch.setattr(keyword_generation_routes, "run_keyword_ai_analysis_once", lambda trigger, skip_if_empty=False: {"trigger": trigger})
+    monkeypatch.setattr(
+        keyword_generation_routes,
+        "_get_postgres_reporting_source",
+        lambda: reporting_source,
+    )
+    monkeypatch.setattr(
+        keyword_generation_routes,
+        "_get_postgres_keyword_source",
+        lambda: keyword_source,
+    )
+    monkeypatch.setattr(
+        keyword_generation_routes,
+        "run_keyword_ai_analysis_once",
+        lambda trigger, skip_if_empty=False: {"trigger": trigger},
+    )
 
     response = keyword_generation_routes.bootstrap_keywords(
         KeywordGenerationBootstrapRequest(
@@ -348,7 +394,7 @@ def test_keyword_management_routes_use_writable_source(monkeypatch):
     )
     monkeypatch.setattr(keyword_routes, "_get_writable_keyword_source", lambda: source)
 
-    created = keyword_routes.create_keyword(
+    upserted = keyword_routes.upsert_keyword(
         KeywordUpsertRequest(
             keyword_id="refund",
             label="Refund",
@@ -371,7 +417,7 @@ def test_keyword_management_routes_use_writable_source(monkeypatch):
     )
     keyword_routes.delete_keyword("refund")
 
-    assert created["keyword_id"] == "refund"
+    assert upserted["keyword_id"] == "refund"
     assert updated["label"] == "Refund Updated"
     assert source.get_keyword("refund") is None
 
@@ -380,7 +426,7 @@ def test_keyword_management_routes_enforce_read_only_without_postgres(monkeypatc
     monkeypatch.delenv("POSTGRES_DSN", raising=False)
 
     with pytest.raises(HTTPException) as exc:
-        keyword_routes.create_keyword(
+        keyword_routes.upsert_keyword(
             KeywordUpsertRequest(
                 keyword_id="delivery",
                 label="Delivery",
@@ -458,9 +504,17 @@ def test_keyword_sync_route_uses_yaml_and_writable_sources(monkeypatch, tmp_path
     _write_keywords(keywords_path)
     postgres_source = FakeWritableKeywordSource()
 
-    monkeypatch.setattr(keyword_routes, "_get_yaml_keyword_source", lambda strict=False: YamlKeywordSource(keywords_path, strict=strict))
-    monkeypatch.setattr(keyword_routes, "_get_writable_keyword_source", lambda: postgres_source)
-    monkeypatch.setattr(keyword_routes, "_append_keyword_ai_analysis", lambda result, trigger: result)
+    monkeypatch.setattr(
+        keyword_routes,
+        "_get_yaml_keyword_source",
+        lambda strict=False: YamlKeywordSource(keywords_path, strict=strict),
+    )
+    monkeypatch.setattr(
+        keyword_routes, "_get_writable_keyword_source", lambda: postgres_source
+    )
+    monkeypatch.setattr(
+        keyword_routes, "_append_keyword_ai_analysis", lambda result, trigger: result
+    )
 
     response = keyword_routes.sync_keywords(KeywordSyncRequest(prune_missing=False))
 
@@ -493,10 +547,20 @@ def test_keyword_refresh_route_runs_sync_and_materialize(monkeypatch, tmp_path):
         ]
     )
 
-    monkeypatch.setattr(keyword_routes, "_get_yaml_keyword_source", lambda strict=False: YamlKeywordSource(keywords_path, strict=strict))
-    monkeypatch.setattr(keyword_routes, "_get_writable_keyword_source", lambda: postgres_source)
-    monkeypatch.setattr(keyword_routes, "_get_postgres_reporting_source", lambda: reporting_source)
-    monkeypatch.setattr(keyword_routes, "_append_keyword_ai_analysis", lambda result, trigger: result)
+    monkeypatch.setattr(
+        keyword_routes,
+        "_get_yaml_keyword_source",
+        lambda strict=False: YamlKeywordSource(keywords_path, strict=strict),
+    )
+    monkeypatch.setattr(
+        keyword_routes, "_get_writable_keyword_source", lambda: postgres_source
+    )
+    monkeypatch.setattr(
+        keyword_routes, "_get_postgres_reporting_source", lambda: reporting_source
+    )
+    monkeypatch.setattr(
+        keyword_routes, "_append_keyword_ai_analysis", lambda result, trigger: result
+    )
 
     response = keyword_routes.refresh_keywords(KeywordSyncRequest(prune_missing=False))
 
@@ -512,10 +576,16 @@ def test_keyword_sync_route_rejects_missing_yaml(monkeypatch, tmp_path):
     monkeypatch.setattr(
         keyword_routes,
         "_get_yaml_keyword_source",
-        lambda strict=False: YamlKeywordSource(tmp_path / "missing.yaml", strict=strict),
+        lambda strict=False: YamlKeywordSource(
+            tmp_path / "missing.yaml", strict=strict
+        ),
     )
-    monkeypatch.setattr(keyword_routes, "_get_writable_keyword_source", lambda: postgres_source)
-    monkeypatch.setattr(keyword_routes, "_append_keyword_ai_analysis", lambda result, trigger: result)
+    monkeypatch.setattr(
+        keyword_routes, "_get_writable_keyword_source", lambda: postgres_source
+    )
+    monkeypatch.setattr(
+        keyword_routes, "_append_keyword_ai_analysis", lambda result, trigger: result
+    )
 
     with pytest.raises(HTTPException) as exc:
         keyword_routes.sync_keywords(KeywordSyncRequest(prune_missing=True))
@@ -574,7 +644,10 @@ def test_materialize_call_keywords_persists_matches():
     assert response["matched_calls"] == 1
     assert response["stored_rows"] == 2
     assert keyword_source.last_replaced[0] == "call-1"
-    assert {row["keyword_id"] for row in keyword_source.last_replaced[1]} == {"delivery", "refund"}
+    assert {row["keyword_id"] for row in keyword_source.last_replaced[1]} == {
+        "delivery",
+        "refund",
+    }
     assert keyword_source.materialized_state is True
     assert keyword_source.last_materialization["processed_calls"] == 1
 
@@ -650,7 +723,9 @@ def test_keyword_report_route_prefers_materialized_postgres(monkeypatch):
         def is_materialized(self):
             return True
 
-        def build_materialized_keywords_report(self, filters, spam_threshold, sort_by, order):
+        def build_materialized_keywords_report(
+            self, filters, spam_threshold, sort_by, order
+        ):
             return {
                 "report_data_source": "postgres_materialized",
                 "keyword_data_source": "postgres",
@@ -685,8 +760,12 @@ def test_keyword_report_route_prefers_materialized_postgres(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr(report_routes, "_get_reporting_source", lambda: FakePostgresReportingSource())
-    monkeypatch.setattr(report_routes, "_get_keyword_source", lambda: FakeMaterializedKeywordSource())
+    monkeypatch.setattr(
+        report_routes, "_get_reporting_source", lambda: FakePostgresReportingSource()
+    )
+    monkeypatch.setattr(
+        report_routes, "_get_keyword_source", lambda: FakeMaterializedKeywordSource()
+    )
 
     response = report_routes.keywords_report(ReportFiltersQuery(), KeywordsSortQuery())
 
@@ -713,7 +792,9 @@ def test_keyword_drilldown_routes_use_materialized_source(monkeypatch):
                 is_active=True,
             )
 
-        def build_keyword_calls_report(self, keyword_id, filters, spam_threshold, limit, offset, sort_by, order):
+        def build_keyword_calls_report(
+            self, keyword_id, filters, spam_threshold, limit, offset, sort_by, order
+        ):
             return {
                 "keyword_id": keyword_id,
                 "report_data_source": "postgres_materialized",
@@ -729,22 +810,32 @@ def test_keyword_drilldown_routes_use_materialized_source(monkeypatch):
             return {
                 "keyword_id": keyword_id,
                 "report_data_source": "postgres_materialized",
-                "points": [{"call_date": "20241112", "matched_calls": 1, "total_matches": 2}],
+                "points": [
+                    {"call_date": "20241112", "matched_calls": 1, "total_matches": 2}
+                ],
             }
 
-        def build_keyword_managers_report(self, keyword_id, filters, spam_threshold, sort_by, order):
+        def build_keyword_managers_report(
+            self, keyword_id, filters, spam_threshold, sort_by, order
+        ):
             return {
                 "keyword_id": keyword_id,
                 "report_data_source": "postgres_materialized",
                 "sort_by": sort_by,
                 "order": order,
-                "managers": [{"manager_id": "sales_001", "matched_calls": 1, "total_matches": 2}],
+                "managers": [
+                    {"manager_id": "sales_001", "matched_calls": 1, "total_matches": 2}
+                ],
             }
 
         def close(self):
             return None
 
-    monkeypatch.setattr(report_routes, "_get_materialized_keyword_source", lambda: FakeMaterializedKeywordSource())
+    monkeypatch.setattr(
+        report_routes,
+        "_get_materialized_keyword_source",
+        lambda: FakeMaterializedKeywordSource(),
+    )
 
     calls = report_routes.keyword_calls_report(
         "delivery",
@@ -781,7 +872,11 @@ def test_keyword_drilldown_route_returns_404_for_unknown_keyword(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr(report_routes, "_get_materialized_keyword_source", lambda: FakeMaterializedKeywordSource())
+    monkeypatch.setattr(
+        report_routes,
+        "_get_materialized_keyword_source",
+        lambda: FakeMaterializedKeywordSource(),
+    )
 
     with pytest.raises(HTTPException) as exc:
         report_routes.keyword_calls_report(
@@ -799,7 +894,11 @@ def test_keyword_drilldown_route_requires_materialized_matches(monkeypatch):
         monkeypatch.setattr(
             report_routes,
             "_get_materialized_keyword_source",
-            lambda: (_ for _ in ()).throw(HTTPException(status_code=409, detail="Keyword matches are not materialized yet")),
+            lambda: (_ for _ in ()).throw(
+                HTTPException(
+                    status_code=409, detail="Keyword matches are not materialized yet"
+                )
+            ),
         )
         report_routes.keyword_calls_report(
             "delivery",

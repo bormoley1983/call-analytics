@@ -42,7 +42,7 @@ Internal API for Call Analytics.
   - Managers: `sort_by=total_calls`, `order=desc`
   - Customers: `sort_by=total_calls`, `order=desc`
   - Keywords: `sort_by=matched_calls`, `order=desc`
-  - Keyword calls: `limit=50`, `offset=0`, `sort_by=call_date`, `order=desc`
+  - Keyword calls: `limit=50`, `offset=0`, `sort_by=call_datetime`, `order=desc`
 """
 
 tags_metadata = [

@@ -141,11 +141,11 @@ def refresh_keywords(req: KeywordSyncRequest | None = None):
 
 @router.post(
     "/sync",
-    summary="Sync YAML keywords to Postgres",
+    summary="[Admin] Sync YAML keywords to Postgres",
     description=(
-        "Copies keyword definitions from YAML config into Postgres.\n\n"
+        "**Admin/Debugging Only** — Copies keyword definitions from YAML config into Postgres.\n\n"
         "**Default**: `prune_missing=false` (existing Postgres-only rows are kept).\n\n"
-        "Low-level maintenance endpoint. For normal manual use prefer `POST /keywords/refresh`."
+        "⚠️ For normal operations, use `POST /keywords/refresh` instead. This endpoint is for advanced troubleshooting and maintenance only."
     ),
     responses={
         400: {
@@ -180,11 +180,11 @@ def sync_keywords(req: KeywordSyncRequest):
 
 @router.post(
     "/materialize",
-    summary="Materialize keyword matches",
+    summary="[Admin] Materialize keyword matches",
     description=(
-        "Builds/refreshes materialized keyword-to-call matches in Postgres.\n\n"
+        "**Admin/Debugging Only** — Builds/refreshes materialized keyword-to-call matches in Postgres.\n\n"
         "Required for report drill-down endpoints under `/reports/keywords/{keyword_id}/...`.\n\n"
-        "Low-level maintenance endpoint. For normal manual use prefer `POST /keywords/refresh`."
+        "⚠️ For normal operations, use `POST /keywords/refresh` instead. This endpoint is for advanced troubleshooting and maintenance only."
     ),
     responses={
         405: {
@@ -248,29 +248,21 @@ def keyword_detail(
 
 
 @router.post(
-    "",
-    status_code=status.HTTP_201_CREATED,
-    summary="Create keyword",
-    description="Creates a new keyword definition in Postgres.",
+    "/upsert",
+    summary="Upsert keyword",
+    description="Creates or updates a keyword definition in Postgres.",
     responses={
         405: {
-            "description": "Create requires Postgres.",
+            "description": "Upsert requires Postgres.",
             "content": {
                 "application/json": {"example": {"detail": "Keyword catalog is read-only without POSTGRES_DSN"}}
             },
         },
-        409: {
-            "description": "Keyword already exists.",
-            "content": {"application/json": {"example": {"detail": "Keyword already exists"}}},
-        },
     },
 )
-def create_keyword(req: KeywordUpsertRequest):
+def upsert_keyword(req: KeywordUpsertRequest):
     source = _get_writable_keyword_source()
     try:
-        existing = source.get_keyword(req.keyword_id)
-        if existing is not None:
-            raise HTTPException(status_code=409, detail="Keyword already exists")
         created = source.upsert_keyword(
             KeywordDefinition(
                 keyword_id=req.keyword_id,

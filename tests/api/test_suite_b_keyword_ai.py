@@ -12,10 +12,9 @@ Tests keyword materialization and AI analysis flow:
 
 from __future__ import annotations
 
-import time
-from typing import Any, Dict
-
 import pytest
+
+from tests.helpers.job_polling import poll_job_status
 
 
 @pytest.mark.integration
@@ -83,8 +82,8 @@ class TestAIAnalysisFlow:
 
         job_id = response.json()["job_id"]
         try:
-            _poll_job_status(
-                api_client, job_id, expected_final_status="completed", timeout=120
+            poll_job_status(
+                api_client, job_id, expected_final_status="done", timeout=120
             )
         except TimeoutError:
             pytest.skip("Job timed out, skipping AI analysis check")
@@ -92,9 +91,7 @@ class TestAIAnalysisFlow:
         # Check for AI analysis rows
         def _check_ai_analyses(conn):
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COUNT(*) FROM keyword_ai_analyses ORDER BY created_at DESC LIMIT 1"
-                )
+                cur.execute("SELECT COUNT(*) FROM keyword_ai_analyses")
                 row = cur.fetchone()
                 return row[0] if row else 0
 
@@ -139,8 +136,8 @@ class TestAutoRefreshFlow:
 
         job_id = response.json()["job_id"]
         try:
-            _poll_job_status(
-                api_client, job_id, expected_final_status="completed", timeout=120
+            poll_job_status(
+                api_client, job_id, expected_final_status="done", timeout=120
             )
         except TimeoutError:
             pytest.skip("Job timed out")
@@ -155,34 +152,11 @@ class TestAutoRefreshFlow:
 
         job_id = response.json()["job_id"]
         try:
-            _poll_job_status(
-                api_client, job_id, expected_final_status="completed", timeout=180
+            poll_job_status(
+                api_client, job_id, expected_final_status="done", timeout=180
             )
         except TimeoutError:
             pytest.skip("Job timed out")
-
-
-def _poll_job_status(
-    api_client, job_id: str, expected_final_status: str, timeout: int = 60
-) -> Dict[str, Any]:
-    """Poll job status until completion or timeout."""
-    import time as _time
-
-    start = _time.time()
-    while _time.time() - start < timeout:
-        response = api_client.get(f"/jobs/{job_id}")
-        if response.status_code == 200:
-            body = response.json()
-            status = body.get("status")
-            if status == expected_final_status:
-                return body
-            if status in ("failed", "error"):
-                break
-        _time.sleep(2)
-
-    raise TimeoutError(
-        f"Job {job_id} did not reach status '{expected_final_status}' within {timeout}s"
-    )
 
 
 # pytest markers: @pytest.mark.integration @pytest.mark.postgres

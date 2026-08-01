@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from core.transcript_fingerprint import transcript_text_sha256
+from core.utils import sha256_file
 from domain.config import AppConfig
 from domain.stt import SttFailure, SttRequest
 from domain.stt_runs import SttRunManifest, SttRunPurpose, SttRunResultRecord
@@ -17,17 +18,6 @@ from ports.audio import AudioPort
 from ports.storage import StoragePort
 from ports.stt import SttProcessorPort
 from ports.stt_runs import SttRunStorePort
-
-
-def _sha256_file(path: Path) -> str:
-    h = sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()
 
 
 class SttReplayService:
@@ -46,7 +36,9 @@ class SttReplayService:
         self._run_store = run_store
         self._active_storage = active_storage
 
-    def _build_manifest(self, *, run_name: str, purpose: str, target_files: list[Path]) -> SttRunManifest:
+    def _build_manifest(
+        self, *, run_name: str, purpose: str, target_files: list[Path]
+    ) -> SttRunManifest:
         now = datetime.now(timezone.utc)
         run_purpose = cast(SttRunPurpose, purpose)
         return SttRunManifest(
@@ -63,8 +55,16 @@ class SttReplayService:
                 "canary_model_id": self._config.canary_model_id,
             },
             code_revision="unknown",
-            dataset_manifest_hash=sha256("\n".join(sorted(str(p) for p in target_files)).encode("utf-8")).hexdigest(),
-            hardware_data={"device": getattr(self._config, "canary_device", getattr(self._config, "whisper_device", "cpu"))},
+            dataset_manifest_hash=sha256(
+                "\n".join(sorted(str(p) for p in target_files)).encode("utf-8")
+            ).hexdigest(),
+            hardware_data={
+                "device": getattr(
+                    self._config,
+                    "canary_device",
+                    getattr(self._config, "whisper_device", "cpu"),
+                )
+            },
             status="running",
             total_calls=len(target_files),
             started_at=now,
@@ -80,7 +80,9 @@ class SttReplayService:
         promote_to_active: bool = False,
     ) -> dict[str, Any]:
         self._run_store.ensure_ready()
-        manifest = self._build_manifest(run_name=run_name, purpose=purpose, target_files=target_files)
+        manifest = self._build_manifest(
+            run_name=run_name, purpose=purpose, target_files=target_files
+        )
         self._run_store.create_run(manifest)
 
         completed = 0
@@ -96,7 +98,9 @@ class SttReplayService:
                     skipped += 1
                     continue
 
-                call_id = sha256((src.name + str(st_size)).encode("utf-8")).hexdigest()[:12]
+                call_id = sha256((src.name + str(st_size)).encode("utf-8")).hexdigest()[
+                    :12
+                ]
                 norm_path = self._config.norm / f"{call_id}.wav"
                 if not norm_path.exists():
                     self._audio.normalize(src, norm_path)
@@ -111,7 +115,7 @@ class SttReplayService:
                     call_id=call_id,
                     audio_path=norm_path,
                     audio_seconds=audio_seconds,
-                    audio_sha256=_sha256_file(norm_path),
+                    audio_sha256=sha256_file(norm_path),
                     language=self._config.stt_language,
                 )
 
@@ -143,7 +147,11 @@ class SttReplayService:
                     "language": item.language,
                     "duration": float(item.duration),
                     "segments": [
-                        {"start": float(seg.start), "end": float(seg.end), "text": (seg.text or "").strip()}
+                        {
+                            "start": float(seg.start),
+                            "end": float(seg.end),
+                            "text": (seg.text or "").strip(),
+                        }
                         for seg in item.segments
                         if (seg.text or "").strip()
                     ],
@@ -167,7 +175,10 @@ class SttReplayService:
                         audio_sha256=request.audio_sha256,
                         audio_seconds=audio_seconds,
                         status="ok",
-                        raw_payload={"text": item.raw_text, "segments": [asdict(s) for s in item.segments]},
+                        raw_payload={
+                            "text": item.raw_text,
+                            "segments": [asdict(s) for s in item.segments],
+                        },
                         canonical_payload=canonical_transcript,
                         text_sha256=text_hash,
                         elapsed_seconds=elapsed,
@@ -184,7 +195,9 @@ class SttReplayService:
                         stt_config_hash=manifest.config_hash,
                         source_text_sha256=text_hash,
                     )
-                    self._active_storage.mark_analysis_stale_if_text_changed(call_id, text_hash)
+                    self._active_storage.mark_analysis_stale_if_text_changed(
+                        call_id, text_hash
+                    )
 
             final_status = "completed_with_errors" if failed > 0 else "completed"
             self._run_store.update_run_status(manifest.run_id, final_status)
@@ -208,7 +221,11 @@ class SttReplayService:
                 "timing": {
                     "total_audio_seconds": total_audio_seconds,
                     "inference_seconds": inference_seconds,
-                    "avg_rtf": (inference_seconds / total_audio_seconds) if total_audio_seconds > 0 else 0.0,
+                    "avg_rtf": (
+                        (inference_seconds / total_audio_seconds)
+                        if total_audio_seconds > 0
+                        else 0.0
+                    ),
                 },
             }
         except Exception:

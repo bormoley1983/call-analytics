@@ -124,19 +124,22 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
                         keyword.is_active,
                     ),
                 )
+                # Atomic alias replacement: use DELETE + INSERT within the same
+                # transaction (the cursor's transaction guarantees atomicity).
                 cur.execute(
                     "DELETE FROM keyword_aliases WHERE keyword_id = %s",
                     (keyword.keyword_id,),
                 )
-                for term in keyword.terms:
-                    cur.execute(
-                        """
-                        INSERT INTO keyword_aliases (keyword_id, phrase)
-                        VALUES (%s, %s)
-                        ON CONFLICT (keyword_id, phrase) DO NOTHING
-                        """,
-                        (keyword.keyword_id, term),
-                    )
+                if keyword.terms:
+                    for term in keyword.terms:
+                        cur.execute(
+                            """
+                            INSERT INTO keyword_aliases (keyword_id, phrase)
+                            VALUES (%s, %s)
+                            ON CONFLICT (keyword_id, phrase) DO NOTHING
+                            """,
+                            (keyword.keyword_id, term),
+                        )
 
         self._run_retryable_write(_upsert)
         created = self.get_keyword(keyword.keyword_id)

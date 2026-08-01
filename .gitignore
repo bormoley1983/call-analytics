@@ -22,5 +22,5 @@ _hf_cache/
 #config
 config/.env
 config/ssh/*
-*DEVPLAN_*
-END_USER_TESTS_*
+DEVPLAN_*
+TESTS_*

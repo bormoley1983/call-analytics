@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
+import importlib
+import logging
 from typing import Any, Iterator, Sequence
 
 from domain.config import AppConfig
-from domain.stt import (SttFailure, SttIdentity, SttRequest, SttResult,
-                        SttSegment)
+from domain.stt import SttFailure, SttIdentity, SttRequest, SttResult, SttSegment
 from ports.stt import SttProcessorPort
+
+logger = logging.getLogger(__name__)
 
 
 class FasterWhisperSttAdapter(SttProcessorPort):
@@ -46,12 +48,19 @@ class FasterWhisperSttAdapter(SttProcessorPort):
             )
         return self._model
 
-    def transcribe_many(self, requests: Sequence[SttRequest]) -> Iterator[SttResult | SttFailure]:
+    def transcribe_many(
+        self, requests: Sequence[SttRequest]
+    ) -> Iterator[SttResult | SttFailure]:
         model = self._get_model()
         for request in requests:
             try:
                 requested_lang = (request.language or "").strip().lower()
-                language_arg = None if requested_lang in {"", "auto", "mixed", "multilingual", "uk+ru", "ru+uk"} else request.language
+                language_arg = (
+                    None
+                    if requested_lang
+                    in {"", "auto", "mixed", "multilingual", "uk+ru", "ru+uk"}
+                    else request.language
+                )
                 segments, info = model.transcribe(
                     str(request.audio_path),
                     language=language_arg,
@@ -67,7 +76,9 @@ class FasterWhisperSttAdapter(SttProcessorPort):
                     if not text:
                         continue
                     mapped_segments.append(
-                        SttSegment(start=float(seg.start), end=float(seg.end), text=text)
+                        SttSegment(
+                            start=float(seg.start), end=float(seg.end), text=text
+                        )
                     )
                     text_parts.append(text)
 
@@ -89,4 +100,15 @@ class FasterWhisperSttAdapter(SttProcessorPort):
 
     def close(self) -> None:
         if self._model is not None:
+            # Explicitly delete the model reference to help Python's GC
+            # reclaim GPU memory, then flush CUDA cache if available.
+            del self._model
             self._model = None
+            try:
+                torch = importlib.import_module("torch")
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    logger.debug("CUDA cache emptied after model unload")
+            except ImportError:
+                pass  # torch may not be imported in all environments

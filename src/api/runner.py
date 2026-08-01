@@ -19,10 +19,12 @@ from adapters.storage_json import JsonStorage
 from adapters.storage_postgres import PostgresStorage
 from api import job_store
 from api.schemas import JobStatus, ProcessRequest, SyncRequest
-from core.keywords_ai_runtime import \
-    auto_keyword_ai_analysis_enabled as _auto_keyword_ai_analysis_enabled_impl
-from core.keywords_ai_runtime import \
-    run_keyword_ai_analysis_once as _run_keyword_ai_analysis_once_impl
+from core.keywords_ai_runtime import (
+    auto_keyword_ai_analysis_enabled as _auto_keyword_ai_analysis_enabled_impl,
+)
+from core.keywords_ai_runtime import (
+    run_keyword_ai_analysis_once as _run_keyword_ai_analysis_once_impl,
+)
 from core.keywords_materialize import materialize_call_keywords
 from core.keywords_refresh import refresh_keywords_data
 from core.pipeline import Pipeline
@@ -40,15 +42,20 @@ def _day_from_relative_path(relative: Path) -> str | None:
 
     year, month, day = relative.parts[0], relative.parts[1], relative.parts[2]
     if (
-        len(year) == 4 and year.isdigit()
-        and len(month) == 2 and month.isdigit()
-        and len(day) == 2 and day.isdigit()
+        len(year) == 4
+        and year.isdigit()
+        and len(month) == 2
+        and month.isdigit()
+        and len(day) == 2
+        and day.isdigit()
     ):
         return f"{year}/{month}/{day}"
     return None
 
 
-def _extract_downloaded_days(downloaded_files: list[Path], local_root: Path) -> list[str]:
+def _extract_downloaded_days(
+    downloaded_files: list[Path], local_root: Path
+) -> list[str]:
     days: set[str] = set()
     for local_path in downloaded_files:
         rel = local_path.relative_to(local_root)
@@ -56,6 +63,7 @@ def _extract_downloaded_days(downloaded_files: list[Path], local_root: Path) -> 
         if day:
             days.add(day)
     return sorted(days)
+
 
 def _parse_days(days: str | None) -> set[str] | None:
     if not days:
@@ -90,19 +98,27 @@ def _run_sync_once(req: SyncRequest) -> dict:
     }
 
 
-def _configure_process_env(req: ProcessRequest) -> None:
+def _configure_process_env(req: ProcessRequest) -> dict[str, str | None]:
+    """Return a dict of env overrides without mutating os.environ.
+
+    Returns a mapping of key -> value (or None to temporarily delete).
+    The caller applies these in a context that is safe from race conditions.
+    """
+    overrides: dict[str, str | None] = {}
     if req.days is not None:
-        os.environ["DAYS"] = req.days
+        overrides["DAYS"] = req.days
     else:
-        os.environ.pop("DAYS", None)
+        overrides["DAYS"] = None
 
     if req.limit is not None:
-        os.environ["PROCESS_LIMIT"] = str(req.limit)
+        overrides["PROCESS_LIMIT"] = str(req.limit)
     else:
-        os.environ.pop("PROCESS_LIMIT", None)
+        overrides["PROCESS_LIMIT"] = None
 
-    os.environ["FORCE_REANALYZE"] = "1" if req.force_reanalyze else "0"
-    os.environ["FORCE_RETRANSCRIBE"] = "1" if req.force_retranscribe else "0"
+    overrides["FORCE_REANALYZE"] = "1" if req.force_reanalyze else "0"
+    overrides["FORCE_RETRANSCRIBE"] = "1" if req.force_retranscribe else "0"
+
+    return overrides
 
 
 def _build_reporting_source() -> PostgresReportingSource | JsonReportingSource:
@@ -168,10 +184,14 @@ def _run_keyword_ai_analysis_once(trigger: str) -> dict | None:
 def _run_keyword_materialization_once() -> dict | None:
     dsn = os.getenv("POSTGRES_DSN")
     if not dsn:
-        logger.info("Skipping keyword materialization because POSTGRES_DSN is not configured")
+        logger.info(
+            "Skipping keyword materialization because POSTGRES_DSN is not configured"
+        )
         return None
 
-    logger.info("Refreshing keyword matches after processing using existing Postgres keyword catalog")
+    logger.info(
+        "Refreshing keyword matches after processing using existing Postgres keyword catalog"
+    )
     keyword_source = PostgresKeywordSource(dsn)
     reporting_source = PostgresReportingSource(dsn)
     try:
@@ -188,83 +208,99 @@ def _run_keyword_materialization_once() -> dict | None:
 
 def _run_process_once(req: ProcessRequest) -> dict:
     env_keys = ["DAYS", "PROCESS_LIMIT", "FORCE_REANALYZE", "FORCE_RETRANSCRIBE"]
-    old_env = {k: os.environ.get(k) for k in env_keys}
-    
-    # Serialize process jobs to prevent cross-job env var contamination
+
+    # Serialize process jobs to prevent cross-job env var contamination.
+    # Capture old values and apply overrides under the lock atomically,
+    # then release the lock before the long-running pipeline execution.
+    # Restore old values after completion — safe because process jobs are
+    # serialized by the job store (only one runs at a time).
     with _process_env_lock:
-        try:
-            _configure_process_env(req)
-            config = load_app_config()
-            storage: StoragePort
-            if os.getenv("POSTGRES_DSN"):
-                logger.info("Postgres storage driver loaded")
-                storage = PostgresStorage(os.environ["POSTGRES_DSN"])
+        old_env = {k: os.environ.get(k) for k in env_keys}
+        overrides = _configure_process_env(req)
+        for key, value in overrides.items():
+            if value is None:
+                os.environ.pop(key, None)
             else:
-                logger.info("JSON storage driver loaded")
-                storage = JsonStorage(config.out, config.norm, config.trans, config.analysis)
-            
-            storage.ensure_ready()
+                os.environ[key] = value
+
+    try:
+        config = load_app_config()
+        storage: StoragePort
+        if os.getenv("POSTGRES_DSN"):
+            logger.info("Postgres storage driver loaded")
+            storage = PostgresStorage(os.environ["POSTGRES_DSN"])
+        else:
+            logger.info("JSON storage driver loaded")
+            storage = JsonStorage(
+                config.out, config.norm, config.trans, config.analysis
+            )
+
+        storage.ensure_ready()
+        try:
+            pipeline = Pipeline(
+                config=config,
+                storage=storage,
+                audio=FfmpegAudio(),
+                llm=OllamaLlm(config),
+                pbx=AsteriskPbx(),
+            )
+            pipeline.run()
+            result: dict[str, Any] = {"ok": True}
+            keywords_refresh: dict[str, Any] | None = None
             try:
-                pipeline = Pipeline(
-                    config=config,
-                    storage=storage,
-                    audio=FfmpegAudio(),
-                    llm=OllamaLlm(config),
-                    pbx=AsteriskPbx(),
+                keywords_refresh = _run_keyword_refresh_once()
+            except FileNotFoundError as exc:
+                logger.warning(
+                    "Skipping keyword refresh after processing because keyword config is missing: %s",
+                    exc,
                 )
-                pipeline.run()
-                result: dict[str, Any] = {"ok": True}
-                keywords_refresh: dict[str, Any] | None = None
                 try:
-                    keywords_refresh = _run_keyword_refresh_once()
-                except FileNotFoundError as exc:
-                    logger.warning(
-                        "Skipping keyword refresh after processing because keyword config is missing: %s",
-                        exc,
+                    materialize_result = _run_keyword_materialization_once()
+                except Exception as fallback_exc:
+                    logger.exception(
+                        "Keyword materialization fallback failed after missing keyword config"
                     )
-                    try:
-                        materialize_result = _run_keyword_materialization_once()
-                    except Exception as fallback_exc:
-                        logger.exception(
-                            "Keyword materialization fallback failed after missing keyword config"
-                        )
-                        result["keywords_refresh_error"] = str(fallback_exc)
-                    else:
-                        if materialize_result is not None:
-                            keywords_refresh = {
-                                "sync": {
-                                    "skipped": True,
-                                    "reason": "keyword_config_missing",
-                                    "detail": str(exc),
-                                },
-                                "materialize": materialize_result,
-                            }
-                except Exception as exc:
-                    logger.exception("Keyword refresh failed after processing")
-                    result["keywords_refresh_error"] = str(exc)
-                if keywords_refresh is not None:
-                    result["keywords_refresh"] = keywords_refresh
-                try:
-                    keyword_ai_analysis = _run_keyword_ai_analysis_once(trigger="process")
-                except Exception as exc:
-                    logger.exception("AI keyword analysis failed after processing")
-                    result["keyword_ai_analysis_error"] = str(exc)
+                    result["keywords_refresh_error"] = str(fallback_exc)
                 else:
-                    if keyword_ai_analysis is not None:
-                        result["keyword_ai_analysis"] = keyword_ai_analysis
-                return result
-            finally:
-                storage.close()
+                    if materialize_result is not None:
+                        keywords_refresh = {
+                            "sync": {
+                                "skipped": True,
+                                "reason": "keyword_config_missing",
+                                "detail": str(exc),
+                            },
+                            "materialize": materialize_result,
+                        }
+            except Exception as exc:
+                logger.exception("Keyword refresh failed after processing")
+                result["keywords_refresh_error"] = str(exc)
+            if keywords_refresh is not None:
+                result["keywords_refresh"] = keywords_refresh
+            try:
+                keyword_ai_analysis = _run_keyword_ai_analysis_once(trigger="process")
+            except Exception as exc:
+                logger.exception("AI keyword analysis failed after processing")
+                result["keyword_ai_analysis_error"] = str(exc)
+            else:
+                if keyword_ai_analysis is not None:
+                    result["keyword_ai_analysis"] = keyword_ai_analysis
+            return result
         finally:
-            for k, v in old_env.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
+            storage.close()
+    finally:
+        # Restore old environment values — safe outside the lock because
+        # process jobs are serialized by the job store.
+        for k, v in old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def run_sync(job_id: str, req: SyncRequest) -> None:
-    job_store.update_job(job_id, status=JobStatus.running, started_at=datetime.now(timezone.utc))
+    job_store.update_job(
+        job_id, status=JobStatus.running, started_at=datetime.now(timezone.utc)
+    )
     try:
         sync_result = _run_sync_once(req)
         job_store.update_job(
@@ -284,7 +320,9 @@ def run_sync(job_id: str, req: SyncRequest) -> None:
 
 
 def run_process(job_id: str, req: ProcessRequest) -> None:
-    job_store.update_job(job_id, status=JobStatus.running, started_at=datetime.now(timezone.utc))
+    job_store.update_job(
+        job_id, status=JobStatus.running, started_at=datetime.now(timezone.utc)
+    )
     try:
         process_result = _run_process_once(req)
         job_store.update_job(
@@ -304,7 +342,9 @@ def run_process(job_id: str, req: ProcessRequest) -> None:
 
 
 def run_sync_and_process(job_id: str, req: ProcessRequest) -> None:
-    job_store.update_job(job_id, status=JobStatus.running, started_at=datetime.now(timezone.utc))
+    job_store.update_job(
+        job_id, status=JobStatus.running, started_at=datetime.now(timezone.utc)
+    )
     try:
         sync_result = _run_sync_once(SyncRequest(days=req.days))
         process_result = _run_process_once(req)
@@ -331,7 +371,9 @@ def run_sync_and_process(job_id: str, req: ProcessRequest) -> None:
 
 
 def run_export_snapshots(job_id: str) -> None:
-    job_store.update_job(job_id, status=JobStatus.running, started_at=datetime.now(timezone.utc))
+    job_store.update_job(
+        job_id, status=JobStatus.running, started_at=datetime.now(timezone.utc)
+    )
     try:
         export_result = _run_export_snapshots_once()
         job_store.update_job(

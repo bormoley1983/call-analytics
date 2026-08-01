@@ -21,7 +21,8 @@ import os
 from pathlib import Path
 
 import pytest
-from golden._normalize import save_golden
+
+from tests.golden._normalize import save_golden
 
 
 def _should_regenerate() -> bool:
@@ -48,7 +49,7 @@ class TestGoldenBaselineOverall:
             save_golden("overall_report", body)
             pytest.skip("Regenerated golden baseline for overall_report")
 
-        from golden._normalize import assert_matches_golden
+        from tests.golden._normalize import assert_matches_golden
 
         assert_matches_golden("overall_report", body)
 
@@ -106,7 +107,7 @@ class TestGoldenBaselineManagers:
             save_golden("managers_report", body)
             pytest.skip("Regenerated golden baseline for managers_report")
 
-        from golden._normalize import assert_matches_golden
+        from tests.golden._normalize import assert_matches_golden
 
         assert_matches_golden("managers_report", body)
 
@@ -162,7 +163,7 @@ class TestGoldenBaselineCustomers:
             save_golden("customers_report", body)
             pytest.skip("Regenerated golden baseline for customers_report")
 
-        from golden._normalize import assert_matches_golden
+        from tests.golden._normalize import assert_matches_golden
 
         assert_matches_golden("customers_report", body)
 
@@ -202,7 +203,7 @@ class TestGoldenBaselineKeywords:
             save_golden("keywords_report", body)
             pytest.skip("Regenerated golden baseline for keywords_report")
 
-        from golden._normalize import assert_matches_golden
+        from tests.golden._normalize import assert_matches_golden
 
         assert_matches_golden("keywords_report", body)
 

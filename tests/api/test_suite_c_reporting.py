@@ -71,10 +71,13 @@ class TestManagersReport:
 
         body = response.json()
         # Could be a list or a dict with 'data' key
+        managers: list | None = None
         if isinstance(body, list):
             managers = body
         elif isinstance(body, dict):
-            managers = body.get("managers", body.get("data", []))
+            managers = body.get("managers", body.get("data", None))
+            if managers is None:
+                pytest.fail("Response dict missing 'managers' and 'data' keys")
         else:
             pytest.fail(f"Unexpected response type: {type(body)}")
 
@@ -114,10 +117,13 @@ class TestCustomersReport:
 
         body = response.json()
         # Similar structure to managers
+        customers: list | None = None
         if isinstance(body, list):
             customers = body
         elif isinstance(body, dict):
-            customers = body.get("customers", body.get("data", []))
+            customers = body.get("customers", body.get("data", None))
+            if customers is None:
+                pytest.fail("Response dict missing 'customers' and 'data' keys")
         else:
             pytest.fail(f"Unexpected response type: {type(body)}")
 

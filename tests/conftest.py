@@ -7,7 +7,7 @@ from typing import Any, Dict, Generator
 
 import httpx
 import pytest
-from testcontainers.postgres import PostgresContainer
+from testcontainers.community.postgres import PostgresContainer
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"

@@ -101,8 +101,8 @@ def test_generate_keyword_candidates_from_analysis_texts():
     )
 
     result = generate_keyword_candidates(
-        reporting_source=reporting,
-        keyword_source=keywords,
+        reporting_source=reporting,  # type: ignore[arg-type]
+        keyword_source=keywords,  # type: ignore[arg-type]
         filters=ReportFilters(),
         include_summary=True,
         include_key_questions=True,

@@ -1,0 +1,25 @@
+{
+    "generated_at": "__TIMESTAMP__",
+    "data_source": "postgres",
+    "filters": {
+        "date_from": null,
+        "date_to": null,
+        "manager_id": null,
+        "role": null,
+        "direction": null,
+        "intent": null,
+        "outcome": null,
+        "spam_only": false,
+        "effective_only": false
+    },
+    "skipped_metrics_available": false,
+    "all_customers": [],
+    "total_customers": 0,
+    "keyword_ai_analysis": "__AI_ANALYSIS__",
+    "freshness": {
+        "latest_processed_at": "__FRESHNESS_VALUE__",
+        "latest_materialized_at": "__FRESHNESS_VALUE__",
+        "latest_keyword_ai_analysis_at": "__FRESHNESS_VALUE__",
+        "keyword_ai_analysis_status": "__FRESHNESS_VALUE__"
+    }
+}

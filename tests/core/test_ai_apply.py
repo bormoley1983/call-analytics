@@ -11,10 +11,9 @@ Covers:
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
-import pytest
-
+from adapters.ai_apply_postgres import PostgresAiApplyStore
 from api.schemas import AIApplyAction, AIMutation, AISkippedAction
 from core.ai_apply import (
     _do_deactivate,
@@ -286,7 +285,7 @@ def test_resolve_actions_missing_keyword_id_returns_error():
 
 
 def test_resolve_actions_invalid_reference():
-    groups = []
+    groups: list[dict[str, Any]] = []
     analysis = _make_analysis(groups)
 
     # No indices and no keyword_id — should be caught by schema validator, but defensive check:
@@ -574,6 +573,7 @@ def test_execute_mutations_dry_run_no_op():
     _execute_mutations_on_keyword_source(mutations, source, dry_run=True)
 
     kw = source.get_keyword("my_kw")
+    assert kw is not None
     assert kw.is_active is True
 
 
@@ -583,6 +583,7 @@ def test_execute_mutations_live_applies():
     _execute_mutations_on_keyword_source(mutations, source, dry_run=False)
 
     kw = source.get_keyword("my_kw")
+    assert kw is not None
     assert kw.is_active is False
 
 
@@ -612,7 +613,7 @@ def test_apply_dry_run_no_mutations_executed():
         analysis=analysis,
         request_actions=[AIApplyAction(group_index=0, action_index=0)],
         keyword_source=keyword_source,
-        apply_store=apply_store,
+        apply_store=cast(PostgresAiApplyStore, apply_store),
         dry_run=True,
         refresh_after=False,
         applied_by="test_user",
@@ -620,6 +621,7 @@ def test_apply_dry_run_no_mutations_executed():
 
     # Dry run: keyword should NOT be deactivated
     kw = keyword_source.get_keyword("active_kw")
+    assert kw is not None
     assert kw.is_active is True
 
     # Result should indicate dry_run
@@ -649,7 +651,7 @@ def test_apply_live_mode_executes_mutations():
         analysis=analysis,
         request_actions=[AIApplyAction(group_index=0, action_index=0)],
         keyword_source=keyword_source,
-        apply_store=apply_store,
+        apply_store=cast(PostgresAiApplyStore, apply_store),
         dry_run=False,
         refresh_after=False,
         applied_by="test_user",
@@ -657,6 +659,7 @@ def test_apply_live_mode_executes_mutations():
 
     # Live mode: keyword should be deactivated
     kw = keyword_source.get_keyword("active_kw")
+    assert kw is not None
     assert kw.is_active is False
 
     # Result should have apply_id
@@ -696,7 +699,7 @@ def test_apply_merge_full_flow():
         analysis=analysis,
         request_actions=[AIApplyAction(group_index=0, action_index=0)],
         keyword_source=keyword_source,
-        apply_store=apply_store,
+        apply_store=cast(PostgresAiApplyStore, apply_store),
         dry_run=False,
         refresh_after=False,
         applied_by="admin",
@@ -728,7 +731,7 @@ def test_apply_keep_action_no_mutation():
         analysis=analysis,
         request_actions=[AIApplyAction(group_index=0, action_index=0)],
         keyword_source=keyword_source,
-        apply_store=apply_store,
+        apply_store=cast(PostgresAiApplyStore, apply_store),
         dry_run=False,
         refresh_after=False,
     )
@@ -753,7 +756,7 @@ def test_apply_skips_missing_keyword():
         analysis=analysis,
         request_actions=[AIApplyAction(group_index=0, action_index=0)],
         keyword_source=keyword_source,
-        apply_store=apply_store,
+        apply_store=cast(PostgresAiApplyStore, apply_store),
         dry_run=False,
         refresh_after=False,
     )
@@ -785,7 +788,7 @@ def test_apply_keyword_id_resolution():
         analysis=analysis,
         request_actions=[AIApplyAction(keyword_id="my_kw")],
         keyword_source=keyword_source,
-        apply_store=apply_store,
+        apply_store=cast(PostgresAiApplyStore, apply_store),
         dry_run=False,
         refresh_after=False,
     )

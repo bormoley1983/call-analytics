@@ -16,8 +16,7 @@ for path in (str(ROOT), str(SRC)):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from adapters.keyword_ai_analysis_postgres import \
-    PostgresKeywordAiAnalysisStore
+from adapters.keyword_ai_analysis_postgres import PostgresKeywordAiAnalysisStore
 from adapters.keywords_postgres import PostgresKeywordSource
 from adapters.storage_postgres import PostgresStorage
 
@@ -25,15 +24,15 @@ from adapters.storage_postgres import PostgresStorage
 # Pytest configuration — register markers + skip integration by default
 # ---------------------------------------------------------------------------
 
+
 def pytest_configure(config: pytest.Config) -> None:
     """Register custom markers."""
     config.addinivalue_line(
         "markers",
-        "integration: marks tests as integration tests (require external services)"
+        "integration: marks tests as integration tests (require external services)",
     )
     config.addinivalue_line(
-        "markers",
-        "postgres: marks tests as requiring a PostgreSQL instance"
+        "markers", "postgres: marks tests as requiring a PostgreSQL instance"
     )
 
 
@@ -43,7 +42,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--run-integration",
         action="store_true",
         default=False,
-        help="Run integration tests (requires Docker for testcontainers)"
+        help="Run integration tests (requires Docker for testcontainers)",
+    )
+    parser.addoption(
+        "--regenerate-golden",
+        action="store_true",
+        default=False,
+        help="Regenerate golden baseline files from current API responses",
     )
 
 
@@ -64,12 +69,9 @@ def pytest_collection_modifyitems(
 def _docker_available() -> bool:
     """Check whether the Docker daemon is reachable."""
     import subprocess
+
     try:
-        result = subprocess.run(
-            ["docker", "info"],
-            capture_output=True,
-            timeout=10
-        )
+        result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return False
@@ -81,9 +83,11 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
         if not _docker_available():
             pytest.skip("Docker is not available; cannot start testcontainers")
 
+
 # ---------------------------------------------------------------------------
 # PostgreSQL testcontainer (session-scoped — shared across all tests)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def postgres_container() -> Generator[PostgresContainer, None, None]:
@@ -107,6 +111,7 @@ def postgres_dsn(postgres_container: PostgresContainer) -> str:
 # FastAPI test client
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="session")
 def fastapi_app(postgres_dsn: str):
     """Create a FastAPI app wired to the test Postgres container."""
@@ -115,7 +120,17 @@ def fastapi_app(postgres_dsn: str):
     # Set POSTGRES_DSN so API routes use Postgres backends instead of falling
     # back to read-only YAML mode (which returns 405 on write endpoints).
     os.environ["POSTGRES_DSN"] = postgres_dsn
+
+    # Ensure schema is created before the app starts serving requests.
+    # The API routes create their own Postgres adapters (reporting, keywords, etc.)
+    # that don't run DDL on connect — they rely on PostgresStorage.ensure_ready()
+    # to have already created all tables.
+    storage = PostgresStorage(dsn=postgres_dsn, max_connections=5)
+    storage.ensure_ready()
+    storage.close()
+
     from api.app import app
+
     return app
 
 
@@ -123,6 +138,7 @@ def fastapi_app(postgres_dsn: str):
 def api_client(fastapi_app):
     """TestClient for async API testing."""
     from starlette.testclient import TestClient
+
     client = TestClient(fastapi_app, raise_server_exceptions=False)
     return client
 
@@ -130,6 +146,7 @@ def api_client(fastapi_app):
 # ---------------------------------------------------------------------------
 # Storage adapter (PostgresStorage — pool-based)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def storage_adapter(postgres_dsn: str) -> Generator[PostgresStorage, None, None]:
@@ -144,6 +161,7 @@ def storage_adapter(postgres_dsn: str) -> Generator[PostgresStorage, None, None]
 # Keywords adapter (SingleConnectionPostgresAdapter subclass)
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def keyword_adapter(postgres_dsn: str) -> Generator[PostgresKeywordSource, None, None]:
     """PostgresKeywordSource connected to the test container."""
@@ -156,8 +174,11 @@ def keyword_adapter(postgres_dsn: str) -> Generator[PostgresKeywordSource, None,
 # AI Analyses adapter (SingleConnectionPostgresAdapter subclass)
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
-def analyses_adapter(postgres_dsn: str) -> Generator[PostgresKeywordAiAnalysisStore, None, None]:
+def analyses_adapter(
+    postgres_dsn: str,
+) -> Generator[PostgresKeywordAiAnalysisStore, None, None]:
     """PostgresKeywordAiAnalysisStore connected to the test container."""
     adapter = PostgresKeywordAiAnalysisStore(dsn=postgres_dsn)
     yield adapter
@@ -167,6 +188,7 @@ def analyses_adapter(postgres_dsn: str) -> Generator[PostgresKeywordAiAnalysisSt
 # ---------------------------------------------------------------------------
 # Seed helpers
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def seed_test_call(storage_adapter: PostgresStorage):

@@ -1,0 +1,48 @@
+name: Nightly Integration Tests
+
+on:
+  schedule:
+    # Run at 02:00 UTC every day
+    - cron: "0 2 * * *"
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run unit tests
+        run: |
+          python -m pytest tests/ -q --tb=short
+
+      - name: Run integration tests (with Docker + testcontainers)
+        run: |
+          python -m pytest tests/ -m "integration and postgres" -v --tb=short --run-integration
+
+      - name: Run golden baseline regression tests
+        run: |
+          python -m pytest tests/api/test_suite_h_golden_baselines.py -v --tb=short --run-integration
+
+      - name: Run type checks
+        run: |
+          mypy --no-incremental src tests

@@ -14,14 +14,17 @@ from api.routes import keywords as keyword_routes
 from api.routes import keywords_generation as keyword_generation_routes
 from api.routes import reports as report_routes
 from api.schemas import (
+    KeywordCallSortBy,
     KeywordCallsSortQuery,
     KeywordGenerationBootstrapRequest,
+    KeywordManagersSortBy,
     KeywordManagersSortQuery,
     KeywordsSortQuery,
     KeywordSyncRequest,
     KeywordUpsertRequest,
     PaginationQuery,
     ReportFiltersQuery,
+    SortOrder,
 )
 from core.keywords_materialize import materialize_call_keywords
 from core.keywords_service import build_keywords_report, list_keywords
@@ -634,8 +637,8 @@ def test_materialize_call_keywords_persists_matches():
     )
 
     response = materialize_call_keywords(
-        FakeReportingSource(records),
-        keyword_source,
+        FakeReportingSource(records),  # type: ignore[arg-type]
+        keyword_source,  # type: ignore[arg-type]
         keyword_source,
         state_store=keyword_source,
     )
@@ -706,8 +709,8 @@ def test_materialize_call_keywords_does_not_mutate_analysis_records():
     )
 
     materialize_call_keywords(
-        FakeReportingSourceFromAnalyses(analyses),
-        keyword_source,
+        FakeReportingSourceFromAnalyses(analyses),  # type: ignore[arg-type]
+        keyword_source,  # type: ignore[arg-type]
         keyword_source,
         state_store=keyword_source,
     )
@@ -723,7 +726,7 @@ def test_keyword_report_route_prefers_materialized_postgres(monkeypatch):
         def is_materialized(self):
             return True
 
-        def build_materialized_keywords_report(
+        def build_materialized_keywords_report(  # type: ignore[override]
             self, filters, spam_threshold, sort_by, order
         ):
             return {
@@ -792,7 +795,7 @@ def test_keyword_drilldown_routes_use_materialized_source(monkeypatch):
                 is_active=True,
             )
 
-        def build_keyword_calls_report(
+        def build_keyword_calls_report(  # type: ignore[override]
             self, keyword_id, filters, spam_threshold, limit, offset, sort_by, order
         ):
             return {
@@ -815,7 +818,7 @@ def test_keyword_drilldown_routes_use_materialized_source(monkeypatch):
                 ],
             }
 
-        def build_keyword_managers_report(
+        def build_keyword_managers_report(  # type: ignore[override]
             self, keyword_id, filters, spam_threshold, sort_by, order
         ):
             return {
@@ -841,13 +844,17 @@ def test_keyword_drilldown_routes_use_materialized_source(monkeypatch):
         "delivery",
         ReportFiltersQuery(),
         pagination=PaginationQuery(limit=25, offset=0),
-        sorting=KeywordCallsSortQuery(sort_by="match_count", order="asc"),
+        sorting=KeywordCallsSortQuery(
+            sort_by=KeywordCallSortBy.match_count, order=SortOrder.asc
+        ),
     )
     trend = report_routes.keyword_trend_report("delivery", ReportFiltersQuery())
     managers = report_routes.keyword_managers_report(
         "delivery",
         ReportFiltersQuery(),
-        sorting=KeywordManagersSortQuery(sort_by="manager_name", order="asc"),
+        sorting=KeywordManagersSortQuery(
+            sort_by=KeywordManagersSortBy.manager_name, order=SortOrder.asc
+        ),
     )
 
     assert calls["calls"][0]["call_id"] == "call-1"

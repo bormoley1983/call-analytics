@@ -5,6 +5,7 @@
 This manual is aimed at contributors working on the Postgres-first production system.
 
 Current operating model:
+
 - PostgreSQL is the production system of record.
 - FastAPI jobs and reports are designed around persisted Postgres data.
 - JSON storage remains only for local development, migration, and legacy compatibility.
@@ -54,6 +55,7 @@ mypy --no-incremental src tests
 ### Source of truth
 
 Production writes directly into Postgres tables, primarily:
+
 - `transcripts`
 - `analyses`
 - `keywords`
@@ -74,6 +76,7 @@ Production writes directly into Postgres tables, primarily:
 5. `/reports/*` reads persisted data and attaches the latest persisted `keyword_ai_analysis`
 
 Important behavior:
+
 - `/jobs/sync` is download-only and does not run AI keyword analysis
 - `/jobs/sync-and-process` uses the same `days` filter for both sync and processing
 - report endpoints are read-side APIs and do not trigger write-side flows
@@ -122,6 +125,7 @@ src/
 ### `Pipeline.run()`
 
 The pipeline itself is responsible for:
+
 - discovery
 - audio normalization
 - transcription
@@ -130,6 +134,7 @@ The pipeline itself is responsible for:
 - persistence via the configured storage backend
 
 The pipeline is not responsible for:
+
 - snapshot export orchestration
 - keyword refresh orchestration
 - keyword AI analysis orchestration
@@ -140,10 +145,12 @@ Those happen in `api/runner.py` after successful process-like jobs.
 ### Post-process orchestration
 
 After a successful process job, the runner may do:
+
 - `refresh_keywords_data(...)`
 - `run_keyword_ai_analysis_once(...)`
 
 Snapshot exports are run independently through:
+
 - `run_export_snapshots(...)`
 - `core.snapshot_export.export_snapshot_reports(...)`
 
@@ -175,13 +182,16 @@ Every report response may include `keyword_ai_analysis` when Postgres analysis h
 ### Keywords
 
 Normal admin flow:
+
 - `POST /keywords/refresh`
 
 Low-level maintenance:
+
 - `POST /keywords/sync`
 - `POST /keywords/materialize`
 
 Optional advanced flows:
+
 - `POST /keywords/generation/candidates`
 - `POST /keywords/generation/publish`
 - `POST /keywords/catalog/analysis`
@@ -191,6 +201,7 @@ Optional advanced flows:
 ## JSON Mode
 
 JSON mode is kept for:
+
 - local debugging
 - historical migration
 - compatibility testing
@@ -199,6 +210,7 @@ JSON mode is kept for:
 It is not the production target.
 
 When editing documentation, examples, or test instructions:
+
 - lead with Postgres-first behavior
 - treat JSON mode as a clearly separate legacy/dev-only path
 - avoid describing JSON as the primary runtime path
@@ -217,7 +229,7 @@ pytest
 
 Integration tests require a PostgreSQL instance. Two options are available:
 
-**Option A — testcontainers (default, recommended)**
+#### Option A — testcontainers (default, recommended)
 
 The fixtures automatically manage a Postgres container via `testcontainers`. Just pass the flag:
 
@@ -227,7 +239,7 @@ pytest --run-integration
 
 Docker must be running, but no manual setup is needed. Containers are cleaned up after the test session.
 
-**Option B — Docker Compose (persistent database)**
+#### Option B — Docker Compose (persistent database)
 
 Start a dedicated test database manually:
 
@@ -238,7 +250,7 @@ docker compose --profile test up -d
 This starts `postgres:16-alpine` on port **54322** with the credentials:
 
 | Setting | Value |
-|---------|-------|
+| ------- | ------- |
 | User | `call_analytics_test` |
 | Password | `test_pass` |
 | Database | `call_analytics_test` |

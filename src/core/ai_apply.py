@@ -474,13 +474,14 @@ def apply_approved_actions(
     # Step 4: Refresh materialization (only in live mode)
     if not dry_run and refresh_after:
         try:
-            from core.keywords_materialize import run_keyword_materialization
+            from core.keywords_materialize import materialize_call_keywords
 
             reporting_source = _get_reporting_source_for_refresh()
             if reporting_source is not None:
-                run_keyword_materialization(
-                    keyword_store=keyword_source,
+                materialize_call_keywords(
                     reporting_source=reporting_source,
+                    keyword_source=keyword_source,
+                    keyword_store=keyword_source,
                     state_store=keyword_source,
                 )
                 keyword_refreshed = True

@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -14,6 +15,8 @@ from adapters import (
     storage_postgres,
     storage_qdrant,
 )
+from domain.config import AppConfig
+from domain.reporting import ReportFilters
 
 
 def test_ffprobe_duration_seconds_exists():
@@ -443,7 +446,7 @@ def test_reporting_source_retries_read_after_operational_error(monkeypatch):
 
     rows = list(
         source.iter_call_records(
-            SimpleNamespace(
+            ReportFilters(
                 date_from=None,
                 date_to=None,
                 manager_id=None,
@@ -554,7 +557,7 @@ def test_ollama_generate_sends_runtime_limits(monkeypatch):
     )
 
     result = llm_ollama._ollama_generate(
-        "hello", config, temperature=0.1, force_json=True
+        "hello", cast(AppConfig, config), temperature=0.1, force_json=True
     )
 
     assert result == '{"ok":true}'
@@ -584,12 +587,12 @@ def test_qdrant_storage_upsert_is_deterministic(monkeypatch):
     payload = {"meta": "data"}
 
     storage.upsert(call_id, embedding, payload)
-    first_id = list(storage.client.points.keys())[0]
+    first_id = list(cast(DummyClient, storage.client).points.keys())[0]  # type: ignore[union-attr]
 
     storage.upsert(call_id, embedding, payload)
     second_id = (
-        list(storage.client.points.keys())[-1]
-        if len(storage.client.points) > 1
+        list(cast(DummyClient, storage.client).points.keys())[-1]
+        if len(cast(DummyClient, storage.client).points) > 1
         else first_id
     )
 
@@ -597,7 +600,7 @@ def test_qdrant_storage_upsert_is_deterministic(monkeypatch):
     storage2 = storage_qdrant.QdrantStorage()
     storage2.client = storage.client  # share the mock client for verification
     storage2.upsert(call_id, embedding, payload)
-    third_id = list(storage.client.points.keys())[-1]
+    third_id = list(cast(DummyClient, storage.client).points.keys())[-1]  # type: ignore[union-attr]
 
     assert (
         first_id == third_id

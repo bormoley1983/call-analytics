@@ -3,16 +3,20 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+from typing import Union
 
 from adapters.stt_runs_json import JsonSttRunStore
 from adapters.stt_runs_postgres import PostgresSttRunStore
 from core.stt_compare_service import SttCompareService, compare_summary_json
 from domain.config import load_app_config
+from ports.stt_runs import SttRunStorePort
 
 
-def _build_run_store(config):
+def _build_run_store(config) -> SttRunStorePort:
     if os.getenv("POSTGRES_DSN"):
-        store = PostgresSttRunStore(os.environ["POSTGRES_DSN"])
+        store: Union[PostgresSttRunStore, JsonSttRunStore] = PostgresSttRunStore(
+            os.environ["POSTGRES_DSN"]
+        )
         store.ensure_ready()
         return store
     store = JsonSttRunStore(Path(config.out))

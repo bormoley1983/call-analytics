@@ -12,14 +12,18 @@ from domain import config
 def test_pipeline_class_exists():
     assert hasattr(pipeline, "Pipeline")
 
+
 def test_aggregate_report_exists():
     assert hasattr(reports, "aggregate_report")
+
 
 def test_sha12_exists():
     assert hasattr(rules, "sha12")
 
+
 def test_transcribe_exists():
     assert hasattr(transcription, "transcribe")
+
 
 def test_appconfig_exists():
     assert hasattr(config, "AppConfig")
@@ -29,7 +33,9 @@ def test_configure_process_env_preserves_zero_limit(monkeypatch):
     monkeypatch.setenv("PROCESS_LIMIT", "30")
 
     runner._configure_process_env(
-        ProcessRequest(days=None, limit=0, force_reanalyze=False, force_retranscribe=False)
+        ProcessRequest(
+            days=None, limit=0, force_reanalyze=False, force_retranscribe=False
+        )
     )
 
     assert runner.os.environ["PROCESS_LIMIT"] == "0"
@@ -62,13 +68,29 @@ def _minimal_pipeline_config():
 def test_pipeline_run_syncs_even_when_snapshot_reports_disabled(monkeypatch):
     events = []
     cfg = _minimal_pipeline_config()
-    pl = pipeline.Pipeline(config=cfg, storage=object(), audio=object(), llm=object(), pbx=object())
+    pl = pipeline.Pipeline(
+        config=cfg,
+        storage=object(),  # type: ignore[arg-type]
+        audio=object(),  # type: ignore[arg-type]
+        llm=object(),  # type: ignore[arg-type]
+        pbx=object(),  # type: ignore[arg-type]
+    )
 
-    monkeypatch.setattr(pipeline, "discover_and_filter_files", lambda config, storage: [Path("call.wav")])
-    monkeypatch.setattr(pipeline, "categorize_files", lambda all_files, config, storage: ([], []))
+    monkeypatch.setattr(
+        pipeline,
+        "discover_and_filter_files",
+        lambda config, storage: [Path("call.wav")],
+    )
+    monkeypatch.setattr(
+        pipeline, "categorize_files", lambda all_files, config, storage: ([], [])
+    )
     monkeypatch.setattr(pl, "run_transcription_phase", lambda files: [])
-    monkeypatch.setattr(pl, "run_translation_phase", lambda files_metadata: files_metadata)
-    monkeypatch.setattr(pl, "run_analysis_phase", lambda files_metadata: [{"status": "processed"}])
+    monkeypatch.setattr(
+        pl, "run_translation_phase", lambda files_metadata: files_metadata
+    )
+    monkeypatch.setattr(
+        pl, "run_analysis_phase", lambda files_metadata: [{"status": "processed"}]
+    )
     monkeypatch.setattr(pl, "sync_to_postgres", lambda per_call: events.append("sync"))
 
     pl.run()
@@ -79,13 +101,29 @@ def test_pipeline_run_syncs_even_when_snapshot_reports_disabled(monkeypatch):
 def test_pipeline_run_does_not_generate_snapshots_during_process(monkeypatch):
     events = []
     cfg = _minimal_pipeline_config()
-    pl = pipeline.Pipeline(config=cfg, storage=object(), audio=object(), llm=object(), pbx=object())
+    pl = pipeline.Pipeline(
+        config=cfg,
+        storage=object(),  # type: ignore[arg-type]
+        audio=object(),  # type: ignore[arg-type]
+        llm=object(),  # type: ignore[arg-type]
+        pbx=object(),  # type: ignore[arg-type]
+    )
 
-    monkeypatch.setattr(pipeline, "discover_and_filter_files", lambda config, storage: [Path("call.wav")])
-    monkeypatch.setattr(pipeline, "categorize_files", lambda all_files, config, storage: ([], []))
+    monkeypatch.setattr(
+        pipeline,
+        "discover_and_filter_files",
+        lambda config, storage: [Path("call.wav")],
+    )
+    monkeypatch.setattr(
+        pipeline, "categorize_files", lambda all_files, config, storage: ([], [])
+    )
     monkeypatch.setattr(pl, "run_transcription_phase", lambda files: [])
-    monkeypatch.setattr(pl, "run_translation_phase", lambda files_metadata: files_metadata)
-    monkeypatch.setattr(pl, "run_analysis_phase", lambda files_metadata: [{"status": "processed"}])
+    monkeypatch.setattr(
+        pl, "run_translation_phase", lambda files_metadata: files_metadata
+    )
+    monkeypatch.setattr(
+        pl, "run_analysis_phase", lambda files_metadata: [{"status": "processed"}]
+    )
     monkeypatch.setattr(pl, "sync_to_postgres", lambda per_call: events.append("sync"))
     pl.run()
 
@@ -101,7 +139,9 @@ def test_run_export_snapshots_once_uses_persisted_reporting_source(monkeypatch):
 
     captured = {}
 
-    monkeypatch.setattr(runner, "load_app_config", lambda: SimpleNamespace(out=Path(".")))
+    monkeypatch.setattr(
+        runner, "load_app_config", lambda: SimpleNamespace(out=Path("."))
+    )
     monkeypatch.setenv("SPAM_PROBABILITY_THRESHOLD", "0.75")
     monkeypatch.setattr(runner, "_build_reporting_source", lambda: FakeSource())
 
@@ -111,7 +151,9 @@ def test_run_export_snapshots_once_uses_persisted_reporting_source(monkeypatch):
         captured["spam_threshold"] = spam_threshold
         return {"ok": True}
 
-    monkeypatch.setattr(runner, "export_snapshot_reports", _fake_export_snapshot_reports)
+    monkeypatch.setattr(
+        runner, "export_snapshot_reports", _fake_export_snapshot_reports
+    )
 
     result = runner._run_export_snapshots_once()
 
@@ -123,8 +165,14 @@ def test_run_export_snapshots_once_uses_persisted_reporting_source(monkeypatch):
 
 def test_run_export_snapshots_updates_job_done(monkeypatch):
     updates = []
-    monkeypatch.setattr(runner.job_store, "update_job", lambda job_id, **kwargs: updates.append(kwargs))
-    monkeypatch.setattr(runner, "_run_export_snapshots_once", lambda: {"overall_report": "out/report.json"})
+    monkeypatch.setattr(
+        runner.job_store, "update_job", lambda job_id, **kwargs: updates.append(kwargs)
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_export_snapshots_once",
+        lambda: {"overall_report": "out/report.json"},
+    )
 
     runner.run_export_snapshots("job-export")
 
@@ -164,17 +212,33 @@ def test_run_process_once_includes_keywords_refresh(monkeypatch):
         def run(self):
             return None
 
-    monkeypatch.setattr(runner, "load_app_config", lambda: SimpleNamespace(out=Path("."), norm=Path("."), trans=Path("."), analysis=Path(".")))
+    monkeypatch.setattr(
+        runner,
+        "load_app_config",
+        lambda: SimpleNamespace(
+            out=Path("."), norm=Path("."), trans=Path("."), analysis=Path(".")
+        ),
+    )
     monkeypatch.setattr(runner, "PostgresStorage", lambda dsn: FakeStorage())
     monkeypatch.setattr(runner, "Pipeline", FakePipeline)
     monkeypatch.setattr(runner, "OllamaLlm", lambda config: object())
     monkeypatch.setattr(runner, "FfmpegAudio", lambda: object())
     monkeypatch.setattr(runner, "AsteriskPbx", lambda: object())
-    monkeypatch.setattr(runner, "_run_keyword_refresh_once", lambda prune_missing=False: {"sync": {"synced": 2}})
-    monkeypatch.setattr(runner, "_run_keyword_ai_analysis_once", lambda trigger: {"analysis_history": {"analysis_id": "a1"}})
+    monkeypatch.setattr(
+        runner,
+        "_run_keyword_refresh_once",
+        lambda prune_missing=False: {"sync": {"synced": 2}},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_keyword_ai_analysis_once",
+        lambda trigger: {"analysis_history": {"analysis_id": "a1"}},
+    )
 
     result = runner._run_process_once(
-        ProcessRequest(days=None, limit=1, force_reanalyze=False, force_retranscribe=False)
+        ProcessRequest(
+            days=None, limit=1, force_reanalyze=False, force_retranscribe=False
+        )
     )
 
     assert result["ok"] is True
@@ -200,17 +264,31 @@ def test_run_process_once_keeps_success_when_keywords_refresh_fails(monkeypatch)
         def run(self):
             return None
 
-    monkeypatch.setattr(runner, "load_app_config", lambda: SimpleNamespace(out=Path("."), norm=Path("."), trans=Path("."), analysis=Path(".")))
+    monkeypatch.setattr(
+        runner,
+        "load_app_config",
+        lambda: SimpleNamespace(
+            out=Path("."), norm=Path("."), trans=Path("."), analysis=Path(".")
+        ),
+    )
     monkeypatch.setattr(runner, "PostgresStorage", lambda dsn: FakeStorage())
     monkeypatch.setattr(runner, "Pipeline", FakePipeline)
     monkeypatch.setattr(runner, "OllamaLlm", lambda config: object())
     monkeypatch.setattr(runner, "FfmpegAudio", lambda: object())
     monkeypatch.setattr(runner, "AsteriskPbx", lambda: object())
-    monkeypatch.setattr(runner, "_run_keyword_refresh_once", lambda prune_missing=False: (_ for _ in ()).throw(RuntimeError("refresh failed")))
+    monkeypatch.setattr(
+        runner,
+        "_run_keyword_refresh_once",
+        lambda prune_missing=False: (_ for _ in ()).throw(
+            RuntimeError("refresh failed")
+        ),
+    )
     monkeypatch.setattr(runner, "_run_keyword_ai_analysis_once", lambda trigger: None)
 
     result = runner._run_process_once(
-        ProcessRequest(days=None, limit=1, force_reanalyze=False, force_retranscribe=False)
+        ProcessRequest(
+            days=None, limit=1, force_reanalyze=False, force_retranscribe=False
+        )
     )
 
     assert result["ok"] is True
@@ -235,18 +313,32 @@ def test_run_process_once_skips_missing_keyword_yaml(monkeypatch):
         def run(self):
             return None
 
-    monkeypatch.setattr(runner, "load_app_config", lambda: SimpleNamespace(out=Path("."), norm=Path("."), trans=Path("."), analysis=Path(".")))
+    monkeypatch.setattr(
+        runner,
+        "load_app_config",
+        lambda: SimpleNamespace(
+            out=Path("."), norm=Path("."), trans=Path("."), analysis=Path(".")
+        ),
+    )
     monkeypatch.setattr(runner, "PostgresStorage", lambda dsn: FakeStorage())
     monkeypatch.setattr(runner, "Pipeline", FakePipeline)
     monkeypatch.setattr(runner, "OllamaLlm", lambda config: object())
     monkeypatch.setattr(runner, "FfmpegAudio", lambda: object())
     monkeypatch.setattr(runner, "AsteriskPbx", lambda: object())
-    monkeypatch.setattr(runner, "_run_keyword_refresh_once", lambda prune_missing=False: (_ for _ in ()).throw(FileNotFoundError("Keyword config not found: /work/config/keywords.yaml")))
+    monkeypatch.setattr(
+        runner,
+        "_run_keyword_refresh_once",
+        lambda prune_missing=False: (_ for _ in ()).throw(
+            FileNotFoundError("Keyword config not found: /work/config/keywords.yaml")
+        ),
+    )
     monkeypatch.setattr(runner, "_run_keyword_materialization_once", lambda: None)
     monkeypatch.setattr(runner, "_run_keyword_ai_analysis_once", lambda trigger: None)
 
     result = runner._run_process_once(
-        ProcessRequest(days=None, limit=1, force_reanalyze=False, force_retranscribe=False)
+        ProcessRequest(
+            days=None, limit=1, force_reanalyze=False, force_retranscribe=False
+        )
     )
 
     assert result["ok"] is True
@@ -254,7 +346,9 @@ def test_run_process_once_skips_missing_keyword_yaml(monkeypatch):
     assert "keywords_refresh_error" not in result
 
 
-def test_run_process_once_materializes_existing_postgres_keywords_when_yaml_missing(monkeypatch):
+def test_run_process_once_materializes_existing_postgres_keywords_when_yaml_missing(
+    monkeypatch,
+):
     monkeypatch.setenv("POSTGRES_DSN", "postgresql://example")
     monkeypatch.delenv("AUTO_REFRESH_KEYWORDS", raising=False)
 
@@ -272,22 +366,41 @@ def test_run_process_once_materializes_existing_postgres_keywords_when_yaml_miss
         def run(self):
             return None
 
-    monkeypatch.setattr(runner, "load_app_config", lambda: SimpleNamespace(out=Path("."), norm=Path("."), trans=Path("."), analysis=Path(".")))
+    monkeypatch.setattr(
+        runner,
+        "load_app_config",
+        lambda: SimpleNamespace(
+            out=Path("."), norm=Path("."), trans=Path("."), analysis=Path(".")
+        ),
+    )
     monkeypatch.setattr(runner, "PostgresStorage", lambda dsn: FakeStorage())
     monkeypatch.setattr(runner, "Pipeline", FakePipeline)
     monkeypatch.setattr(runner, "OllamaLlm", lambda config: object())
     monkeypatch.setattr(runner, "FfmpegAudio", lambda: object())
     monkeypatch.setattr(runner, "AsteriskPbx", lambda: object())
-    monkeypatch.setattr(runner, "_run_keyword_refresh_once", lambda prune_missing=False: (_ for _ in ()).throw(FileNotFoundError("Keyword config not found: /work/config/keywords.yaml")))
+    monkeypatch.setattr(
+        runner,
+        "_run_keyword_refresh_once",
+        lambda prune_missing=False: (_ for _ in ()).throw(
+            FileNotFoundError("Keyword config not found: /work/config/keywords.yaml")
+        ),
+    )
     monkeypatch.setattr(
         runner,
         "_run_keyword_materialization_once",
-        lambda: {"processed_calls": 3, "matched_calls": 2, "stored_rows": 4, "active_keywords": 2},
+        lambda: {
+            "processed_calls": 3,
+            "matched_calls": 2,
+            "stored_rows": 4,
+            "active_keywords": 2,
+        },
     )
     monkeypatch.setattr(runner, "_run_keyword_ai_analysis_once", lambda trigger: None)
 
     result = runner._run_process_once(
-        ProcessRequest(days=None, limit=1, force_reanalyze=False, force_retranscribe=False)
+        ProcessRequest(
+            days=None, limit=1, force_reanalyze=False, force_retranscribe=False
+        )
     )
 
     assert result["ok"] is True
@@ -319,12 +432,20 @@ def test_run_keyword_ai_analysis_once_skips_empty_catalog(monkeypatch):
 def test_run_sync_does_not_trigger_keyword_ai_analysis(monkeypatch):
     updates = []
 
-    monkeypatch.setattr(runner.job_store, "update_job", lambda job_id, **kwargs: updates.append(kwargs))
-    monkeypatch.setattr(runner, "_run_sync_once", lambda req: {"downloaded": 2, "downloaded_days": ["2026/03/20"]})
+    monkeypatch.setattr(
+        runner.job_store, "update_job", lambda job_id, **kwargs: updates.append(kwargs)
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_sync_once",
+        lambda req: {"downloaded": 2, "downloaded_days": ["2026/03/20"]},
+    )
     monkeypatch.setattr(
         runner,
         "_run_keyword_ai_analysis_once",
-        lambda trigger: (_ for _ in ()).throw(AssertionError("sync should not trigger AI analysis")),
+        lambda trigger: (_ for _ in ()).throw(
+            AssertionError("sync should not trigger AI analysis")
+        ),
     )
 
     runner.run_sync("job-1", SyncRequest(days="2026/03/20"))
@@ -338,7 +459,9 @@ def test_run_sync_and_process_uses_requested_days_for_sync(monkeypatch):
     updates = []
     captured = {}
 
-    monkeypatch.setattr(runner.job_store, "update_job", lambda job_id, **kwargs: updates.append(kwargs))
+    monkeypatch.setattr(
+        runner.job_store, "update_job", lambda job_id, **kwargs: updates.append(kwargs)
+    )
 
     def fake_sync(req):
         captured["days"] = req.days
@@ -349,7 +472,9 @@ def test_run_sync_and_process_uses_requested_days_for_sync(monkeypatch):
 
     runner.run_sync_and_process(
         "job-2",
-        ProcessRequest(days="2026/03/19", limit=1, force_reanalyze=False, force_retranscribe=False),
+        ProcessRequest(
+            days="2026/03/19", limit=1, force_reanalyze=False, force_retranscribe=False
+        ),
     )
 
     assert captured["days"] == "2026/03/19"

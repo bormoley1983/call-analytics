@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable
+from typing import cast, Iterable
 
 from adapters.postgres_single_connection import (
     RETRYABLE_CONNECTION_ERRORS,
@@ -83,7 +83,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                     COALESCE(outcome, 'невідомо') AS outcome,
                     COALESCE(summary, '') AS summary,
                     COALESCE(audio_seconds, 0.0)::double precision AS audio_seconds,
-                    COALESCE(call_datetime::date, '')::text AS call_date,
+                    COALESCE(call_datetime::date::text, '') AS call_date,
                     COALESCE(src_number, '') AS src_number,
                     COALESCE(dst_number, '') AS dst_number,
                     CASE
@@ -304,7 +304,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 bucket = manager_map.get(str(manager_id))
                 if not bucket:
                     continue
-                top_intents = bucket["top_intents"]
+                top_intents = cast(list[tuple[str, int]], bucket["top_intents"])
                 if len(top_intents) < 10:
                     top_intents.append((str(intent), int(count or 0)))
 
@@ -312,7 +312,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 bucket = manager_map.get(str(manager_id))
                 if not bucket:
                     continue
-                top_outcomes = bucket["top_outcomes"]
+                top_outcomes = cast(list[tuple[str, int]], bucket["top_outcomes"])
                 if len(top_outcomes) < 5:
                     top_outcomes.append((str(outcome), int(count or 0)))
 
@@ -320,7 +320,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 bucket = manager_map.get(str(manager_id))
                 if not bucket:
                     continue
-                top_questions = bucket["top_questions"]
+                top_questions = cast(list[tuple[str, int]], bucket["top_questions"])
                 if len(top_questions) < 10:
                     top_questions.append((str(question), int(count or 0)))
 
@@ -534,8 +534,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 bucket = customer_map.get(str(customer_phone))
                 if not bucket:
                     continue
-                bucket["managers"].append(
-                    {
+                managers = cast(list[dict[str, object]], bucket["managers"])
+                managers.append(                    {
                         "manager_id": str(manager_id),
                         "manager_name": str(manager_name),
                         "role": str(role),
@@ -547,7 +547,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 bucket = customer_map.get(str(customer_phone))
                 if not bucket:
                     continue
-                top_intents = bucket["top_intents"]
+                top_intents = cast(list[tuple[str, int]], bucket["top_intents"])
                 if len(top_intents) < 10:
                     top_intents.append((str(intent), int(count or 0)))
 
@@ -555,7 +555,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 bucket = customer_map.get(str(customer_phone))
                 if not bucket:
                     continue
-                top_outcomes = bucket["top_outcomes"]
+                top_outcomes = cast(list[tuple[str, int]], bucket["top_outcomes"])
                 if len(top_outcomes) < 5:
                     top_outcomes.append((str(outcome), int(count or 0)))
 
@@ -563,7 +563,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 bucket = customer_map.get(str(customer_phone))
                 if not bucket:
                     continue
-                top_questions = bucket["top_questions"]
+                top_questions = cast(list[tuple[str, int]], bucket["top_questions"])
                 if len(top_questions) < 10:
                     top_questions.append((str(question), int(count or 0)))
 

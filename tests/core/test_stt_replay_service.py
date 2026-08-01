@@ -70,7 +70,7 @@ def test_replay_persists_run_results_and_promotes(tmp_path):
     )
 
     service = SttReplayService(
-        config=config,
+        config=config,  # type: ignore[arg-type]
         audio=_FakeAudio(),
         stt=_FakeStt(),
         run_store=run_store,

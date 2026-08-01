@@ -449,6 +449,16 @@ class KeywordGenerationBootstrapRequest(KeywordGenerationRequest):
         default=True,
         description="When true, materializes keyword matches immediately after bootstrap publish.",
     )
+    enrich_before_publish: bool = Field(
+        default=False,
+        description="When true, run AI enrichment between generation and publish.",
+    )
+    max_aliases_per_candidate: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Maximum number of alias suggestions per candidate during enrichment.",
+    )
     run_ai_analysis_after_publish: bool = Field(
         default=True,
         description="When true, runs AI keyword grouping analysis after successful publish.",
@@ -624,7 +634,7 @@ class CustomersSortQuery(BaseModel):
 class AIApplyAction(BaseModel):
     """Single action to apply, referenced by group/action index from analysis."""
 
-    group_index: int = Field(
+    group_index: Optional[int] = Field(
         default=None,
         ge=0,
         description=(
@@ -633,7 +643,7 @@ class AIApplyAction(BaseModel):
             "Use -1 or omit for ungrouped keyword actions."
         ),
     )
-    action_index: int = Field(
+    action_index: Optional[int] = Field(
         default=None,
         ge=0,
         description="Zero-based index of the action within the group. Required for grouped actions.",
@@ -822,3 +832,282 @@ class AIApplyHistoryEntry(BaseModel):
     error: Optional[str] = Field(
         default=None, description="Error message if apply failed."
     )
+
+
+# ---------------------------------------------------------------------------
+# Enrichment schemas — AI enrichment of generated candidates
+# ---------------------------------------------------------------------------
+
+
+class KeywordGenerationEnrichCandidate(BaseModel):
+    """Single candidate to enrich (matches output from /candidates)."""
+
+    candidate_id: str = Field(
+        description="Unique identifier for this candidate.",
+        examples=["cand_abc123"],
+    )
+    phrase: str = Field(
+        min_length=1,
+        description="The candidate phrase.",
+        examples=["delivery delay"],
+    )
+    support_calls: int = Field(
+        default=0,
+        description="Number of unique calls containing this phrase.",
+    )
+    total_matches: int = Field(
+        default=0,
+        description="Total number of phrase matches across all texts.",
+    )
+    sample_call_ids: List[str] = Field(
+        default_factory=list,
+        description="Sample call IDs where this phrase was found.",
+    )
+
+
+class KeywordGenerationEnrichRequest(BaseModel):
+    """Request to enrich generated candidates using AI."""
+
+    candidates: List[KeywordGenerationEnrichCandidate] = Field(
+        min_length=1,
+        description="Candidates from /keywords/generation/candidates output.",
+    )
+    max_aliases_per_candidate: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Maximum number of alias suggestions per candidate.",
+    )
+    merge_near_duplicates: bool = Field(
+        default=True,
+        description="When true, AI may suggest merging near-duplicate candidates.",
+    )
+
+    @field_validator("candidates", mode="before")
+    @classmethod
+    def normalize_candidates(cls, value: Any) -> List[KeywordGenerationEnrichCandidate]:
+        if value is None or not isinstance(value, list):
+            raise ValueError("candidates must be a non-empty list")
+        if len(value) == 0:
+            raise ValueError("candidates must contain at least one item")
+        return value
+
+
+class EnrichedCandidate(BaseModel):
+    """AI-enriched candidate with improved labels, categories, and aliases."""
+
+    candidate_id: str = Field(
+        description="Original candidate identifier.",
+    )
+    phrase: str = Field(description="Original phrase.")
+    suggested_label: Optional[str] = Field(
+        default=None,
+        description="AI-suggested label (stronger than auto-derived).",
+    )
+    suggested_category: Optional[str] = Field(
+        default=None,
+        description="AI-suggested category.",
+    )
+    suggested_aliases: List[str] = Field(
+        default_factory=list,
+        description="AI-suggested alias phrases (synonyms, variations).",
+    )
+    merged_with: List[str] = Field(
+        default_factory=list,
+        description="candidate_ids that were merged into this candidate.",
+    )
+    confidence_score: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="AI confidence in the enrichment quality.",
+    )
+    reason: Optional[str] = Field(
+        default=None,
+        description="Brief explanation for the enrichment suggestions.",
+    )
+    support_calls: int = Field(default=0, description="Number of unique calls.")
+    total_matches: int = Field(default=0, description="Total phrase matches.")
+    sample_call_ids: List[str] = Field(
+        default_factory=list, description="Sample call IDs."
+    )
+
+
+class KeywordGenerationEnrichResult(BaseModel):
+    """Result of an enrichment operation."""
+
+    enriched_candidates: List[EnrichedCandidate] = Field(
+        description="Enriched candidates ready for /publish.",
+    )
+    original_count: int = Field(description="Number of input candidates.")
+    enriched_count: int = Field(
+        description="Number of output candidates (after merges)."
+    )
+    merged_count: int = Field(description="Number of candidates merged into others.")
+    ai_model: Optional[str] = Field(
+        default=None, description="AI model used for enrichment."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pipeline schemas — full generate → enrich → publish pipeline
+# ---------------------------------------------------------------------------
+
+
+class KeywordGenerationPipelineRequest(KeywordGenerationBootstrapRequest):
+    """Full pipeline request: generate → enrich → publish → materialize."""
+
+    enrich_before_publish: bool = Field(
+        default=True,
+        description="When true, run AI enrichment between generation and publish.",
+    )
+    max_aliases_per_candidate: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Maximum number of alias suggestions per candidate during enrichment.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Alias expansion schemas — per-keyword alias suggestions
+# ---------------------------------------------------------------------------
+
+
+class KeywordAliasExpandRequest(BaseModel):
+    """Request to expand aliases for a single keyword."""
+
+    max_aliases: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Maximum number of alias suggestions.",
+    )
+    date_from: Optional[date] = Field(
+        default=None,
+        description="Optional start date for evidence window.",
+    )
+    date_to: Optional[date] = Field(
+        default=None,
+        description="Optional end date for evidence window.",
+    )
+
+
+class AliasSuggestion(BaseModel):
+    """Single alias suggestion from AI."""
+
+    phrase: str = Field(description="Suggested alias phrase.")
+    confidence_score: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0, description="AI confidence."
+    )
+    reason: Optional[str] = Field(default=None, description="Brief explanation.")
+
+
+class KeywordAliasExpandResult(BaseModel):
+    """Result of an alias expansion operation."""
+
+    keyword_id: str = Field(description="Keyword that was expanded.")
+    current_terms: List[str] = Field(description="Current terms for this keyword.")
+    suggested_aliases: List[AliasSuggestion] = Field(
+        description="AI-suggested new aliases."
+    )
+    suggestion_id: Optional[str] = Field(
+        default=None, description="ID for tracking the suggestion in DB."
+    )
+
+
+class AliasSuggestionEntry(BaseModel):
+    """Stored alias suggestion with status."""
+
+    suggestion_id: str = Field(description="UUID of the suggestion.")
+    keyword_id: str = Field(description="Keyword ID.")
+    suggested_aliases: List[dict] = Field(description="Original suggestion data.")
+    source_evidence: Optional[dict] = Field(default=None, description="Evidence used.")
+    ai_model: Optional[str] = Field(default=None, description="AI model used.")
+    status: str = Field(description="pending, approved, or rejected.")
+    created_at: str = Field(description="ISO 8601 timestamp.")
+
+
+# ---------------------------------------------------------------------------
+# Deep insights schemas — business insight generation
+# ---------------------------------------------------------------------------
+
+
+class InsightType(str, Enum):
+    pain_points = "pain_points"
+    objections = "objections"
+    trends = "trends"
+    follow_up_risk = "follow_up_risk"
+
+
+class SeverityLevel(str, Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
+class DeepInsightRequest(BaseModel):
+    """Request to generate deep business insights from analyses."""
+
+    insight_types: List[InsightType] = Field(
+        min_length=1,
+        description="Types of insights to generate.",
+    )
+    date_from: Optional[date] = Field(
+        default=None, description="Optional start date for analysis window."
+    )
+    date_to: Optional[date] = Field(
+        default=None, description="Optional end date for analysis window."
+    )
+    manager_id: Optional[str] = Field(
+        default=None, description="Optional manager filter."
+    )
+    role: Optional[str] = Field(default=None, description="Optional role filter.")
+    max_insights: int = Field(
+        default=20,
+        ge=1,
+        le=200,
+        description="Maximum number of insights per type.",
+    )
+
+    @field_validator("manager_id", "role", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class DeepInsightEntry(BaseModel):
+    """Single insight generated by AI."""
+
+    insight_type: str = Field(description="Type of insight.")
+    title: str = Field(description="Short title for the insight.")
+    description: str = Field(description="Detailed description.")
+    severity: SeverityLevel = Field(description="Severity level.")
+    affected_calls_count: int = Field(
+        default=0, description="Number of calls this insight affects."
+    )
+    evidence_summary: Optional[str] = Field(
+        default=None, description="Summary of supporting evidence."
+    )
+
+
+class DeepInsightResult(BaseModel):
+    """Result of a deep insights generation run."""
+
+    run_id: str = Field(description="UUID of the insights run.")
+    insight_counts: Dict[str, int] = Field(description="Number of insights per type.")
+    insights: List[DeepInsightEntry] = Field(description="All generated insights.")
+    ai_model: Optional[str] = Field(default=None, description="AI model used.")
+
+
+class DeepInsightRunEntry(BaseModel):
+    """Summary of a deep insights run."""
+
+    run_id: str = Field(description="UUID of the run.")
+    ai_model: Optional[str] = Field(default=None)
+    insight_types: List[str] = Field(description="Types requested.")
+    total_insights: int = Field(description="Total insights generated.")
+    created_at: str = Field(description="ISO 8601 timestamp.")

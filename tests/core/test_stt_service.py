@@ -37,7 +37,7 @@ class _FakeProcessor:
 
 def test_stt_service_applies_brand_corrections_and_builds_transcript(tmp_path):
     config = SimpleNamespace(brand_corrections={"kse": "KSE"})
-    service = SttService(_FakeProcessor(), config)
+    service = SttService(_FakeProcessor(), config)  # type: ignore[arg-type]
 
     request = SttRequest(
         call_id="c1",

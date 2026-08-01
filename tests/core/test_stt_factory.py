@@ -1,10 +1,12 @@
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from adapters.stt_canary import CanarySttAdapter
 from adapters.stt_faster_whisper import FasterWhisperSttAdapter
 from core.stt_factory import build_stt_adapter
+from domain.config import AppConfig
 
 
 def _base_config():
@@ -26,7 +28,7 @@ def _base_config():
 def test_build_stt_adapter_returns_faster_whisper():
     cfg = SimpleNamespace(**_base_config())
 
-    adapter = build_stt_adapter(cfg)
+    adapter = build_stt_adapter(cfg)  # type: ignore[arg-type]
 
     assert isinstance(adapter, FasterWhisperSttAdapter)
 
@@ -36,7 +38,7 @@ def test_build_stt_adapter_returns_canary():
     payload["stt_engine"] = "canary"
     cfg = SimpleNamespace(**payload)
 
-    adapter = build_stt_adapter(cfg)
+    adapter = build_stt_adapter(cfg)  # type: ignore[arg-type]
 
     assert isinstance(adapter, CanarySttAdapter)
 
@@ -47,4 +49,4 @@ def test_build_stt_adapter_rejects_unknown_engine():
     cfg = SimpleNamespace(**payload)
 
     with pytest.raises(ValueError):
-        build_stt_adapter(cfg)
+        build_stt_adapter(cfg)  # type: ignore[arg-type]

@@ -252,6 +252,52 @@ CREATE TABLE IF NOT EXISTS ai_apply (
 
 CREATE INDEX IF NOT EXISTS idx_ai_apply_analysis_id ON ai_apply(analysis_id);
 CREATE INDEX IF NOT EXISTS idx_ai_apply_applied_at ON ai_apply(applied_at);
+
+-- AI Alias Suggestions: track AI-suggested aliases with provenance
+CREATE TABLE IF NOT EXISTS ai_alias_suggestions (
+    suggestion_id     UUID PRIMARY KEY,
+    keyword_id        TEXT NOT NULL REFERENCES keywords(keyword_id) ON DELETE CASCADE,
+    suggested_aliases JSONB NOT NULL DEFAULT '[]'::jsonb,
+    source_evidence   JSONB,
+    ai_model          TEXT,
+    status            TEXT NOT NULL DEFAULT 'pending',
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_alias_suggestions_keyword_status
+    ON ai_alias_suggestions(keyword_id, status);
+
+-- Deep Insights Runs: track deep insights generation runs
+CREATE TABLE IF NOT EXISTS ai_deep_insights_runs (
+    run_id        UUID PRIMARY KEY,
+    ai_model      TEXT,
+    insight_types JSONB NOT NULL DEFAULT '[]'::jsonb,
+    request_data  JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_deep_insights_runs_created_at
+    ON ai_deep_insights_runs(created_at DESC);
+
+-- Deep Insights: individual insights from a run
+CREATE TABLE IF NOT EXISTS ai_deep_insights (
+    insight_id            UUID PRIMARY KEY,
+    run_id                UUID NOT NULL REFERENCES ai_deep_insights_runs(run_id) ON DELETE CASCADE,
+    insight_type          TEXT NOT NULL,
+    title                 TEXT NOT NULL DEFAULT '',
+    description           TEXT NOT NULL DEFAULT '',
+    severity              TEXT NOT NULL DEFAULT 'low',
+    affected_calls_count  INTEGER NOT NULL DEFAULT 0,
+    evidence_summary      TEXT,
+    metadata              JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_deep_insights_run_id ON ai_deep_insights(run_id);
+CREATE INDEX IF NOT EXISTS idx_ai_deep_insights_type_severity
+    ON ai_deep_insights(insight_type, severity);
+CREATE INDEX IF NOT EXISTS idx_ai_deep_insights_created_at
+    ON ai_deep_insights(created_at DESC);
 """
 
 DDL += "\n" + STT_RUNS_DDL

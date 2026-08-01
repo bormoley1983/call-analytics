@@ -2,7 +2,14 @@ import json
 
 from adapters.reporting_json import JsonReportingSource
 from api.routes import reports as report_routes
-from api.schemas import CustomersSortQuery, ManagersSortQuery, ReportFiltersQuery
+from api.schemas import (
+    CustomerSortBy,
+    CustomersSortQuery,
+    ManagerSortBy,
+    ManagersSortQuery,
+    ReportFiltersQuery,
+    SortOrder,
+)
 from core.reporting_service import (
     build_customer_followup_report,
     build_customers_report,
@@ -245,6 +252,7 @@ def test_build_keyword_ai_analysis_payload_filters_groups(monkeypatch):
     )
 
     response = report_routes._build_keyword_ai_analysis_payload("delivery")
+    assert response is not None
 
     assert response["analysis_id"] == "analysis-1"
     assert response["groups_total"] == 2
@@ -269,7 +277,7 @@ def test_managers_report_supports_sorting(monkeypatch, tmp_path):
 
     response = report_routes.managers_report(
         ReportFiltersQuery(),
-        ManagersSortQuery(sort_by="manager_name", order="asc"),
+        ManagersSortQuery(sort_by=ManagerSortBy.manager_name, order=SortOrder.asc),
     )
 
     assert response["all_managers"][0]["manager_name"] == "Manager 1"
@@ -450,7 +458,7 @@ def test_customers_report_supports_sorting(monkeypatch, tmp_path):
 
     response = report_routes.customers_report(
         ReportFiltersQuery(),
-        CustomersSortQuery(sort_by="customer_phone", order="asc"),
+        CustomersSortQuery(sort_by=CustomerSortBy.customer_phone, order=SortOrder.asc),
     )
 
     assert response["all_customers"][0]["customer_phone"] == "380971110000"

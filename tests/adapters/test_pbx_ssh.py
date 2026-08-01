@@ -27,23 +27,23 @@ def _file(name: str):
 def test_iter_remote_files_scans_only_requested_day_directories():
     sftp = FakeSftp(
         {
-            '/monitor/2026/06/06': [_dir('nested'), _file('call.wav')],
-            '/monitor/2026/06/06/nested': [_file('call-2.wav')],
+            "/monitor/2026/06/06": [_dir("nested"), _file("call.wav")],
+            "/monitor/2026/06/06/nested": [_file("call-2.wav")],
         }
     )
-    downloader = PbxSshDownloader(host='pbx', remote_dir='/monitor')
+    downloader = PbxSshDownloader(host="pbx", remote_dir="/monitor")
 
-    files = list(downloader._iter_remote_files(sftp, '/monitor', allowed_days={'2026/06/06'}))
+    files = list(downloader._iter_remote_files(sftp, "/monitor", allowed_days={"2026/06/06"}))  # type: ignore[arg-type]
 
-    assert files == ['2026/06/06/call.wav', '2026/06/06/nested/call-2.wav']
-    assert sftp.calls == ['/monitor/2026/06/06', '/monitor/2026/06/06/nested']
+    assert files == ["2026/06/06/call.wav", "2026/06/06/nested/call-2.wav"]
+    assert sftp.calls == ["/monitor/2026/06/06", "/monitor/2026/06/06/nested"]
 
 
 def test_iter_remote_files_skips_missing_requested_day_directory():
     sftp = FakeSftp({})
-    downloader = PbxSshDownloader(host='pbx', remote_dir='/monitor')
+    downloader = PbxSshDownloader(host="pbx", remote_dir="/monitor")
 
-    files = list(downloader._iter_remote_files(sftp, '/monitor', allowed_days={'2026/06/06'}))
+    files = list(downloader._iter_remote_files(sftp, "/monitor", allowed_days={"2026/06/06"}))  # type: ignore[arg-type]
 
     assert files == []
-    assert sftp.calls == ['/monitor/2026/06/06']
+    assert sftp.calls == ["/monitor/2026/06/06"]

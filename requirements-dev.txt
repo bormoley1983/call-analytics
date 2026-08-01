@@ -1,4 +1,5 @@
 -r requirements-stt-whisper.txt
+-r requirements-qdrant.txt
 
 debugpy>=1.8.19,<2.0.0
 mypy

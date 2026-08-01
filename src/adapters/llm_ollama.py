@@ -1,6 +1,8 @@
 import json
 import logging
+import os
 import re
+import threading
 import time
 from typing import Any, Dict, List, Tuple
 
@@ -10,6 +12,66 @@ from core.rules import ensure_analysis_schema, truncate_text_for_analysis
 from domain.config import AppConfig
 
 logger = logging.getLogger(__name__)
+
+
+class _RateLimiter:
+    """Token-bucket rate limiter for Ollama requests.
+
+    Prevents multiple analysis workers from overwhelming the LLM server
+    by limiting concurrent in-flight requests and enforcing a minimum
+    interval between requests.
+
+    Configuration (environment variables):
+        OLLAMA_RATE_LIMIT: maximum concurrent requests (default: 4, 0=disabled)
+        OLLAMA_RATE_INTERVAL: minimum seconds between requests (default: 0.5)
+    """
+
+    def __init__(self) -> None:
+        self._max_concurrent = _parse_int_env("OLLAMA_RATE_LIMIT", 4)
+        self._interval = float(os.getenv("OLLAMA_RATE_INTERVAL", "0.5"))
+        self._active = 0
+        self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
+
+    def acquire(self) -> None:
+        """Block until a slot is available, then acquire it."""
+        if self._max_concurrent <= 0:
+            return  # Rate limiting disabled
+
+        with self._condition:
+            while self._active >= self._max_concurrent:
+                self._condition.wait()
+            self._active += 1
+
+    def release(self) -> None:
+        """Release a slot and optionally wait before allowing the next request."""
+        if self._max_concurrent <= 0:
+            return
+
+        with self._condition:
+            self._active -= 1
+            self._condition.notify()
+
+        # Enforce minimum interval between requests
+        if self._interval > 0:
+            time.sleep(self._interval)
+
+
+def _parse_int_env(key: str, default: int) -> int:
+    """Parse an environment variable as an integer, falling back to a default."""
+    raw = os.environ.get(key)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%r (not an integer), using default %d", key, raw, default
+        )
+        return default
+
+
+_ollama_rate_limiter = _RateLimiter()
 
 # ----------------------------
 # CONSTANTS
@@ -117,7 +179,7 @@ class OllamaLlm:
 def _ollama_generate(
     prompt: str, config: AppConfig, temperature: float = 0.2, force_json: bool = False
 ) -> str:
-    """Generate text using Ollama with retry logic."""
+    """Generate text using Ollama with retry logic and rate limiting."""
     last_err: Exception | None = None
 
     payload = {
@@ -135,6 +197,7 @@ def _ollama_generate(
         payload["format"] = "json"
 
     for attempt in range(config.ollama_retries):
+        _ollama_rate_limiter.acquire()
         try:
             r = requests.post(
                 f"{config.ollama_url}/api/generate",
@@ -157,16 +220,18 @@ def _ollama_generate(
             return data.get("response", "")
         except Exception as e:
             last_err = e
-            if attempt < config.ollama_retries - 1:
-                wait_time = 2**attempt
-                logger.warning(
-                    "Ollama request failed (attempt %d/%d), retrying in %ds: %s",
-                    attempt + 1,
-                    config.ollama_retries,
-                    wait_time,
-                    e,
-                )
-                time.sleep(wait_time)
+        finally:
+            _ollama_rate_limiter.release()
+        if attempt < config.ollama_retries - 1:
+            wait_time = 2**attempt
+            logger.warning(
+                "Ollama request failed (attempt %d/%d), retrying in %ds: %s",
+                attempt + 1,
+                config.ollama_retries,
+                wait_time,
+                last_err,
+            )
+            time.sleep(wait_time)
 
     raise RuntimeError(
         f"Ollama request failed after {config.ollama_retries} retries: {last_err!r}"
@@ -174,19 +239,46 @@ def _ollama_generate(
 
 
 def _extract_json_object(raw: str) -> Dict[str, Any]:
-    """Extract JSON object from text response using brace-counting."""
+    """Extract JSON object from text response.
+
+    Uses a state machine that tracks brace depth while respecting string
+    literals (so braces inside quoted strings don't affect the count)
+    and backslash escapes.
+    """
     start = raw.find("{")
     if start == -1:
         raise ValueError("No JSON object found in response")
+
     depth = 0
+    in_string = False
+    escaped = False
+    end = -1
+
     for i in range(start, len(raw)):
-        if raw[i] == "{":
+        ch = raw[i]
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            if in_string:
+                escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
             depth += 1
-        elif raw[i] == "}":
+        elif ch == "}":
             depth -= 1
             if depth == 0:
-                return json.loads(raw[start : i + 1])
-    raise ValueError("No valid JSON object found in response")
+                end = i + 1
+                break
+
+    if end == -1:
+        raise ValueError("No valid JSON object found in response")
+    return json.loads(raw[start:end])
 
 
 def translate_segments_to_uk(
@@ -722,9 +814,10 @@ def ollama_generate_deep_insights(
         raise ValueError(f"Unknown insight type: {insight_type}")
 
     started_at = time.perf_counter()
+    # Records are already capped by the caller (_collect_analysis_records).
     prompt = template.format(
         analysis_records_json=json.dumps(
-            analysis_records[:100], ensure_ascii=False, indent=2
+            analysis_records, ensure_ascii=False, indent=2
         ),
     )
     logger.info(

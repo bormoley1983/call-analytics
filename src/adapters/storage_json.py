@@ -1,13 +1,31 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_call_date(date_str: str) -> Optional[datetime]:
+    """Parse a PBX date string (YYYYMMDD) into a timezone-aware datetime.
+
+    Returns None if the string is empty or doesn't match the expected format,
+    rather than raising ValueError on bad data.
+    """
+    if not date_str:
+        return None
+    try:
+        return datetime.strptime(date_str, "%Y%m%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        logger.warning("Invalid date format '%s', expected YYYYMMDD", date_str)
+        return None
 
 
 class JsonStorage:
@@ -129,11 +147,7 @@ class JsonStorage:
         stage = str(data.get("_pipeline_stage") or "transcribed")
         status = "translated" if stage == "translated" else "transcribed"
         date_str = str(call_meta.get("date") or "").strip()
-        call_dt = (
-            datetime.strptime(date_str, "%Y%m%d").replace(tzinfo=timezone.utc)
-            if date_str
-            else None
-        )
+        call_dt = _parse_call_date(date_str)
         self.upsert_call_metadata(
             call_id=call_id,
             call_datetime=call_dt,
@@ -149,11 +163,7 @@ class JsonStorage:
             raw_call_meta if isinstance(raw_call_meta, dict) else {}
         )
         date_str = str(call_meta.get("date") or "").strip()
-        call_dt = (
-            datetime.strptime(date_str, "%Y%m%d").replace(tzinfo=timezone.utc)
-            if date_str
-            else None
-        )
+        call_dt = _parse_call_date(date_str)
         self.upsert_call_metadata(
             call_id=call_id,
             source_file=str(data.get("source_file") or "") or None,
@@ -197,11 +207,7 @@ class JsonStorage:
             meta = item.get("meta", {}) or {}
             call_id = meta.get("call_id")
             date_str = str(meta.get("date") or "").strip()
-            call_dt = (
-                datetime.strptime(date_str, "%Y%m%d").replace(tzinfo=timezone.utc)
-                if date_str
-                else None
-            )
+            call_dt = _parse_call_date(date_str)
             if call_id:
                 self.upsert_call_metadata(
                     call_id=call_id,

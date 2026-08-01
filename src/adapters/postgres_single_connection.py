@@ -96,7 +96,8 @@ class SingleConnectionPostgresAdapter:
             try:
                 conn = self._getconn()
                 result = fn(conn)
-                self._rollback_quietly(conn)
+                # No rollback needed after read-only queries — the connection
+                # is already in a clean state.
                 return result
             except RETRYABLE_CONNECTION_ERRORS as exc:
                 last_error = exc

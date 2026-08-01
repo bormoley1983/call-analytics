@@ -32,17 +32,17 @@ def test_appconfig_exists():
 def test_configure_process_env_preserves_zero_limit(monkeypatch):
     monkeypatch.setenv("PROCESS_LIMIT", "30")
 
-    runner._configure_process_env(
+    overrides = runner._configure_process_env(
         ProcessRequest(
             days=None, limit=0, force_reanalyze=False, force_retranscribe=False
         )
     )
 
-    assert runner.os.environ["PROCESS_LIMIT"] == "0"
+    assert overrides["PROCESS_LIMIT"] == "0"
 
 
 def test_configure_process_env_sets_core_flags_only(monkeypatch):
-    runner._configure_process_env(
+    overrides = runner._configure_process_env(
         ProcessRequest(
             days=None,
             limit=1,
@@ -50,8 +50,8 @@ def test_configure_process_env_sets_core_flags_only(monkeypatch):
             force_retranscribe=False,
         )
     )
-    assert runner.os.environ["FORCE_REANALYZE"] == "0"
-    assert runner.os.environ["FORCE_RETRANSCRIBE"] == "0"
+    assert overrides["FORCE_REANALYZE"] == "0"
+    assert overrides["FORCE_RETRANSCRIBE"] == "0"
 
 
 def _minimal_pipeline_config():

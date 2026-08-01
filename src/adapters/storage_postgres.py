@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -10,6 +12,8 @@ from psycopg2 import pool as pg_pool
 from psycopg2.extras import Json
 
 from adapters.stt_runs_schema import STT_RUNS_DDL
+
+logger = logging.getLogger(__name__)
 
 
 def parse_call_datetime(
@@ -378,16 +382,48 @@ def _analysis_row(call_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _parse_int_env(key: str, default: int) -> int:
+    """Parse an environment variable as an integer, falling back to a default."""
+    raw = os.environ.get(key)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%r (not an integer), using default %d", key, raw, default
+        )
+        return default
+
+
 class PostgresStorage:
     """Secondary storage layer — syncs processed call data to Postgres for reporting.
 
     Uses a ThreadedConnectionPool so multiple analysis workers can safely
     read/write concurrently — a single psycopg2 connection is not thread-safe.
+
+    Connection pool sizing (override via environment variables):
+        PG_POOL_MIN: minimum idle connections (default: 1)
+        PG_POOL_MAX: maximum connections (default: 10)
     """
 
-    def __init__(self, dsn: str, max_connections: int = 10):
+    def __init__(
+        self,
+        dsn: str,
+        min_connections: int | None = None,
+        max_connections: int | None = None,
+    ):
         self.dsn = dsn
-        self.max_connections = max_connections
+        self.min_connections = (
+            min_connections
+            if min_connections is not None
+            else _parse_int_env("PG_POOL_MIN", 1)
+        )
+        self.max_connections = (
+            max_connections
+            if max_connections is not None
+            else _parse_int_env("PG_POOL_MAX", 10)
+        )
         self._pool: Optional[pg_pool.ThreadedConnectionPool] = None
 
     def _require_pool(self) -> pg_pool.ThreadedConnectionPool:
@@ -406,7 +442,17 @@ class PostgresStorage:
     # --- lifecycle ---
 
     def ensure_ready(self) -> None:
-        self._pool = pg_pool.ThreadedConnectionPool(1, self.max_connections, self.dsn)
+        if self.max_connections < self.min_connections:
+            logger.warning(
+                "PG_POOL_MAX (%d) < PG_POOL_MIN (%d), adjusting max to %d",
+                self.max_connections,
+                self.min_connections,
+                self.min_connections,
+            )
+            self.max_connections = self.min_connections
+        self._pool = pg_pool.ThreadedConnectionPool(
+            self.min_connections, self.max_connections, self.dsn
+        )
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
@@ -479,6 +525,132 @@ class PostgresStorage:
 
     def save_analysis(self, call_id: str, data: Dict[str, Any]) -> None:
         self.upsert_analysis(call_id, data)
+
+    def save_call_atomically(
+        self,
+        call_id: str,
+        transcript: Dict[str, Any],
+        analysis: Dict[str, Any],
+        call_metadata: Dict[str, Any] | None = None,
+    ) -> None:
+        """Atomically upsert transcript, analysis, and calls metadata in a single transaction.
+
+        If any of the three upserts fail, the entire transaction rolls back so that
+        no partial data is committed. This prevents inconsistent states where the
+        transcript exists but the analysis does not (or vice versa).
+
+        Args:
+            call_id: Unique call identifier.
+            transcript: Transcript data dict.
+            analysis: Analysis data dict.
+            call_metadata: Optional dict with source_file, source_path, date, time keys
+                for the calls table upsert.
+        """
+        t_row = _transcript_row(call_id, transcript)
+        a_row = _analysis_row(call_id, analysis)
+
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                # 1. Upsert transcript
+                cur.execute(
+                    """INSERT INTO transcripts (call_id, pipeline_stage, data)
+                       VALUES (%s, %s, %s)
+                       ON CONFLICT (call_id) DO UPDATE SET
+                         pipeline_stage = EXCLUDED.pipeline_stage,
+                         data = EXCLUDED.data""",
+                    (t_row["call_id"], t_row["pipeline_stage"], t_row["data"]),
+                )
+
+                # 2. Upsert analysis
+                cur.execute(
+                    """INSERT INTO analyses
+                         (call_id, direction, manager_id, manager_name, role,
+                          spam_probability, effective_call, intent, outcome,
+                          summary, audio_seconds, call_datetime, src_number,
+                                  dst_number, key_questions, objections, analysis_error, input_text_sha256, data)
+                              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT (call_id) DO UPDATE SET
+                         direction        = EXCLUDED.direction,
+                         manager_id       = EXCLUDED.manager_id,
+                         manager_name     = EXCLUDED.manager_name,
+                         role             = EXCLUDED.role,
+                         spam_probability = EXCLUDED.spam_probability,
+                         effective_call   = EXCLUDED.effective_call,
+                         intent           = EXCLUDED.intent,
+                         outcome          = EXCLUDED.outcome,
+                         summary          = EXCLUDED.summary,
+                         audio_seconds    = EXCLUDED.audio_seconds,
+                         call_datetime    = EXCLUDED.call_datetime,
+                         src_number       = EXCLUDED.src_number,
+                         dst_number       = EXCLUDED.dst_number,
+                         key_questions    = EXCLUDED.key_questions,
+                         objections       = EXCLUDED.objections,
+                         analysis_error   = EXCLUDED.analysis_error,
+                         input_text_sha256 = EXCLUDED.input_text_sha256,
+                         data             = EXCLUDED.data""",
+                    (
+                        a_row["call_id"],
+                        a_row["direction"],
+                        a_row["manager_id"],
+                        a_row["manager_name"],
+                        a_row["role"],
+                        a_row["spam_probability"],
+                        a_row["effective_call"],
+                        a_row["intent"],
+                        a_row["outcome"],
+                        a_row["summary"],
+                        a_row["audio_seconds"],
+                        a_row["call_datetime"],
+                        a_row["src_number"],
+                        a_row["dst_number"],
+                        a_row["key_questions"],
+                        a_row["objections"],
+                        a_row["analysis_error"],
+                        a_row["input_text_sha256"],
+                        a_row["data"],
+                    ),
+                )
+
+                # 3. Upsert calls metadata
+                call_meta = call_metadata or analysis.get("call_meta") or {}
+                src_file = call_meta.get("source_file")
+                src_path = call_meta.get("source_path")
+                call_dt = parse_call_datetime(
+                    call_meta.get("date") or "", call_meta.get("time")
+                )
+
+                cur.execute(
+                    """
+                    INSERT INTO calls (
+                        call_id, source_file, source_path, call_datetime,
+                        status, error_message, analyzed_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, now(), now())
+                    ON CONFLICT (call_id) DO UPDATE SET
+                        source_file = COALESCE(EXCLUDED.source_file, calls.source_file),
+                        source_path = COALESCE(EXCLUDED.source_path, calls.source_path),
+                        call_datetime = COALESCE(EXCLUDED.call_datetime, calls.call_datetime),
+                        status = EXCLUDED.status,
+                        error_message = COALESCE(NULLIF(EXCLUDED.error_message, ''), calls.error_message),
+                        analyzed_at = COALESCE(calls.analyzed_at, EXCLUDED.analyzed_at),
+                        updated_at = now()
+                    """,
+                    (
+                        call_id,
+                        src_file,
+                        src_path,
+                        call_dt,
+                        "processed",
+                        a_row["analysis_error"],
+                    ),
+                )
+
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._putconn(conn)
 
     def mark_analysis_stale_if_text_changed(
         self, call_id: str, text_sha256: str
@@ -621,7 +793,6 @@ class PostgresStorage:
                          manager_id       = EXCLUDED.manager_id,
                          manager_name     = EXCLUDED.manager_name,
                          role             = EXCLUDED.role,
-                         data             = EXCLUDED.data,
                          spam_probability = EXCLUDED.spam_probability,
                          effective_call   = EXCLUDED.effective_call,
                          intent           = EXCLUDED.intent,

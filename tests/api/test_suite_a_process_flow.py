@@ -3,7 +3,7 @@
 Suite A: Process Flow Integration Tests (DEVPLAN_ONLINE_TESTS_TBD_20_03_2026.md)
 
 Tests the end-to-end process flow via API endpoints:
-1. POST /jobs/process → job lifecycle (pending → running → completed)
+1. POST /jobs/process → job lifecycle (pending → running → done/failed)
 2. Call status transitions (discovered → transcribed → analyzed)
 3. Auto keyword refresh and AI analysis triggers
 4. Job concurrency control (reject duplicate active jobs)
@@ -12,10 +12,9 @@ Tests the end-to-end process flow via API endpoints:
 
 from __future__ import annotations
 
-import time
-from typing import Any, Dict
-
 import pytest
+
+from tests.helpers.job_polling import poll_job_status
 
 
 @pytest.mark.integration
@@ -26,9 +25,9 @@ class TestProcessFlowIntegration:
     def test_process_job_lifecycle(self, api_client) -> None:
         """Test: POST /jobs/process creates job with proper lifecycle transitions.
 
-        Expected flow: pending → running → completed/failed
+        Expected flow: pending → running → done/failed
         Note: In test environments without GPU (for STT), jobs may fail.
-        We verify the job reaches a terminal state (completed or failed).
+        We verify the job reaches a terminal state (done or failed).
         """
         # Submit process job
         response = api_client.post("/jobs/process", json={})
@@ -42,12 +41,12 @@ class TestProcessFlowIntegration:
 
         job_id = body["job_id"]
 
-        # Poll for terminal state (completed or failed — STT may fail without GPU)
-        final = _poll_job_status(
-            api_client, job_id, expected_final_status="completed", timeout=120
+        # Poll for terminal state (done or failed — STT may fail without GPU)
+        final = poll_job_status(
+            api_client, job_id, expected_final_status="done", timeout=120
         )
         assert final.get("status") in (
-            "completed",
+            "done",
             "failed",
         ), f"Job did not reach terminal state: {final.get('status')}"
 
@@ -87,8 +86,8 @@ class TestProcessFlowIntegration:
 
         job_id = response.json()["job_id"]
         try:
-            _poll_job_status(
-                api_client, job_id, expected_final_status="completed", timeout=120
+            poll_job_status(
+                api_client, job_id, expected_final_status="done", timeout=120
             )
         except TimeoutError:
             # Job may fail without GPU; still check report structure
@@ -102,33 +101,6 @@ class TestProcessFlowIntegration:
         assert (
             "freshness" in body or "freshness_metadata" in body
         ), f"Freshness metadata not found in response: {list(body.keys())}"
-
-
-def _poll_job_status(
-    api_client, job_id: str, expected_final_status: str, timeout: int = 60
-) -> Dict[str, Any]:
-    """Poll job status until completion or terminal state.
-
-    Returns the last known job body even if the job reached a failed/error state.
-    Raises TimeoutError only if the poll loop times out without reaching any terminal state.
-    """
-    start = time.time()
-    last_body: Dict[str, Any] = {}
-    while time.time() - start < timeout:
-        response = api_client.get(f"/jobs/{job_id}")
-        if response.status_code == 200:
-            body = response.json()
-            last_body = body
-            status = body.get("status")
-            if status == expected_final_status:
-                return body
-            if status in ("failed", "error"):
-                return body  # Return the failed state so callers can inspect it
-        time.sleep(2)
-
-    raise TimeoutError(
-        f"Job {job_id} did not reach status '{expected_final_status}' within {timeout}s"
-    )
 
 
 # pytest markers: @pytest.mark.integration @pytest.mark.postgres

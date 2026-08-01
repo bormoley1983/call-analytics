@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import cast, Iterable
+from typing import Iterable, cast
 
 from adapters.postgres_single_connection import (
     RETRYABLE_CONNECTION_ERRORS,
@@ -12,8 +12,12 @@ from domain.reporting import ReportCallRecord, ReportFilters
 class PostgresReportingSource(SingleConnectionPostgresAdapter):
     source_name = "postgres"
 
+    _ALLOWED_PHONE_COLUMNS = {"src_number", "dst_number"}
+
     @staticmethod
     def _normalize_phone_sql(column: str) -> str:
+        if column not in PostgresReportingSource._ALLOWED_PHONE_COLUMNS:
+            raise ValueError(f"Unexpected phone column: {column!r}")
         digits = f"regexp_replace(COALESCE({column}, ''), '[^0-9]', '', 'g')"
         trimmed = (
             f"CASE WHEN {digits} LIKE '00%' THEN substr({digits}, 3) ELSE {digits} END"
@@ -535,7 +539,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 if not bucket:
                     continue
                 managers = cast(list[dict[str, object]], bucket["managers"])
-                managers.append(                    {
+                managers.append(
+                    {
                         "manager_id": str(manager_id),
                         "manager_name": str(manager_name),
                         "role": str(role),

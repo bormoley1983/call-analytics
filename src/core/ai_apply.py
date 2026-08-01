@@ -21,12 +21,14 @@ Safety rules:
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
 from adapters.ai_apply_postgres import PostgresAiApplyStore
 from api.schemas import AIApplyAction, AIMutation, AISkippedAction
+from domain.keywords import KeywordDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -319,12 +321,12 @@ def _do_merge(keyword_source: Any, keyword_id: str, detail: Dict[str, Any]) -> N
             merged_terms.append(term)
             new_terms.add(term)
 
-    # Update target with merged terms
-    from domain.keywords import KeywordDefinition
-
+    # Update target with merged terms — preserve existing label unless
+    # the AI explicitly suggested a non-empty replacement
+    suggested_label = detail.get("suggested_label")
     updated_target = KeywordDefinition(
         keyword_id=target_kw.keyword_id,
-        label=target_kw.label or (detail.get("suggested_label") or ""),
+        label=suggested_label if suggested_label else target_kw.label,
         category=target_kw.category,
         terms=merged_terms,
         match_fields=target_kw.match_fields,
@@ -343,8 +345,6 @@ def _do_rename(keyword_source: Any, keyword_id: str, detail: Dict[str, Any]) -> 
     if kw is None:
         logger.warning("Rename skipped: keyword %s not found", keyword_id)
         return
-
-    from domain.keywords import KeywordDefinition
 
     new_label = detail.get("suggested_label") or kw.label
     new_terms = detail.get("suggested_terms") or kw.terms
@@ -369,8 +369,6 @@ def _do_expand_aliases(
     if kw is None:
         logger.warning("Expand aliases skipped: keyword %s not found", keyword_id)
         return
-
-    from domain.keywords import KeywordDefinition
 
     suggested_terms = detail.get("suggested_terms", [])
     current_terms = list(kw.terms) if kw.terms else []
@@ -403,8 +401,6 @@ def _do_deactivate(keyword_source: Any, keyword_id: str) -> None:
     if kw is None:
         logger.warning("Deactivate skipped: keyword %s not found", keyword_id)
         return
-
-    from domain.keywords import KeywordDefinition
 
     updated = KeywordDefinition(
         keyword_id=kw.keyword_id,
@@ -487,7 +483,10 @@ def apply_approved_actions(
                 keyword_refreshed = True
                 reporting_source.close()
         except Exception:
-            logger.exception("Keyword refresh after AI apply failed")
+            logger.exception(
+                "Keyword refresh after AI apply failed; "
+                "mutations were applied but materialization is stale"
+            )
 
     # Step 5: Persist apply record
     actions_applied_dicts = []
@@ -536,8 +535,6 @@ def apply_approved_actions(
 
 def _get_reporting_source_for_refresh() -> Any | None:
     """Get reporting source for keyword materialization refresh."""
-    import os
-
     dsn = os.getenv("POSTGRES_DSN")
     if dsn:
         from adapters.reporting_postgres import PostgresReportingSource

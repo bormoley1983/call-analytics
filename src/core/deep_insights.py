@@ -14,6 +14,39 @@ logger = logging.getLogger(__name__)
 VALID_INSIGHT_TYPES = {"pain_points", "objections", "trends", "follow_up_risk"}
 
 
+def _validate_record_quality(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Validate that analysis records have sufficient content for meaningful insights.
+
+    A record is considered "usable" if it has at least one non-empty field
+    (summary, key_questions, or objections). The check fires a warning when
+    fewer than 5 records are usable — too few for the LLM to extract patterns.
+
+    Returns a dict with usable_records count and any warnings.
+    """
+    warnings: List[str] = []
+    total = len(records)
+    usable = 0
+    empty_all = 0
+
+    for rec in records:
+        summary = (rec.get("summary") or "").strip()
+        questions = rec.get("key_questions") or []
+        objections = rec.get("objections") or []
+
+        if summary or questions or objections:
+            usable += 1
+        else:
+            empty_all += 1
+
+    if empty_all > total * 0.5:
+        warnings.append(f"{empty_all}/{total} records have no content at all")
+
+    return {
+        "usable_records": usable,
+        "warnings": warnings,
+    }
+
+
 def generate_deep_insights(
     reporting_source: ReportingSource,
     llm: LlmPort,
@@ -34,8 +67,11 @@ def generate_deep_insights(
                 f"Invalid insight type: {it}. Must be one of {VALID_INSIGHT_TYPES}"
             )
 
-    # Collect analysis records as dicts for LLM consumption
-    analysis_records = _collect_analysis_records(reporting_source, filters)
+    # Collect analysis records as dicts for LLM consumption.
+    # LLM prompt templates cap at 100 records, so we don't collect more than that.
+    analysis_records = _collect_analysis_records(
+        reporting_source, filters, max_records=100
+    )
 
     if not analysis_records:
         logger.warning("No analysis records available for deep insights")
@@ -43,6 +79,22 @@ def generate_deep_insights(
             "run_id": str(uuid.uuid4()),
             "insight_counts": {it: 0 for it in insight_types},
             "insights": [],
+        }
+
+    quality = _validate_record_quality(analysis_records)
+    if quality["usable_records"] == 0 and quality["warnings"]:
+        logger.warning(
+            "Insufficient data quality for deep insights: %d/%d records have "
+            "meaningful content (%s). Skipping LLM calls.",
+            quality["usable_records"],
+            len(analysis_records),
+            ", ".join(quality["warnings"]),
+        )
+        return {
+            "run_id": str(uuid.uuid4()),
+            "insight_counts": {it: 0 for it in insight_types},
+            "insights": [],
+            "quality_warnings": quality["warnings"],
         }
 
     logger.info(
@@ -90,8 +142,16 @@ def generate_deep_insights(
 def _collect_analysis_records(
     reporting_source: ReportingSource,
     filters: Any | None,
+    max_records: int = 100,
 ) -> List[Dict[str, Any]]:
-    """Collect analysis records as dicts suitable for LLM prompts."""
+    """Collect analysis records as dicts suitable for LLM prompts.
+
+    Args:
+        reporting_source: Source of call records.
+        filters: Date/manager/role filters (dict, ReportFilters, or None).
+        max_records: Maximum number of records to collect (default 100,
+            aligned with the LLM prompt template limit).
+    """
     # Normalize dict filters to ReportFilters
     if isinstance(filters, dict):
         rf = ReportFilters(
@@ -129,7 +189,7 @@ def _collect_analysis_records(
             }
         )
 
-    return records[:200]  # Cap at 200 records for LLM context window
+    return records[:max_records]
 
 
 def store_deep_insights_run(

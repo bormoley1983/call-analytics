@@ -46,11 +46,33 @@ class PbxSshDownloader:
             self.remote_dir,
         )
         self._client = paramiko.SSHClient()
+        host_keys_loaded = False
         if self.known_hosts_path and Path(self.known_hosts_path).exists():
             self._client.load_host_keys(self.known_hosts_path)
+            host_keys_loaded = True
+
+        if not host_keys_loaded:
+            try:
+                self._client.load_system_host_keys()
+                # System host keys file may exist but be empty in Docker containers.
+                # After load_system_host_keys, check if any keys are loaded.
+                host_keys = self._client.get_host_keys()
+                host_keys_loaded = bool(hasattr(host_keys, "keys") and len(host_keys))
+            except Exception:
+                pass  # No system host keys available
+
+        if not host_keys_loaded:
+            logger.warning(
+                "No SSH host keys found for %s:%d (known_hosts_path=%s, system_keys=empty). "
+                "Using AutoAddPolicy for first-time connection. "
+                "For production, provide a known_hosts file via PBX_KNOWN_HOSTS_PATH.",
+                self.host,
+                self.port,
+                self.known_hosts_path,
+            )
+            self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         else:
-            self._client.load_system_host_keys()
-        self._client.set_missing_host_key_policy(paramiko.RejectPolicy())  # secure default
+            self._client.set_missing_host_key_policy(paramiko.RejectPolicy())
 
         if self.key_path:
             self._client.connect(
@@ -107,7 +129,9 @@ class PbxSshDownloader:
         """
         Recursively yield file paths under remote_root as POSIX-relative paths.
         """
-        stack: List[tuple[str, str]] = list(reversed(self._iter_scan_roots(remote_root, allowed_days)))
+        stack: List[tuple[str, str]] = list(
+            reversed(self._iter_scan_roots(remote_root, allowed_days))
+        )
         directories_scanned = 0
         files_seen = 0
 
@@ -117,7 +141,11 @@ class PbxSshDownloader:
                 entries = sftp.listdir_attr(current_dir)
             except OSError as exc:
                 if allowed_days and rel_prefix:
-                    logger.info("Skipping unavailable PBX day directory: %s (%s)", current_dir, exc)
+                    logger.info(
+                        "Skipping unavailable PBX day directory: %s (%s)",
+                        current_dir,
+                        exc,
+                    )
                     continue
                 raise
 
@@ -131,7 +159,9 @@ class PbxSshDownloader:
                 )
 
             for entry in entries:
-                rel_path = f"{rel_prefix}/{entry.filename}" if rel_prefix else entry.filename
+                rel_path = (
+                    f"{rel_prefix}/{entry.filename}" if rel_prefix else entry.filename
+                )
                 remote_path = f"{current_dir}/{entry.filename}"
                 mode = entry.st_mode if entry.st_mode is not None else 0
                 if stat.S_ISDIR(mode):
@@ -152,7 +182,14 @@ class PbxSshDownloader:
         if len(parts) < 4:
             return None
         y, m, d = parts[0], parts[1], parts[2]
-        if len(y) == 4 and y.isdigit() and len(m) == 2 and m.isdigit() and len(d) == 2 and d.isdigit():
+        if (
+            len(y) == 4
+            and y.isdigit()
+            and len(m) == 2
+            and m.isdigit()
+            and len(d) == 2
+            and d.isdigit()
+        ):
             return f"{y}/{m}/{d}"
         return None
 
@@ -182,7 +219,9 @@ class PbxSshDownloader:
             sorted(allowed_days) if allowed_days else "all",
         )
         with self._client.open_sftp() as sftp:
-            for rel_path in self._iter_remote_files(sftp, self.remote_dir, allowed_days=allowed_days):
+            for rel_path in self._iter_remote_files(
+                sftp, self.remote_dir, allowed_days=allowed_days
+            ):
                 scanned += 1
                 if allowed_days:
                     day_key = self._extract_day_key(rel_path)
@@ -203,10 +242,36 @@ class PbxSshDownloader:
                 local_path.parent.mkdir(parents=True, exist_ok=True)
                 remote_path = f"{self.remote_dir.rstrip('/')}/{rel_path}"
                 logger.info("Downloading PBX recording: %s", rel_path)
-                sftp.get(remote_path, str(local_path))
-                downloaded.append(local_path)
-                if on_download:
-                    on_download(rel_path)
+
+                # Verify file size after download to catch incomplete transfers
+                try:
+                    sftp.get(remote_path, str(local_path))
+                    remote_stat = sftp.stat(remote_path)
+                    remote_size = (
+                        remote_stat.st_size if remote_stat.st_size is not None else -1
+                    )
+                    local_size = local_path.stat().st_size
+
+                    if remote_size > 0 and local_size != remote_size:
+                        logger.error(
+                            "Download size mismatch for %s: remote=%d bytes, local=%d bytes — "
+                            "removing incomplete file",
+                            rel_path,
+                            remote_size,
+                            local_size,
+                        )
+                        local_path.unlink(missing_ok=True)
+                        continue
+
+                    downloaded.append(local_path)
+                    if on_download:
+                        on_download(rel_path)
+                except OSError as exc:
+                    logger.error("Failed to download %s: %s", rel_path, exc)
+                    # Clean up partial file if it exists
+                    if local_path.exists():
+                        local_path.unlink(missing_ok=True)
+                    continue
 
         logger.info(
             "PBX scan complete: scanned=%d matched=%d downloaded=%d skipped_existing=%d skipped_day_filter=%d",

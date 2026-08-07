@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Core logic for applying AI-suggested keyword catalog mutations.
 
 This module resolves actions from a persisted analysis, validates them against
@@ -22,9 +21,8 @@ from __future__ import annotations
 
 import logging
 import os
-import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from adapters.ai_apply_postgres import PostgresAiApplyStore
 from api.schemas import AIApplyAction, AIMutation, AISkippedAction
@@ -39,9 +37,9 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_actions_from_analysis(
-    analysis: Dict[str, Any],
-    request_actions: List[AIApplyAction],
-) -> List[Dict[str, Any]]:
+    analysis: dict[str, Any],
+    request_actions: list[AIApplyAction],
+) -> list[dict[str, Any]]:
     """Resolve AIApplyActions (by indices or keyword_id) to concrete action dicts.
 
     The analysis dict has an "items" key with grouped items by item_type.
@@ -52,11 +50,11 @@ def _resolve_actions_from_analysis(
     In that case we search groups for matching actions.
     """
     items = analysis.get("items", {})
-    stored_actions: List[Dict[str, Any]] = items.get("action", [])
+    stored_actions: list[dict[str, Any]] = items.get("action", [])
     ai_analysis = analysis.get("ai_analysis", {})
-    groups: List[Dict[str, Any]] = ai_analysis.get("groups", [])
+    groups: list[dict[str, Any]] = ai_analysis.get("groups", [])
 
-    resolved: List[Dict[str, Any]] = []
+    resolved: list[dict[str, Any]] = []
 
     for req_action in request_actions:
         if req_action.keyword_id and (
@@ -105,8 +103,8 @@ def _resolve_actions_from_analysis(
 
 
 def _find_action_from_groups(
-    groups: List[Dict[str, Any]], group_index: int, action_index: int
-) -> Optional[Dict[str, Any]]:
+    groups: list[dict[str, Any]], group_index: int, action_index: int
+) -> dict[str, Any] | None:
     """Find an action from the ai_analysis.groups structure."""
     if group_index < 0 or group_index >= len(groups):
         return None
@@ -118,8 +116,8 @@ def _find_action_from_groups(
 
 
 def _find_action_by_keyword_id(
-    groups: List[Dict[str, Any]], keyword_id: str
-) -> Optional[Dict[str, Any]]:
+    groups: list[dict[str, Any]], keyword_id: str
+) -> dict[str, Any] | None:
     """Find the first non-'keep' action that references this keyword_id."""
     for group in groups:
         for action in group.get("suggested_actions", []):
@@ -134,17 +132,17 @@ def _find_action_by_keyword_id(
 
 
 def _validate_and_build_mutations(
-    resolved_actions: List[Dict[str, Any]],
-    keyword_ids: Set[str],
-    keywords_by_id: Dict[str, Dict[str, Any]],
-) -> tuple[List[Dict[str, Any]], List[AISkippedAction], List[AIMutation]]:
+    resolved_actions: list[dict[str, Any]],
+    keyword_ids: set[str],
+    keywords_by_id: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[AISkippedAction], list[AIMutation]]:
     """Validate resolved actions against the live catalog and build mutations.
 
     Returns (applied_actions, skipped_actions, mutations).
     """
-    applied: List[Dict[str, Any]] = []
-    skipped: List[AISkippedAction] = []
-    mutations: List[AIMutation] = []
+    applied: list[dict[str, Any]] = []
+    skipped: list[AISkippedAction] = []
+    mutations: list[AIMutation] = []
 
     for action in resolved_actions:
         if "_resolve_error" in action:
@@ -263,7 +261,7 @@ def _validate_and_build_mutations(
 
 
 def _execute_mutations_on_keyword_source(
-    mutations: List[AIMutation],
+    mutations: list[AIMutation],
     keyword_source: Any,
     dry_run: bool,
 ) -> None:
@@ -289,7 +287,7 @@ def _execute_mutations_on_keyword_source(
             _do_deactivate(keyword_source, kw_id)
 
 
-def _do_merge(keyword_source: Any, keyword_id: str, detail: Dict[str, Any]) -> None:
+def _do_merge(keyword_source: Any, keyword_id: str, detail: dict[str, Any]) -> None:
     """Merge source keyword into target: add source terms to target, delete source."""
     target_id = detail["target_keyword_id"]
     suggested_terms = detail.get("suggested_terms", [])
@@ -305,7 +303,7 @@ def _do_merge(keyword_source: Any, keyword_id: str, detail: Dict[str, Any]) -> N
         return
 
     # Merge terms: combine target terms with source terms and suggested terms
-    merged_terms: List[str] = list(target_kw.terms) if target_kw.terms else []
+    merged_terms: list[str] = list(target_kw.terms) if target_kw.terms else []
     new_terms = set(merged_terms)
 
     # Add source terms
@@ -339,7 +337,7 @@ def _do_merge(keyword_source: Any, keyword_id: str, detail: Dict[str, Any]) -> N
     logger.info("Merged keyword %s into %s", keyword_id, target_id)
 
 
-def _do_rename(keyword_source: Any, keyword_id: str, detail: Dict[str, Any]) -> None:
+def _do_rename(keyword_source: Any, keyword_id: str, detail: dict[str, Any]) -> None:
     """Rename a keyword's label and optionally update terms."""
     kw = keyword_source.get_keyword(keyword_id)
     if kw is None:
@@ -362,7 +360,7 @@ def _do_rename(keyword_source: Any, keyword_id: str, detail: Dict[str, Any]) -> 
 
 
 def _do_expand_aliases(
-    keyword_source: Any, keyword_id: str, detail: Dict[str, Any]
+    keyword_source: Any, keyword_id: str, detail: dict[str, Any]
 ) -> None:
     """Add new alias terms to an existing keyword."""
     kw = keyword_source.get_keyword(keyword_id)
@@ -422,14 +420,14 @@ def _do_deactivate(keyword_source: Any, keyword_id: str) -> None:
 def apply_approved_actions(
     *,
     analysis_id: str,
-    analysis: Dict[str, Any],
-    request_actions: List[AIApplyAction],
+    analysis: dict[str, Any],
+    request_actions: list[AIApplyAction],
     keyword_source: Any,
     apply_store: PostgresAiApplyStore,
     dry_run: bool = False,
     refresh_after: bool = True,
-    applied_by: Optional[str] = None,
-) -> Dict[str, Any]:
+    applied_by: str | None = None,
+) -> dict[str, Any]:
     """Orchestrate the full apply flow.
 
     1. Resolve request actions against the analysis.
@@ -442,8 +440,8 @@ def apply_approved_actions(
     """
     # Build keyword id set from live catalog
     all_keywords = list(keyword_source.list_keywords())
-    keyword_ids: Set[str] = {kw.keyword_id for kw in all_keywords}
-    keywords_by_id: Dict[str, Dict[str, Any]] = {
+    keyword_ids: set[str] = {kw.keyword_id for kw in all_keywords}
+    keywords_by_id: dict[str, dict[str, Any]] = {
         kw.keyword_id: {
             "keyword_id": kw.keyword_id,
             "label": kw.label,
@@ -498,7 +496,7 @@ def apply_approved_actions(
     actions_skipped_dicts = [
         {
             "action": (
-                sa.action.model_dump()
+                sa.action.model_dump()  # type: ignore[attr-defined]
                 if hasattr(sa.action, "model_dump")
                 else sa.action
             ),
@@ -548,6 +546,6 @@ def get_apply_history(
     apply_store: PostgresAiApplyStore,
     limit: int = 50,
     offset: int = 0,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Get apply history for an analysis."""
     return apply_store.get_apply_history(analysis_id, limit=limit, offset=offset)

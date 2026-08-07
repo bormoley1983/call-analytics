@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Suite B: Keyword & AI Analysis Integration Tests (DEVPLAN_ONLINE_TESTS_TBD_20_03_2026.md)
 
@@ -60,7 +59,7 @@ class TestKeywordMaterialization:
                     "SELECT last_materialized_at FROM keyword_materialization_state WHERE state_key = %s",
                     ["default"],
                 )
-                row = cur.fetchone()
+                cur.fetchone()
         finally:
             storage_adapter._putconn(conn)
         # State may not exist if no materialization run yet - that's fine

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Suite G: Deep Insights Integration Tests
 

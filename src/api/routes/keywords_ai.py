@@ -1,8 +1,7 @@
 import logging
 import os
-from typing import List
 
-from fastapi import APIRouter, Body, HTTPException, Path, Query, status
+from fastapi import APIRouter, HTTPException, Path, Query, status
 
 from adapters.keyword_ai_analysis_postgres import PostgresKeywordAiAnalysisStore
 from adapters.keywords_postgres import PostgresKeywordSource
@@ -11,8 +10,6 @@ from adapters.llm_ollama import OllamaLlm
 from adapters.reporting_json import JsonReportingSource
 from adapters.reporting_postgres import PostgresReportingSource
 from api.schemas import (
-    AIApplyAction,
-    AIApplyDryRunResult,
     AIApplyHistoryEntry,
     AIApplyRequest,
     AIApplyResult,
@@ -264,14 +261,14 @@ def apply_analysis_actions(
 
 @router.get(
     "/analyses/{analysis_id}/apply/history",
-    response_model=List[AIApplyHistoryEntry],
+    response_model=list[AIApplyHistoryEntry],
     summary="Get apply history for an analysis",
 )
 def get_analysis_apply_history(
     analysis_id: str = Path(..., pattern=_SAFE_ANALYSIS_ID_PATTERN),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-) -> List[AIApplyHistoryEntry]:
+) -> list[AIApplyHistoryEntry]:
     """Get apply history for a specific analysis."""
     from core.ai_apply import get_apply_history
 
@@ -283,7 +280,7 @@ def get_analysis_apply_history(
     finally:
         apply_store.close()
 
-    entries: List[AIApplyHistoryEntry] = []
+    entries: list[AIApplyHistoryEntry] = []
     for rec in raw_records:
         actions_applied = rec.get("actions_applied") or []
         actions_skipped = rec.get("actions_skipped") or []
@@ -326,11 +323,11 @@ from api.schemas import (
 )
 def expand_aliases(
     keyword_id: str = Path(..., pattern=_SAFE_ANALYSIS_ID_PATTERN),
-    req: KeywordAliasExpandRequest = Body(default=KeywordAliasExpandRequest()),
+    req: KeywordAliasExpandRequest | None = None,
 ):
-    from adapters.ai_alias_suggestions_postgres import PostgresAiAliasSuggestionStore
     from core.keywords_alias_expand import expand_keyword_aliases
 
+    req = req or KeywordAliasExpandRequest()
     config = load_app_config()
     reporting_source = _get_reporting_source()
     keyword_source = _get_keyword_source()
@@ -356,7 +353,7 @@ def expand_aliases(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Alias expansion failed: {exc}",
-        )
+        ) from exc
     finally:
         reporting_source.close()
         keyword_source.close()
@@ -364,7 +361,7 @@ def expand_aliases(
 
 @router.get(
     "/aliases/suggestions",
-    response_model=List[AliasSuggestionEntry],
+    response_model=list[AliasSuggestionEntry],
     summary="List pending alias suggestions",
 )
 def list_alias_suggestions(
@@ -391,7 +388,7 @@ def list_alias_suggestions(
     finally:
         store.close()
 
-    entries: List[AliasSuggestionEntry] = []
+    entries: list[AliasSuggestionEntry] = []
     for rec in raw[:limit]:
         aliases = rec.get("suggested_aliases") or []
         entries.append(
@@ -509,7 +506,7 @@ def generate_deep_insights(req: DeepInsightRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Deep insights generation failed: {exc}",
-        )
+        ) from exc
     finally:
         reporting_source.close()
         if store:

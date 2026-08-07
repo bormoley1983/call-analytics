@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Suite F: Alias Expansion Integration Tests
 

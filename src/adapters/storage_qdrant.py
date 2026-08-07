@@ -2,11 +2,17 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import (Distance, FieldCondition, Filter, MatchValue,
-                                  PointStruct, VectorParams)
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
 
 COLLECTION = "call_transcripts"
 VECTOR_DIM = 1024  # match your embedding model output
@@ -26,7 +32,7 @@ class QdrantStorage:
                 vectors_config=VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
             )
 
-    def upsert(self, call_id: str, embedding: List[float], payload: Dict[str, Any]) -> None:
+    def upsert(self, call_id: str, embedding: list[float], payload: dict[str, Any]) -> None:
         """Store a call transcript embedding with metadata payload."""
         # Use deterministic hash instead of built-in hash() to avoid randomization across restarts
         point_id = int(hashlib.sha256(call_id.encode()).hexdigest(), 16) % (2**63)
@@ -39,10 +45,10 @@ class QdrantStorage:
 
     def search(
         self,
-        query_embedding: List[float],
+        query_embedding: list[float],
         top_k: int = 10,
-        filter_manager: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        filter_manager: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Find calls semantically similar to a query."""
         query_filter = None
         if filter_manager:

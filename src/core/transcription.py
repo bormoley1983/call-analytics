@@ -1,11 +1,11 @@
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from core.rules import correct_brand_names
 from domain.config import AppConfig
 
 
-def transcribe(model: Any, wav_path: Path, config: AppConfig) -> Dict[str, Any]:
+def transcribe(model: Any, wav_path: Path, config: AppConfig) -> dict[str, Any]:
     """Transcribe audio using Whisper model with config settings."""
     requested_lang = (getattr(config, "stt_language", "auto") or "").strip().lower()
     language_arg = None if requested_lang in {"", "auto", "mixed", "multilingual", "uk+ru", "ru+uk"} else requested_lang
@@ -17,8 +17,8 @@ def transcribe(model: Any, wav_path: Path, config: AppConfig) -> Dict[str, Any]:
         beam_size=config.whisper_beam_size,
         word_timestamps=False,
     )
-    seg_list: List[Dict[str, Any]] = []
-    full_text: List[str] = []
+    seg_list: list[dict[str, Any]] = []
+    full_text: list[str] = []
 
     for s in segments:
         t = (s.text or "").strip()

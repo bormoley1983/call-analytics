@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from domain.reporting import ReportCallRecord, ReportFilters
 
@@ -12,8 +13,11 @@ def _parse_date(date_str: Any) -> datetime | None:
     """Parse YYYYMMDD string (PBX date format) into a datetime."""
     if not date_str:
         return None
+    from datetime import timezone
+
     try:
-        return datetime.strptime(str(date_str), "%Y%m%d")
+        dt = datetime.strptime(str(date_str), "%Y%m%d").replace(tzinfo=timezone.utc)
+        return dt
     except (ValueError, TypeError):
         return None
 
@@ -35,7 +39,13 @@ def _record_from_analysis(call_id: str, data: dict[str, Any]) -> ReportCallRecor
 
     effective_call = data.get("effective_call")
     if isinstance(effective_call, str):
-        effective_call = effective_call.strip().lower() in {"1", "true", "yes", "tak", "так"}
+        effective_call = effective_call.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "tak",
+            "так",
+        }
     else:
         effective_call = bool(effective_call)
 

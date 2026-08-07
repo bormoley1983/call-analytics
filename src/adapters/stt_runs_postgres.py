@@ -81,7 +81,10 @@ class PostgresSttRunStore(SingleConnectionPostgresAdapter, SttRunStorePort):
     def update_run_status(self, run_id: str, status: str) -> None:
         def _write(conn: Any) -> None:
             with conn.cursor() as cur:
-                cur.execute("UPDATE stt_runs SET status = %s WHERE run_id = %s", (status, run_id))
+                cur.execute(
+                    "UPDATE stt_runs SET status = %s WHERE run_id = %s",
+                    (status, run_id),
+                )
 
         self._run_write(_write)
 
@@ -293,5 +296,4 @@ class PostgresSttRunStore(SingleConnectionPostgresAdapter, SttRunStorePort):
                 )
             return out
 
-        for item in self._run_read(_read):
-            yield item
+        yield from self._run_read(_read)

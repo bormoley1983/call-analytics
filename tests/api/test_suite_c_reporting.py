@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Suite C: Reporting Integration Tests (DEVPLAN_ONLINE_TESTS_TBD_20_03_2026.md)
 
@@ -91,7 +90,7 @@ class TestManagersReport:
         body = response.json()
         # Freshness should be present
         if isinstance(body, dict):
-            assert "freshness" in body or "freshness_metadata" in body or True
+            assert True
 
 
 @pytest.mark.integration
@@ -207,7 +206,7 @@ class TestReportAggregatesMatchSeededData:
 
         body = response.json()
         # Should have top_intents or similar
-        has_intents = any(
+        any(
             k in body for k in ["top_intents", "intents", "intent_breakdown"]
         )
         # May be empty if no data, but field should exist or be nullable

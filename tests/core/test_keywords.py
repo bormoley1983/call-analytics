@@ -1,6 +1,7 @@
 import copy
 import json
 from datetime import datetime, timezone
+from typing import Any
 
 import pytest
 import yaml
@@ -9,7 +10,6 @@ from fastapi import HTTPException
 from adapters.keywords_postgres import PostgresKeywordSource
 from adapters.keywords_yaml import YamlKeywordSource
 from adapters.reporting_json import JsonReportingSource
-from adapters.reporting_postgres import PostgresReportingSource
 from api.routes import keywords as keyword_routes
 from api.routes import keywords_generation as keyword_generation_routes
 from api.routes import reports as report_routes
@@ -294,7 +294,7 @@ def test_keywords_bootstrap_generates_publishes_and_materializes(monkeypatch):
         lambda trigger, skip_if_empty=False: {"trigger": trigger},
     )
 
-    response = keyword_generation_routes.bootstrap_keywords(
+    response: dict[str, Any] = keyword_generation_routes.bootstrap_keywords(
         KeywordGenerationBootstrapRequest(
             min_token_length=4,
             max_ngram_words=1,
@@ -363,7 +363,7 @@ def test_keywords_bootstrap_skips_materialize_and_ai_without_changes(monkeypatch
         lambda trigger, skip_if_empty=False: {"trigger": trigger},
     )
 
-    response = keyword_generation_routes.bootstrap_keywords(
+    response: dict[str, Any] = keyword_generation_routes.bootstrap_keywords(
         KeywordGenerationBootstrapRequest(
             min_token_length=4,
             max_ngram_words=1,

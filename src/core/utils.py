@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Shared core utilities used across multiple modules."""
 
 from __future__ import annotations

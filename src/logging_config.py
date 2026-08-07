@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Centralised logging configuration for call-analytics.
 

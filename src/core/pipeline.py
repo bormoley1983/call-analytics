@@ -1,11 +1,10 @@
-import json
 import logging
 import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from tqdm import tqdm
 
@@ -116,7 +115,7 @@ class Pipeline:
         )
         logger.info("Processing complete in %.2fs.", time.perf_counter() - started_at)
 
-    def _build_meta(self, src: Path) -> Dict[str, Any]:
+    def _build_meta(self, src: Path) -> dict[str, Any]:
         meta = self.pbx.parse_filename(src.name)
         meta["source_file"] = src.name
         meta["source_path"] = str(src)
@@ -137,7 +136,7 @@ class Pipeline:
         return meta
 
     def _record_call_metadata(
-        self, meta: Dict[str, Any], *, status: str, error_message: str | None = None
+        self, meta: dict[str, Any], *, status: str, error_message: str | None = None
     ) -> None:
         upsert = getattr(self.storage, "upsert_call_metadata", None)
         if not callable(upsert):
@@ -154,7 +153,7 @@ class Pipeline:
             error_message=error_message,
         )
 
-    def run_transcription_phase(self, files: List[Path]) -> List[Dict[str, Any]]:
+    def run_transcription_phase(self, files: list[Path]) -> list[dict[str, Any]]:
         """
         Phase 1: Transcription with Whisper (GPU intensive).
         Returns metadata for all files including skipped ones.
@@ -165,7 +164,7 @@ class Pipeline:
 
         logger.info("Phase 1: Transcription (Whisper) for %d file(s)", len(files))
 
-        files_metadata: List[Dict[str, Any]] = []
+        files_metadata: list[dict[str, Any]] = []
 
         stt_service = self._get_stt_service()
         try:
@@ -233,7 +232,7 @@ class Pipeline:
                     )
 
                 # Transcribe
-                transcript: Dict[str, Any]
+                transcript: dict[str, Any]
                 newly_transcribed = False
                 if (
                     not self.config.force_retranscribe
@@ -313,8 +312,8 @@ class Pipeline:
         return files_metadata
 
     def run_translation_phase(
-        self, files_metadata: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, files_metadata: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         logger.info("Phase 1b: Translation (Ollama after Whisper release)")
 
         for meta in files_metadata:
@@ -372,7 +371,7 @@ class Pipeline:
                     )
                 transcript["_pipeline_stage"] = "translated"
                 self.storage.save_transcript(call_id, transcript)
-            except Exception as e:
+            except (RuntimeError, OSError) as e:
                 transcript["text_uk"] = transcript.get("text", "")
                 transcript["segments_uk"] = transcript.get("segments", [])
                 transcript["translation_error"] = repr(e)
@@ -391,13 +390,13 @@ class Pipeline:
         return files_metadata
 
     def run_analysis_phase(
-        self, files_metadata: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, files_metadata: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         logger.info("Phase 2: Analysis (Ollama)")
-        per_call: List[Dict[str, Any]] = []
+        per_call: list[dict[str, Any]] = []
         to_analyze = [m for m in files_metadata if m.get("status") == "transcribed"]
 
-        def _analyze_one(meta: Dict[str, Any]) -> Dict[str, Any]:
+        def _analyze_one(meta: dict[str, Any]) -> dict[str, Any]:
             call_id = meta["call_id"]
             transcript = self.storage.load_transcript(call_id)
             active_text_hash = transcript_text_sha256(transcript)
@@ -433,7 +432,7 @@ class Pipeline:
                         analysis.get("spam_probability"),
                         time.perf_counter() - analysis_started,
                     )
-                except Exception as e:
+                except (RuntimeError, TypeError) as e:
                     analysis = ensure_analysis_schema({}, meta)
                     analysis.update(
                         {
@@ -476,7 +475,7 @@ class Pipeline:
             if callable(save_atomically):
                 try:
                     save_atomically(call_id, transcript, analysis)
-                except Exception as exc:
+                except (RuntimeError, OSError) as exc:
                     logger.error(
                         "Atomic save failed for call_id=%s: %s — falling back to individual saves",
                         call_id,
@@ -539,7 +538,7 @@ class Pipeline:
                 ):
                     try:
                         per_call.append(fut.result(timeout=per_worker_timeout))
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001 -- outermost pipeline loop; must not let a single call crash the batch
                         logger.error(
                             "Analysis failed for %s: %s",
                             futures[fut].get("source_file"),
@@ -556,7 +555,7 @@ class Pipeline:
         )
         return per_call
 
-    def sync_to_postgres(self, per_call: List[Dict[str, Any]]) -> None:
+    def sync_to_postgres(self, per_call: list[dict[str, Any]]) -> None:
         if isinstance(self.storage, PostgresStorage):
             return
         dsn = os.getenv("POSTGRES_DSN", "")

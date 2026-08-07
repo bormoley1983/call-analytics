@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +13,7 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _parse_call_date(date_str: str) -> Optional[datetime]:
+def _parse_call_date(date_str: str) -> datetime | None:
     """Parse a PBX date string (YYYYMMDD) into a timezone-aware datetime.
 
     Returns None if the string is empty or doesn't match the expected format,
@@ -59,7 +59,7 @@ class JsonStorage:
     def call_metadata_path(self, call_id: str) -> Path:
         return self.calls / f"{call_id}.json"
 
-    def load_call_metadata(self, call_id: str) -> Dict[str, Any]:
+    def load_call_metadata(self, call_id: str) -> dict[str, Any]:
         path = self.call_metadata_path(call_id)
         if not path.exists():
             return {}
@@ -130,13 +130,13 @@ class JsonStorage:
     def analysis_exists(self, call_id: str) -> bool:
         return self.analysis_path(call_id).exists()
 
-    def load_transcript(self, call_id: str) -> Dict[str, Any]:
+    def load_transcript(self, call_id: str) -> dict[str, Any]:
         return json.loads(self.transcript_path(call_id).read_text(encoding="utf-8"))
 
-    def load_analysis(self, call_id: str) -> Dict[str, Any]:
+    def load_analysis(self, call_id: str) -> dict[str, Any]:
         return json.loads(self.analysis_path(call_id).read_text(encoding="utf-8"))
 
-    def save_transcript(self, call_id: str, data: Dict[str, Any]) -> None:
+    def save_transcript(self, call_id: str, data: dict[str, Any]) -> None:
         self.transcript_path(call_id).write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -154,7 +154,7 @@ class JsonStorage:
             status=status,
         )
 
-    def save_analysis(self, call_id: str, data: Dict[str, Any]) -> None:
+    def save_analysis(self, call_id: str, data: dict[str, Any]) -> None:
         self.analysis_path(call_id).write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -189,7 +189,7 @@ class JsonStorage:
     def promote_stt_result(
         self,
         call_id: str,
-        transcript: Dict[str, Any],
+        transcript: dict[str, Any],
         *,
         stt_run_id: str,
         stt_config_hash: str,

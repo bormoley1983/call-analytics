@@ -22,7 +22,9 @@ class SttService:
         started = time.perf_counter()
         for item in self._processor.transcribe_many([request]):
             if isinstance(item, SttFailure):
-                raise RuntimeError(f"STT failed for {item.call_id}: {item.category} {item.detail}")
+                raise OSError(
+                    f"STT failed for {item.call_id}: {item.category} {item.detail}"
+                )
 
             corrected_segments: list[dict[str, Any]] = []
             full_text: list[str] = []
@@ -31,7 +33,9 @@ class SttService:
                 if not text:
                     continue
                 text = correct_brand_names(text, self._config.brand_corrections)
-                corrected_segments.append({"start": float(seg.start), "end": float(seg.end), "text": text})
+                corrected_segments.append(
+                    {"start": float(seg.start), "end": float(seg.end), "text": text}
+                )
                 full_text.append(text)
 
             return {

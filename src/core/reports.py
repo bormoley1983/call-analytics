@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any
 
 from domain.config import AppConfig
 
@@ -8,7 +8,7 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def aggregate_report(per_call: List[Dict[str, Any]], config: AppConfig) -> Dict[str, Any]:
+def aggregate_report(per_call: list[dict[str, Any]], config: AppConfig) -> dict[str, Any]:
     """Aggregate overall statistics from all calls."""
     processed = [c for c in per_call if c.get("status") == "processed"]
     
@@ -30,9 +30,9 @@ def aggregate_report(per_call: List[Dict[str, Any]], config: AppConfig) -> Dict[
     
     total_duration = sum(c.get("meta", {}).get("audio_seconds", 0.0) for c in processed)
     
-    intents: Dict[str, int] = {}
-    outcomes: Dict[str, int] = {}
-    questions: Dict[str, int] = {}
+    intents: dict[str, int] = {}
+    outcomes: dict[str, int] = {}
+    questions: dict[str, int] = {}
     
     for c in processed:
         analysis = c.get("analysis", {})
@@ -63,10 +63,10 @@ def aggregate_report(per_call: List[Dict[str, Any]], config: AppConfig) -> Dict[
     }
 
 
-def aggregate_report_by_manager(per_call: List[Dict[str, Any]], config: AppConfig) -> Dict[str, Any]:
+def aggregate_report_by_manager(per_call: list[dict[str, Any]], config: AppConfig) -> dict[str, Any]:
     """Aggregate statistics per manager with role-based grouping."""
-    managers_stats: Dict[str, Dict[str, Any]] = {}
-    role_summary: Dict[str, Dict[str, int]] = {}
+    managers_stats: dict[str, dict[str, Any]] = {}
+    role_summary: dict[str, dict[str, int]] = {}
     
     processed = [c for c in per_call if c.get("status") == "processed"]
     
@@ -153,7 +153,7 @@ def aggregate_report_by_manager(per_call: List[Dict[str, Any]], config: AppConfi
         del stats["questions"]
     
     # Group by role
-    by_role: Dict[str, List[Dict[str, Any]]] = {
+    by_role: dict[str, list[dict[str, Any]]] = {
         "sales": [],
         "management": [],
         "development": [],

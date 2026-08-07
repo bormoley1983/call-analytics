@@ -1,8 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from api import runner
 from api.schemas import ProcessRequest, SyncRequest
 from core import pipeline, reports, rules, transcription
@@ -69,7 +67,7 @@ def test_pipeline_run_syncs_even_when_snapshot_reports_disabled(monkeypatch):
     events = []
     cfg = _minimal_pipeline_config()
     pl = pipeline.Pipeline(
-        config=cfg,
+        config=cfg,  # type: ignore[arg-type]
         storage=object(),  # type: ignore[arg-type]
         audio=object(),  # type: ignore[arg-type]
         llm=object(),  # type: ignore[arg-type]
@@ -102,7 +100,7 @@ def test_pipeline_run_does_not_generate_snapshots_during_process(monkeypatch):
     events = []
     cfg = _minimal_pipeline_config()
     pl = pipeline.Pipeline(
-        config=cfg,
+        config=cfg,  # type: ignore[arg-type]
         storage=object(),  # type: ignore[arg-type]
         audio=object(),  # type: ignore[arg-type]
         llm=object(),  # type: ignore[arg-type]
@@ -421,7 +419,6 @@ def test_run_keyword_ai_analysis_once_skips_empty_catalog(monkeypatch):
     def _fake_impl(trigger, *, skip_if_empty=False):
         captured["trigger"] = trigger
         captured["skip_if_empty"] = skip_if_empty
-        return None
 
     monkeypatch.setattr(runner, "_run_keyword_ai_analysis_once_impl", _fake_impl)
 

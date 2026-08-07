@@ -2,8 +2,15 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from api.routes import (health, jobs, keywords, keywords_ai,
-                        keywords_generation, managers, reports)
+from api.routes import (
+    health,
+    jobs,
+    keywords,
+    keywords_ai,
+    keywords_generation,
+    managers,
+    reports,
+)
 from logging_config import setup_logging
 
 description = """

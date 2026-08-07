@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Local Call Analytics PoC (FreePBX/Asterisk recordings)
 - Normalize audio (16k mono)

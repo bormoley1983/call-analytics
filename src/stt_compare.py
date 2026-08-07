@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-from typing import Union
 
 from adapters.stt_runs_json import JsonSttRunStore
 from adapters.stt_runs_postgres import PostgresSttRunStore
@@ -14,7 +13,7 @@ from ports.stt_runs import SttRunStorePort
 
 def _build_run_store(config) -> SttRunStorePort:
     if os.getenv("POSTGRES_DSN"):
-        store: Union[PostgresSttRunStore, JsonSttRunStore] = PostgresSttRunStore(
+        store: PostgresSttRunStore | JsonSttRunStore = PostgresSttRunStore(
             os.environ["POSTGRES_DSN"]
         )
         store.ensure_ready()

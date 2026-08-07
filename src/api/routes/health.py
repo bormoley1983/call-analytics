@@ -5,13 +5,14 @@ from domain.config import OLLAMA_URL
 
 router = APIRouter(tags=["health"])
 
+
 @router.get("/health")
 def health():
     ollama_ok = False
     try:
         r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
         ollama_ok = r.status_code == 200
-    except Exception:
+    except requests.exceptions.RequestException:
         pass
 
     return {

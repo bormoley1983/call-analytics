@@ -4,8 +4,7 @@ import logging
 import os
 from typing import Any
 
-from adapters.keyword_ai_analysis_postgres import \
-    PostgresKeywordAiAnalysisStore
+from adapters.keyword_ai_analysis_postgres import PostgresKeywordAiAnalysisStore
 from adapters.keywords_postgres import PostgresKeywordSource
 from adapters.keywords_yaml import YamlKeywordSource
 from adapters.llm_ollama import OllamaLlm

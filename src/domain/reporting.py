@@ -63,9 +63,7 @@ class ReportFilters:
             return False
         if self.intent and record.intent != self.intent:
             return False
-        if self.outcome and record.outcome != self.outcome:
-            return False
-        return True
+        return not (self.outcome and record.outcome != self.outcome)
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)

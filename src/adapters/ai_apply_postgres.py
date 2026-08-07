@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """PostgreSQL adapter for AI apply operations.
 
 Persists apply records to the ai_apply table and queries apply history.
@@ -10,7 +9,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from adapters.postgres_single_connection import SingleConnectionPostgresAdapter
 
@@ -25,14 +24,14 @@ class PostgresAiApplyStore(SingleConnectionPostgresAdapter):
     def apply_actions(
         self,
         analysis_id: str,
-        applied_by: Optional[str],
+        applied_by: str | None,
         dry_run: bool,
-        actions_applied: List[Dict[str, Any]],
-        actions_skipped: List[Dict[str, Any]],
-        mutations: List[Dict[str, Any]],
+        actions_applied: list[dict[str, Any]],
+        actions_skipped: list[dict[str, Any]],
+        mutations: list[dict[str, Any]],
         keyword_refreshed: bool = False,
         follow_up_ran: bool = False,
-        error: Optional[str] = None,
+        error: str | None = None,
     ) -> str:
         """Persist an apply record to the ai_apply table.
 
@@ -96,7 +95,7 @@ class PostgresAiApplyStore(SingleConnectionPostgresAdapter):
         analysis_id: str,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Get apply history for a specific analysis.
 
         Args:

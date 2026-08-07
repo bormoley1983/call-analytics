@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any
 
 from psycopg2 import extensions as pg_extensions
 from psycopg2 import pool as pg_pool
@@ -16,9 +15,7 @@ from adapters.stt_runs_schema import STT_RUNS_DDL
 logger = logging.getLogger(__name__)
 
 
-def parse_call_datetime(
-    date_str: str, time_str: Optional[str] = None
-) -> Optional[datetime]:
+def parse_call_datetime(date_str: str, time_str: str | None = None) -> datetime | None:
     """Parse PBX date (YYYYMMDD) and optional time (HHMMSS) into a timezone-aware datetime.
 
     Uses UTC as the default timezone since PBX systems typically report in UTC.
@@ -27,11 +24,13 @@ def parse_call_datetime(
     if not date_str:
         return None
     try:
-        dt = datetime.strptime(date_str, "%Y%m%d")
+        dt = datetime.strptime(date_str, "%Y%m%d").replace(tzinfo=timezone.utc)
         if time_str:
-            dt = datetime.strptime(f"{date_str}{time_str}", "%Y%m%d%H%M%S")
+            dt = datetime.strptime(f"{date_str}{time_str}", "%Y%m%d%H%M%S").replace(
+                tzinfo=timezone.utc
+            )
         # PBX systems typically report in UTC; attach UTC timezone for TIMESTAMPTZ
-        return dt.replace(tzinfo=timezone.utc)
+        return dt
     except ValueError:
         return None
 
@@ -317,7 +316,7 @@ def _ensure_utf8_client_encoding(conn: Any) -> Any:
     return conn
 
 
-def _infer_transcript_stage(data: Dict[str, Any]) -> Optional[str]:
+def _infer_transcript_stage(data: dict[str, Any]) -> str | None:
     stage = data.get("_pipeline_stage")
     if isinstance(stage, str) and stage:
         return stage
@@ -328,7 +327,7 @@ def _infer_transcript_stage(data: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _transcript_row(call_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+def _transcript_row(call_id: str, data: dict[str, Any]) -> dict[str, Any]:
     return {
         "call_id": call_id,
         "pipeline_stage": _infer_transcript_stage(data),
@@ -336,7 +335,7 @@ def _transcript_row(call_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _analysis_row(call_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+def _analysis_row(call_id: str, data: dict[str, Any]) -> dict[str, Any]:
     call_meta = data.get("call_meta") or {}
     spam_probability = data.get("spam_probability", 0.0)
     try:
@@ -424,7 +423,7 @@ class PostgresStorage:
             if max_connections is not None
             else _parse_int_env("PG_POOL_MAX", 10)
         )
-        self._pool: Optional[pg_pool.ThreadedConnectionPool] = None
+        self._pool: pg_pool.ThreadedConnectionPool | None = None
 
     def _require_pool(self) -> pg_pool.ThreadedConnectionPool:
         if self._pool is None:
@@ -486,7 +485,7 @@ class PostgresStorage:
         finally:
             self._putconn(conn)
 
-    def load_transcript(self, call_id: str) -> Dict[str, Any]:
+    def load_transcript(self, call_id: str) -> dict[str, Any]:
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
@@ -508,7 +507,7 @@ class PostgresStorage:
                 data["_pipeline_stage"] = inferred
         return data  # psycopg2 deserialises JSONB columns to dict automatically
 
-    def load_analysis(self, call_id: str) -> Dict[str, Any]:
+    def load_analysis(self, call_id: str) -> dict[str, Any]:
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
@@ -520,18 +519,18 @@ class PostgresStorage:
             raise KeyError(f"Analysis not found: {call_id}")
         return row[0]
 
-    def save_transcript(self, call_id: str, data: Dict[str, Any]) -> None:
+    def save_transcript(self, call_id: str, data: dict[str, Any]) -> None:
         self.upsert_transcript(call_id, data)
 
-    def save_analysis(self, call_id: str, data: Dict[str, Any]) -> None:
+    def save_analysis(self, call_id: str, data: dict[str, Any]) -> None:
         self.upsert_analysis(call_id, data)
 
     def save_call_atomically(
         self,
         call_id: str,
-        transcript: Dict[str, Any],
-        analysis: Dict[str, Any],
-        call_metadata: Dict[str, Any] | None = None,
+        transcript: dict[str, Any],
+        analysis: dict[str, Any],
+        call_metadata: dict[str, Any] | None = None,
     ) -> None:
         """Atomically upsert transcript, analysis, and calls metadata in a single transaction.
 
@@ -680,7 +679,7 @@ class PostgresStorage:
     def promote_stt_result(
         self,
         call_id: str,
-        transcript: Dict[str, Any],
+        transcript: dict[str, Any],
         *,
         stt_run_id: str,
         stt_config_hash: str,
@@ -724,7 +723,7 @@ class PostgresStorage:
 
     # --- upsert helpers (also kept for sync_per_call / migration) ---
 
-    def upsert_transcript(self, call_id: str, data: Dict[str, Any]) -> None:
+    def upsert_transcript(self, call_id: str, data: dict[str, Any]) -> None:
         row = _transcript_row(call_id, data)
         conn = self._getconn()
         try:
@@ -776,7 +775,7 @@ class PostgresStorage:
         finally:
             self._putconn(conn)
 
-    def upsert_analysis(self, call_id: str, data: Dict[str, Any]) -> None:
+    def upsert_analysis(self, call_id: str, data: dict[str, Any]) -> None:
         row = _analysis_row(call_id, data)
         conn = self._getconn()
         try:
@@ -896,12 +895,12 @@ class PostgresStorage:
                         call_datetime,
                         status,
                         error_message,
-                        {', '.join(stage_values.keys())},
+                        {", ".join(stage_values.keys())},
                         updated_at
                     )
                     VALUES (
                         %s, %s, %s, %s, %s, %s,
-                        {', '.join(stage_values.values())},
+                        {", ".join(stage_values.values())},
                         now()
                     )
                     ON CONFLICT (call_id) DO UPDATE SET
@@ -981,7 +980,7 @@ class PostgresStorage:
             error_message=error_message,
         )
 
-    def get_calls(self, call_ids: list[str]) -> list[Dict[str, Any]]:
+    def get_calls(self, call_ids: list[str]) -> list[dict[str, Any]]:
         """Return call rows for the given call IDs."""
         placeholders = ",".join(["%s"] * len(call_ids))
         sql = f"""

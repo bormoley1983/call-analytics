@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any
 
 from ports.llm import LlmPort
 from ports.reporting import ReportingSource
@@ -17,7 +17,7 @@ def expand_keyword_aliases(
     *,
     max_aliases: int = 5,
     filters: Any | None = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Suggest conservative aliases for a single keyword.
 
     Fetches the keyword definition, gathers recent evidence from analyses,
@@ -44,7 +44,7 @@ def expand_keyword_aliases(
     )
 
     # Call LLM for alias suggestions
-    llm_result: Dict[str, Any] = llm.expand_aliases(
+    llm_result: dict[str, Any] = llm.expand_aliases(
         keyword_id=keyword_id,
         label=label,
         current_terms=current_terms,
@@ -82,7 +82,7 @@ def _gather_evidence_texts(
     keyword_id: str,
     *,
     filters: Any | None = None,
-) -> List[str]:
+) -> list[str]:
     """Gather recent matched texts from analyses for evidence.
 
     Scans analysis records and collects summary/key_questions/objections
@@ -91,7 +91,7 @@ def _gather_evidence_texts(
     from domain.reporting import ReportFilters
 
     effective_filters = filters or ReportFilters()
-    evidence: List[str] = []
+    evidence: list[str] = []
     seen: set[str] = set()
 
     # We need to get the keyword terms first to check for matches

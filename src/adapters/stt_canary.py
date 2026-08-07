@@ -5,11 +5,10 @@ import hashlib
 import importlib
 import inspect
 import logging
-from typing import Iterator, Sequence
+from collections.abc import Iterator, Sequence
 
 from domain.config import AppConfig
-from domain.stt import (SttFailure, SttIdentity, SttRequest, SttResult,
-                        SttSegment)
+from domain.stt import SttFailure, SttIdentity, SttRequest, SttResult, SttSegment
 from ports.stt import SttProcessorPort
 
 logger = logging.getLogger(__name__)
@@ -57,12 +56,16 @@ class CanarySttAdapter(SttProcessorPort):
         try:
             torch = importlib.import_module("torch")
             nemo_models = importlib.import_module("nemo.collections.asr.models")
-            EncDecMultiTaskModel = getattr(nemo_models, "EncDecMultiTaskModel")
+            EncDecMultiTaskModel = nemo_models.EncDecMultiTaskModel
 
-            model = EncDecMultiTaskModel.from_pretrained(model_name=self._config.canary_model_id)
+            model = EncDecMultiTaskModel.from_pretrained(
+                model_name=self._config.canary_model_id
+            )
             device = getattr(self._config, "canary_device", "cpu")
             if device.startswith("cuda") and not torch.cuda.is_available():
-                logger.warning("CANARY_DEVICE requests CUDA but CUDA is unavailable; falling back to CPU")
+                logger.warning(
+                    "CANARY_DEVICE requests CUDA but CUDA is unavailable; falling back to CPU"
+                )
                 device = "cpu"
             model = model.to(device)
             model.eval()
@@ -77,10 +80,10 @@ class CanarySttAdapter(SttProcessorPort):
         if isinstance(output, str):
             return output.strip()
         if hasattr(output, "text"):
-            return str(getattr(output, "text") or "").strip()
+            return str(output.text or "").strip()
         if isinstance(output, dict):
             for key in ("text", "pred_text", "transcript"):
-                if key in output and output[key]:
+                if output.get(key):
                     return str(output[key]).strip()
         return str(output).strip()
 
@@ -94,28 +97,35 @@ class CanarySttAdapter(SttProcessorPort):
                 return
             try:
                 s = float(start)
-            except Exception:
+            except (ValueError, TypeError):
                 s = 0.0
             try:
                 e = float(end)
-            except Exception:
+            except (ValueError, TypeError):
                 e = float(audio_seconds)
-            if e < s:
-                e = s
+            e = max(e, s)
             segments.append(SttSegment(start=s, end=e, text=t))
 
         # Common dict layout: {"segments": [{"start", "end", "text"}, ...]}
         if isinstance(output, dict) and isinstance(output.get("segments"), list):
             for seg in output["segments"]:
                 if isinstance(seg, dict):
-                    _append(seg.get("start", 0.0), seg.get("end", audio_seconds), seg.get("text", ""))
+                    _append(
+                        seg.get("start", 0.0),
+                        seg.get("end", audio_seconds),
+                        seg.get("text", ""),
+                    )
 
         # Object layout with .segments attribute
         obj_segments = getattr(output, "segments", None)
         if isinstance(obj_segments, list):
             for seg in obj_segments:
                 if isinstance(seg, dict):
-                    _append(seg.get("start", 0.0), seg.get("end", audio_seconds), seg.get("text", ""))
+                    _append(
+                        seg.get("start", 0.0),
+                        seg.get("end", audio_seconds),
+                        seg.get("text", ""),
+                    )
                 else:
                     _append(
                         getattr(seg, "start", 0.0),
@@ -127,7 +137,9 @@ class CanarySttAdapter(SttProcessorPort):
         if not segments:
             text = CanarySttAdapter._extract_text(output)
             if text:
-                segments.append(SttSegment(start=0.0, end=float(audio_seconds), text=text))
+                segments.append(
+                    SttSegment(start=0.0, end=float(audio_seconds), text=text)
+                )
 
         return segments
 
@@ -138,14 +150,20 @@ class CanarySttAdapter(SttProcessorPort):
                 return None
             return value
 
-        source_lang = _norm_lang(getattr(self._config, "canary_source_lang", request.language))
-        target_lang = _norm_lang(getattr(self._config, "canary_target_lang", request.language))
+        source_lang = _norm_lang(
+            getattr(self._config, "canary_source_lang", request.language)
+        )
+        target_lang = _norm_lang(
+            getattr(self._config, "canary_target_lang", request.language)
+        )
 
         kwargs = {
             "batch_size": getattr(self._config, "canary_batch_size", 1),
             "beam_size": getattr(self._config, "canary_beam_size", 1),
             "task": getattr(self._config, "canary_task", "asr"),
-            "return_hypotheses": getattr(self._config, "canary_return_hypotheses", True),
+            "return_hypotheses": getattr(
+                self._config, "canary_return_hypotheses", True
+            ),
         }
         if source_lang is not None:
             kwargs["source_lang"] = source_lang
@@ -163,23 +181,30 @@ class CanarySttAdapter(SttProcessorPort):
             return kwargs
         return {k: v for k, v in kwargs.items() if k in params}
 
-    def transcribe_many(self, requests: Sequence[SttRequest]) -> Iterator[SttResult | SttFailure]:
+    def transcribe_many(
+        self, requests: Sequence[SttRequest]
+    ) -> Iterator[SttResult | SttFailure]:
         try:
             model = self._get_model()
-        except Exception as exc:
+        except (RuntimeError, ImportError, OSError) as exc:
             for request in requests:
                 yield SttFailure(
                     call_id=request.call_id,
                     category="model_init_error",
                     retryable=False,
                     detail=repr(exc),
-                    meta={"provider": self.identity.provider, "model_id": self.identity.model_id},
+                    meta={
+                        "provider": self.identity.provider,
+                        "model_id": self.identity.model_id,
+                    },
                 )
             return
 
         for request in requests:
             try:
-                kwargs = self._filter_supported_kwargs(model.transcribe, self._transcribe_kwargs(request))
+                kwargs = self._filter_supported_kwargs(
+                    model.transcribe, self._transcribe_kwargs(request)
+                )
                 outputs = model.transcribe([str(request.audio_path)], **kwargs)
                 if isinstance(outputs, (list, tuple)) and outputs:
                     output = outputs[0]
@@ -196,9 +221,13 @@ class CanarySttAdapter(SttProcessorPort):
                     segments=segments,
                     raw_text=text,
                     warnings=[],
-                    timings={"batch_size": float(getattr(self._config, "canary_batch_size", 1))},
+                    timings={
+                        "batch_size": float(
+                            getattr(self._config, "canary_batch_size", 1)
+                        )
+                    },
                 )
-            except Exception as exc:
+            except (OSError, RuntimeError, ValueError) as exc:
                 yield SttFailure(
                     call_id=request.call_id,
                     category="transcription_error",
@@ -216,10 +245,7 @@ class CanarySttAdapter(SttProcessorPort):
         self._model = None
 
         if model is not None:
-            try:
-                del model
-            except Exception:
-                pass
+            del model
 
         gc.collect()
 
@@ -231,7 +257,6 @@ class CanarySttAdapter(SttProcessorPort):
                 # GPU processes (for example Ollama) can allocate VRAM.
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
-        except Exception:
+        except (ImportError, RuntimeError):
             # Best-effort cleanup only; never fail pipeline shutdown.
             pass
-        return None

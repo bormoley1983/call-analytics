@@ -1,9 +1,7 @@
 # decides what to process (incremental)
-import json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 from core.rules import sha12
 from domain.config import AppConfig
@@ -12,7 +10,7 @@ from ports.storage import StoragePort
 logger = logging.getLogger(__name__)
 
 
-def infer_transcript_stage(transcript: Dict[str, object]) -> str:
+def infer_transcript_stage(transcript: dict[str, object]) -> str:
     stage = transcript.get("_pipeline_stage")
     if isinstance(stage, str) and stage:
         return stage
@@ -23,8 +21,8 @@ def infer_transcript_stage(transcript: Dict[str, object]) -> str:
     return ""
 
 
-def _stat_cache(files: List[Path]) -> Dict[Path, os.stat_result]:
-    cache: Dict[Path, os.stat_result] = {}
+def _stat_cache(files: list[Path]) -> dict[Path, os.stat_result]:
+    cache: dict[Path, os.stat_result] = {}
     for p in files:
         try:
             cache[p] = p.stat()
@@ -33,7 +31,9 @@ def _stat_cache(files: List[Path]) -> Dict[Path, os.stat_result]:
     return cache
 
 
-def discover_all_wav_files(config: AppConfig, stat_cache: Dict[Path, os.stat_result]) -> List[Path]:
+def discover_all_wav_files(
+    config: AppConfig, stat_cache: dict[Path, os.stat_result]
+) -> list[Path]:
     """
     Recursively discover all .wav files under CALLS_RAW directory.
     Populates stat_cache in-place; returns files sorted by mtime (oldest first).
@@ -50,7 +50,9 @@ def discover_all_wav_files(config: AppConfig, stat_cache: Dict[Path, os.stat_res
     return all_files
 
 
-def discover_wav_files_from_specified_dirs(config: AppConfig, stat_cache: Dict[Path, os.stat_result]) -> List[Path]:
+def discover_wav_files_from_specified_dirs(
+    config: AppConfig, stat_cache: dict[Path, os.stat_result]
+) -> list[Path]:
     """
     Discover WAV files from specific date directories.
     Expects DAYS env var: "2026/01/01,2026/01/02,..."
@@ -61,7 +63,7 @@ def discover_wav_files_from_specified_dirs(config: AppConfig, stat_cache: Dict[P
         logger.debug("DAYS env var not set or empty. Returning empty list.")
         return []
     day_list = [d.strip().replace("\\", "/") for d in days_env.split(",") if d.strip()]
-    all_files: List[Path] = []
+    all_files: list[Path] = []
 
     for d in day_list:
         day_path = config.calls_raw / d
@@ -70,7 +72,7 @@ def discover_wav_files_from_specified_dirs(config: AppConfig, stat_cache: Dict[P
             continue
         if day_path.exists():
             all_files.extend(day_path.glob("*.wav"))
-    
+
     if not all_files:
         logger.warning(
             "No WAV files found. Checked day folders under: %s; dirs checked: %s",
@@ -88,7 +90,12 @@ def discover_wav_files_from_specified_dirs(config: AppConfig, stat_cache: Dict[P
     return sorted(all_files)
 
 
-def filter_unprocessed_files(files: List[Path], config: AppConfig, stat_cache: Dict[Path, os.stat_result], storage: StoragePort,) -> List[Path]:
+def filter_unprocessed_files(
+    files: list[Path],
+    config: AppConfig,
+    stat_cache: dict[Path, os.stat_result],
+    storage: StoragePort,
+) -> list[Path]:
     """
     Filter out files that have already been processed.
     A file is considered processed if both transcript and analysis exist.
@@ -98,18 +105,20 @@ def filter_unprocessed_files(files: List[Path], config: AppConfig, stat_cache: D
     for src in files:
         st = stat_cache.get(src) or src.stat()
         cid = sha12(src.name + str(st.st_size))
-        if config.force_retranscribe or config.force_reanalyze:
-            unprocessed.append(src)
-        elif not (storage.transcript_exists(cid) and storage.analysis_exists(cid)):
+        if (
+            config.force_retranscribe
+            or config.force_reanalyze
+            or not (storage.transcript_exists(cid) and storage.analysis_exists(cid))
+        ):
             unprocessed.append(src)
     return unprocessed
 
 
-def discover_and_filter_files(config: AppConfig, storage: StoragePort) -> List[Path]:
+def discover_and_filter_files(config: AppConfig, storage: StoragePort) -> list[Path]:
     """Discover and filter WAV files based on DAYS env var and processing status."""
     days_env = os.getenv("DAYS", "").strip()
-    stat_cache: Dict[Path, os.stat_result] = {}
-    
+    stat_cache: dict[Path, os.stat_result] = {}
+
     if days_env:
         logger.info("Using DAYS filter: %s", days_env)
         all_files = discover_wav_files_from_specified_dirs(config, stat_cache)
@@ -125,23 +134,31 @@ def discover_and_filter_files(config: AppConfig, storage: StoragePort) -> List[P
 
     # Apply limit (0 means unlimited)
     if config.process_limit > 0 and len(files_to_process) > config.process_limit:
-        logger.info("Limiting to %d file(s) (set PROCESS_LIMIT to change)", config.process_limit)
-        files_to_process = files_to_process[:config.process_limit]
+        logger.info(
+            "Limiting to %d file(s) (set PROCESS_LIMIT to change)", config.process_limit
+        )
+        files_to_process = files_to_process[: config.process_limit]
 
     return files_to_process
 
-def categorize_files(files: List[Path], config: AppConfig, storage: StoragePort, stat_cache: Optional[Dict[Path, os.stat_result]] = None) -> Tuple[List[Path], List[Path]]:
+
+def categorize_files(
+    files: list[Path],
+    config: AppConfig,
+    storage: StoragePort,
+    stat_cache: dict[Path, os.stat_result] | None = None,
+) -> tuple[list[Path], list[Path]]:
     """
     Split files into:
     - needs_pipeline: require transcription/translation (go through run_transcription_phase)
     - analysis_only: already translated, only need run_analysis_phase
     """
-    
+
     if stat_cache is None:
         stat_cache = _stat_cache(files)
-    
-    needs_pipeline: List[Path] = []
-    analysis_only: List[Path] = []
+
+    needs_pipeline: list[Path] = []
+    analysis_only: list[Path] = []
 
     for src in files:
         st = stat_cache.get(src) or src.stat()
@@ -154,7 +171,7 @@ def categorize_files(files: List[Path], config: AppConfig, storage: StoragePort,
         if storage.transcript_exists(cid):
             try:
                 stage = infer_transcript_stage(storage.load_transcript(cid))
-            except Exception:
+            except (KeyError, FileNotFoundError):
                 stage = ""
             if stage == "translated":
                 analysis_only.append(src)

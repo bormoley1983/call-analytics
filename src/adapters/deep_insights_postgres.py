@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import json
 import logging
 import uuid
-from typing import Any, Dict, List
+from typing import Any
 
 from adapters.postgres_single_connection import SingleConnectionPostgresAdapter
 from adapters.storage_postgres import DDL, _jsonb
@@ -24,8 +23,8 @@ class PostgresDeepInsightsStore(SingleConnectionPostgresAdapter):
         run_id: str,
         *,
         ai_model: str | None = None,
-        insight_types: List[str] | None = None,
-        request_data: Dict[str, Any] | None = None,
+        insight_types: list[str] | None = None,
+        request_data: dict[str, Any] | None = None,
     ) -> str:
         """Create a new insights run record. Returns run_id."""
 
@@ -48,7 +47,7 @@ class PostgresDeepInsightsStore(SingleConnectionPostgresAdapter):
 
         return self._run_write(_write)
 
-    def add_insights(self, run_id: str, insights: List[Dict[str, Any]]) -> int:
+    def add_insights(self, run_id: str, insights: list[dict[str, Any]]) -> int:
         """Add insights to a run. Returns number of insights added."""
 
         def _write(conn):
@@ -94,7 +93,7 @@ class PostgresDeepInsightsStore(SingleConnectionPostgresAdapter):
 
         return self._run_write(_write)
 
-    def get_run(self, run_id: str) -> Dict[str, Any] | None:
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
         """Get a specific run with all its insights."""
 
         def _read(conn):
@@ -134,7 +133,7 @@ class PostgresDeepInsightsStore(SingleConnectionPostgresAdapter):
         self,
         limit: int = 50,
         insight_type_filter: str | None = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """List runs, optionally filtered by insight type."""
 
         def _read(conn):
@@ -172,7 +171,7 @@ class PostgresDeepInsightsStore(SingleConnectionPostgresAdapter):
         return [self._list_run_row_to_dict(row) for row in rows]
 
     @staticmethod
-    def _run_row_to_dict(row: tuple) -> Dict[str, Any]:
+    def _run_row_to_dict(row: tuple) -> dict[str, Any]:
         return {
             "run_id": row[0],
             "ai_model": row[1],
@@ -184,7 +183,7 @@ class PostgresDeepInsightsStore(SingleConnectionPostgresAdapter):
         }
 
     @staticmethod
-    def _insight_row_to_dict(row: tuple) -> Dict[str, Any]:
+    def _insight_row_to_dict(row: tuple) -> dict[str, Any]:
         return {
             "insight_id": row[0],
             "insight_type": row[1],
@@ -200,7 +199,7 @@ class PostgresDeepInsightsStore(SingleConnectionPostgresAdapter):
         }
 
     @staticmethod
-    def _list_run_row_to_dict(row: tuple) -> Dict[str, Any]:
+    def _list_run_row_to_dict(row: tuple) -> dict[str, Any]:
         insight_types = row[2] if isinstance(row[2], list) else []
         return {
             "run_id": row[0],

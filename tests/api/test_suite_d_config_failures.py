@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Suite D: Config and Failure Modes (DEVPLAN_ONLINE_TESTS_TBD_20_03_2026.md)
 

@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Generator
 from pathlib import Path
-from typing import Any, Dict, Generator
 
-import httpx
 import pytest
 from testcontainers.community.postgres import PostgresContainer
 
@@ -71,7 +70,9 @@ def _docker_available() -> bool:
     import subprocess
 
     try:
-        result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
+        result = subprocess.run(
+            ["docker", "info"], capture_output=True, timeout=10, check=False
+        )
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return False
@@ -79,9 +80,8 @@ def _docker_available() -> bool:
 
 def pytest_runtest_setup(item: pytest.Item) -> None:
     """Auto-skip postgres-marked tests when Docker is unavailable."""
-    if "postgres" in item.keywords:
-        if not _docker_available():
-            pytest.skip("Docker is not available; cannot start testcontainers")
+    if "postgres" in item.keywords and not _docker_available():
+        pytest.skip("Docker is not available; cannot start testcontainers")
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +115,6 @@ def postgres_dsn(postgres_container: PostgresContainer) -> str:
 @pytest.fixture(scope="session")
 def fastapi_app(postgres_dsn: str):
     """Create a FastAPI app wired to the test Postgres container."""
-    import os
 
     # Set POSTGRES_DSN so API routes use Postgres backends instead of falling
     # back to read-only YAML mode (which returns 405 on write endpoints).

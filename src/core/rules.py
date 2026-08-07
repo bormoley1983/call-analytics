@@ -2,7 +2,7 @@
 import hashlib
 import logging
 import re
-from typing import Any, Dict
+from typing import Any
 
 from domain.config import AppConfig
 
@@ -61,7 +61,7 @@ def sha256_short(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
 
 
-def correct_brand_names(text: str, corrections: Dict[str, str]) -> str:
+def correct_brand_names(text: str, corrections: dict[str, str]) -> str:
     """Replace incorrectly transcribed brand names with word boundaries."""
     corrected = text
     for wrong, correct in corrections.items():
@@ -104,19 +104,17 @@ def truncate_text_for_analysis(text: str, config: AppConfig) -> str:
         last_space = truncated.rfind(" ")
         cut_point = last_space if last_space > 0 else int(max_chars * 0.9)
 
-    if cut_point > max_chars * 0.9:
-        truncated = truncated[: cut_point + 1]
-    elif cut_point >= 0:
+    if cut_point > max_chars * 0.9 or cut_point >= 0:
         truncated = truncated[: cut_point + 1]
 
     return truncated + TRUNCATION_MESSAGE_UK
 
 
 def ensure_analysis_schema(
-    analysis: Dict[str, Any], call_meta: Dict[str, Any]
-) -> Dict[str, Any]:
+    analysis: dict[str, Any], call_meta: dict[str, Any]
+) -> dict[str, Any]:
     """Ensure analysis has all required fields with defaults."""
-    defaults: Dict[str, Any] = {
+    defaults: dict[str, Any] = {
         "spam_probability": 0.0,
         "effective_call": False,
         "intent": "інше",

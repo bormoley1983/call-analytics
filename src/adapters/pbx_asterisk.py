@@ -1,15 +1,15 @@
-from typing import Any, Dict
+from typing import Any
 
 
 class AsteriskPbx:
-    def parse_filename(self, name: str) -> Dict[str, Any]:
+    def parse_filename(self, name: str) -> dict[str, Any]:
         return parse_filename(name)
 
-def parse_filename(name: str) -> Dict[str, Any]:
+def parse_filename(name: str) -> dict[str, Any]:
     """Parse FreePBX filename format: dir-dst-src-YYYYMMDD-HHMMSS-uniqueid.wav"""
     base = name.rsplit(".", 1)[0] if "." in name else name
     parts = base.split("-")
-    meta: Dict[str, Any] = {"raw_name": name}
+    meta: dict[str, Any] = {"raw_name": name}
 
     if len(parts) < 6:
         meta["direction"] = "unknown"

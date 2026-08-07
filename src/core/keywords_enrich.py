@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any
 
 from ports.llm import LlmPort
 
@@ -9,12 +9,12 @@ logger = logging.getLogger(__name__)
 
 
 def enrich_keyword_candidates(
-    candidates: List[Dict[str, Any]],
+    candidates: list[dict[str, Any]],
     llm: LlmPort,
     *,
     max_aliases_per_candidate: int = 3,
     merge_near_duplicates: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Enrich keyword candidates using AI.
 
     Takes raw candidate dicts from generate_keyword_candidates(), sends to LLM for enrichment,
@@ -33,7 +33,7 @@ def enrich_keyword_candidates(
     original_count = len(candidates)
 
     # Build LLM-compatible input (only fields the prompt needs)
-    llm_candidates: List[Dict[str, Any]] = []
+    llm_candidates: list[dict[str, Any]] = []
     for c in candidates:
         llm_candidates.append(
             {
@@ -54,14 +54,14 @@ def enrich_keyword_candidates(
     merge_count = llm_result.get("merge_count", 0)
 
     # Build a lookup of original candidates by candidate_id for evidence preservation
-    original_by_id: Dict[str, Dict[str, Any]] = {}
+    original_by_id: dict[str, dict[str, Any]] = {}
     for c in candidates:
         cid = c.get("candidate_id", "")
         if cid:
             original_by_id[cid] = c
 
     # Map LLM-enriched candidates back with preserved evidence
-    enriched_candidates: List[Dict[str, Any]] = []
+    enriched_candidates: list[dict[str, Any]] = []
     merged_candidate_ids: set[str] = set()
 
     for item in enriched_from_llm:
@@ -136,10 +136,10 @@ def enrich_keyword_candidates(
 
 
 def _consolidate_merged_candidates(
-    enriched: List[Dict[str, Any]],
-    original_by_id: Dict[str, Dict[str, Any]],
+    enriched: list[dict[str, Any]],
+    original_by_id: dict[str, dict[str, Any]],
     merged_ids: set[str],
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Consolidate stats for candidates that were merged.
 
     When candidate B is merged into candidate A, add B's support_calls/total_matches/sample_call_ids
@@ -149,7 +149,7 @@ def _consolidate_merged_candidates(
         return enriched
 
     # Build lookup by candidate_id
-    by_id: Dict[str, Dict[str, Any]] = {}
+    by_id: dict[str, dict[str, Any]] = {}
     for item in enriched:
         by_id[item["candidate_id"]] = item
 

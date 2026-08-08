@@ -282,6 +282,7 @@ The application ships with a production-ready logging system that writes to mult
 | `LOG_ES_URL` | *(none)* | Elasticsearch URL for remote error logging |
 | `LOG_ES_INDEX` | `call-analytics` | Index prefix; dates appended automatically |
 | `LOG_ES_LEVEL` | `ERROR` | Minimum level sent to Elasticsearch |
+| `LOG_ES_API_KEY` | *(none)* | Elasticsearch API key (recommended). Accepts raw `id:key` or pre-encoded base64 — auto-detected. |
 
 **Console handler** always outputs to stdout (captured by Docker logs). Use `LOG_FORMAT=json` for structured output in production.
 

@@ -15,8 +15,13 @@ LOG_BACKUP_COUNT     : Number of rotated log files to keep (default: 5).
 LOG_ES_URL           : Elasticsearch URL for remote logging (optional).
 LOG_ES_INDEX         : Elasticsearch index prefix (default: call-analytics).
 LOG_ES_LEVEL         : Minimum level sent to Elasticsearch (default: ERROR).
-LOG_ES_USERNAME      : Elasticsearch username for authentication (optional).
-LOG_ES_PASSWORD      : Elasticsearch password for authentication (optional).
+LOG_ES_API_KEY       : Elasticsearch API key for authentication (recommended, optional).
+                        Accepts two formats — auto-detected:
+                          1. Raw "id:key" (e.g. ``my-id:AbCdEfGh``) → base64-encoded by the code.
+                          2. Pre-encoded (from ES response ``encoded`` field, e.g. ``TXktSWQ6QUI``)
+                             → used directly as the ApiKey header value.
+LOG_ES_USERNAME      : Elasticsearch username for authentication (deprecated, use LOG_ES_API_KEY instead).
+LOG_ES_PASSWORD      : Elasticsearch password for authentication (deprecated, use LOG_ES_API_KEY instead).
 LOG_CORRELATION_ID   : Header name for correlation ID in requests (default: X-Correlation-Id).
 ENVIRONMENT          : ``production`` or ``development`` (default: development).
 
@@ -66,15 +71,18 @@ except ImportError:
     jsonlogger = None  # type: ignore[assignment]
 
 _ES_AVAILABLE = False
-_ElasticsearchClass: type[Any] | None = None
+_TransportClass: type[Any] | None = None
+_NodeConfigClass: type[Any] | None = None
 try:
-    from elasticsearch import (
-        Elasticsearch as _ElasticsearchClass,  # type: ignore[import-not-found]
+    from elastic_transport import (  # type: ignore[import-not-found]
+        NodeConfig as _NodeConfigClass,
+        Transport as _TransportClass,
     )
 
     _ES_AVAILABLE = True
 except ImportError:
-    _ElasticsearchClass = None
+    _TransportClass = None
+    _NodeConfigClass = None
 
 
 _DEFAULT_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
@@ -265,10 +273,11 @@ def _create_file_handler() -> logging.Handler | None:
 
 
 class ElasticsearchHandler(logging.Handler):
-    """Custom logging handler that sends logs to Elasticsearch.
+    """Custom logging handler that sends logs to Elasticsearch via elastic-transport.
 
     Uses a background thread and queue to avoid blocking the main application.
     Only sends logs at or above the configured level (default: ERROR).
+    Supports API key authentication (preferred) or basic auth (username/password).
     """
 
     def __init__(
@@ -276,6 +285,7 @@ class ElasticsearchHandler(logging.Handler):
         es_url: str,
         index_prefix: str = "call-analytics",
         level: int = logging.ERROR,
+        api_key: str | None = None,
         username: str | None = None,
         password: str | None = None,
         queue_size: int = 1024,
@@ -283,6 +293,7 @@ class ElasticsearchHandler(logging.Handler):
         super().__init__(level)
         self.es_url = es_url
         self.index_prefix = index_prefix
+        self.api_key = api_key
         self.username = username
         self.password = password
         self.queue_size = queue_size
@@ -293,27 +304,50 @@ class ElasticsearchHandler(logging.Handler):
         self._worker_thread = threading.Thread(target=self._worker, daemon=True)
         self._worker_thread.start()
 
-        # Initialize Elasticsearch client
-        self.es: Any = None
+        # Initialize elastic-transport Transport client
+        self.client: Any = None
         try:
-            if _ElasticsearchClass is None:
-                print("Warning: elasticsearch package not installed", file=sys.stderr)
+            if _TransportClass is None or _NodeConfigClass is None:
+                print("Warning: elastic-transport package not installed", file=sys.stderr)
                 return
 
-            api_key = None
-            headers: dict[str, str] = {}
+            import base64
+            import urllib.parse
 
-            if username and password:
-                headers["Authorization"] = f"Basic {username}:{password}"
+            parsed = urllib.parse.urlparse(es_url)
 
-            self.es = _ElasticsearchClass(
-                [es_url],
-                api_key=api_key,
-                headers=headers if headers else None,
+            # Build auth headers
+            auth_headers: dict[str, str] = {}
+            if api_key:
+                # Accept either format:
+                # 1. Pre-encoded (from ES create API key response "encoded" field)
+                #    Contains only A-Z, a-z, 0-9, +, /, = and is typically >30 chars
+                # 2. Raw "id:key" format (contains a colon separator)
+                # Detect: if it looks like base64 (no colon, valid base64 chars), use as-is
+                import re
+                if ":" not in api_key and re.match(r"^[A-Za-z0-9+/=]+$", api_key):
+                    # Already base64-encoded — use directly
+                    auth_headers["Authorization"] = f"ApiKey {api_key}"
+                else:
+                    # Raw "id:key" format — encode it
+                    encoded = base64.b64encode(api_key.encode("utf-8")).decode("ascii")
+                    auth_headers["Authorization"] = f"ApiKey {encoded}"
+            elif username and password:
+                credentials = f"{username}:{password}"
+                encoded = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
+                auth_headers["Authorization"] = f"Basic {encoded}"
+
+            node_config = _NodeConfigClass(
+                scheme=parsed.scheme or "https",
+                host=parsed.hostname or "localhost",
+                port=parsed.port or 443,
+                headers=auth_headers if auth_headers else {},
             )
-        except (ValueError, OSError) as e:
+
+            self.client = _TransportClass(node_configs=[node_config])
+        except (ValueError, OSError, TypeError) as e:
             print(f"Warning: Failed to connect to Elasticsearch: {e}", file=sys.stderr)
-            self.es = None
+            self.client = None
 
     def _worker(self) -> None:
         """Background worker that processes log messages from the queue."""
@@ -325,7 +359,7 @@ class ElasticsearchHandler(logging.Handler):
                 except queue.Empty:
                     continue
 
-                if self.es is None:
+                if self.client is None:
                     continue
 
                 # Parse JSON and send to Elasticsearch
@@ -341,10 +375,14 @@ class ElasticsearchHandler(logging.Handler):
                     )
                     index = f"{self.index_prefix}-{date_part}"
 
-                    self.es.index(
-                        index=index,
-                        document=data,
-                        timeout="5s",
+                    # POST /{index}/_doc with the log document as JSON body
+                    target_url = f"/{index}/_doc"
+                    resp = self.client.perform_request(
+                        method="POST",
+                        target=target_url,
+                        body=json.dumps(data),
+                        headers={"content-type": "application/json"},
+                        request_timeout=5.0,
                     )
                 except json.JSONDecodeError:
                     # If not JSON, skip (shouldn't happen with our formatter)
@@ -394,6 +432,7 @@ def _create_elasticsearch_handler() -> logging.Handler | None:
         index_prefix = os.getenv("LOG_ES_INDEX", "call-analytics")
         es_level = _level_from_name(os.getenv("LOG_ES_LEVEL", "ERROR"), logging.ERROR)
 
+        es_api_key = os.getenv("LOG_ES_API_KEY")
         es_username = os.getenv("LOG_ES_USERNAME")
         es_password = os.getenv("LOG_ES_PASSWORD")
 
@@ -401,6 +440,7 @@ def _create_elasticsearch_handler() -> logging.Handler | None:
             es_url=es_url,
             index_prefix=index_prefix,
             level=es_level,
+            api_key=es_api_key,
             username=es_username,
             password=es_password,
         )

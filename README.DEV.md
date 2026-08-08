@@ -76,8 +76,9 @@ All logging is controlled via environment variables in `config/.env`:
 | `LOG_ES_URL` | *(none)* | Elasticsearch URL, e.g., `https://es-host:9200` |
 | `LOG_ES_INDEX` | `call-analytics` | Index prefix; dates appended automatically |
 | `LOG_ES_LEVEL` | `ERROR` | Minimum level sent to Elasticsearch |
-| `LOG_ES_USERNAME` | *(none)* | Elasticsearch authentication username |
-| `LOG_ES_PASSWORD` | *(none)* | Elasticsearch authentication password |
+| `LOG_ES_API_KEY` | *(none)* | Elasticsearch API key (recommended for ES 9.x). Accepts raw `id:key` or pre-encoded base64 from the ES response — auto-detected. |
+| `LOG_ES_USERNAME` | *(none)* | Elasticsearch username (deprecated, use `LOG_ES_API_KEY`) |
+| `LOG_ES_PASSWORD` | *(none)* | Elasticsearch password (deprecated, use `LOG_ES_API_KEY`) |
 
 ### Correlation IDs
 

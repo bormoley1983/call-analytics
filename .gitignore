@@ -15,6 +15,7 @@ _hf_cache/
 
 # logs
 *.log
+logs/*
 
 # misc
 .DS_Store

@@ -246,6 +246,11 @@ def _create_file_handler() -> logging.Handler | None:
         log_dir = os.path.join(os.getcwd(), "logs")
         os.makedirs(log_dir, exist_ok=True)
         log_file = os.path.join(log_dir, "app.json")
+    else:
+        # Ensure the directory for the specified log file exists
+        log_dir = os.path.dirname(log_file)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
 
     max_bytes = int(os.getenv("LOG_MAX_BYTES", str(10 * 1024 * 1024)))  # 10 MiB
     backup_count = int(os.getenv("LOG_BACKUP_COUNT", "5"))
@@ -337,11 +342,16 @@ class ElasticsearchHandler(logging.Handler):
                 encoded = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
                 auth_headers["Authorization"] = f"Basic {encoded}"
 
+            # SSL verification — default to True; set LOG_ES_SSL_VERIFY=0 to disable
+            ssl_verify = os.getenv("LOG_ES_SSL_VERIFY", "1").lower() not in ("0", "false", "no")
+
             node_config = _NodeConfigClass(
                 scheme=parsed.scheme or "https",
                 host=parsed.hostname or "localhost",
                 port=parsed.port or 443,
                 headers=auth_headers if auth_headers else {},
+                ssl_assert_fingerprint=None,
+                ssl_context=None if ssl_verify else False,
             )
 
             self.client = _TransportClass(node_configs=[node_config])

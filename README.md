@@ -283,6 +283,7 @@ The application ships with a production-ready logging system that writes to mult
 | `LOG_ES_INDEX` | `call-analytics` | Index prefix; dates appended automatically |
 | `LOG_ES_LEVEL` | `ERROR` | Minimum level sent to Elasticsearch |
 | `LOG_ES_API_KEY` | *(none)* | Elasticsearch API key (recommended). Accepts raw `id:key` or pre-encoded base64 — auto-detected. |
+| `LOG_ES_SSL_VERIFY` | `0` | Set to `1` to verify SSL certificates. Default `0` disables verification (for self-signed certs). |
 
 **Console handler** always outputs to stdout (captured by Docker logs). Use `LOG_FORMAT=json` for structured output in production.
 
@@ -299,6 +300,7 @@ LOG_FORMAT=json
 LOG_FILE=/var/log/call-analytics/app.json
 LOG_ES_URL=https://es-cluster:9200
 LOG_ES_LEVEL=ERROR
+LOG_ES_SSL_VERIFY=0  # Set to 1 if using a public CA certificate
 
 # Development example: human-readable console with debug detail
 LOG_LEVEL=DEBUG

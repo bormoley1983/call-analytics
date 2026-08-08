@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-
 DEFAULT_MATCH_FIELDS = ["summary", "key_questions", "objections"]
 
 

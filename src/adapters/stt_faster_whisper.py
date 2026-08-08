@@ -3,7 +3,8 @@ from __future__ import annotations
 import hashlib
 import importlib
 import logging
-from typing import Any, Iterator, Sequence
+from collections.abc import Iterator, Sequence
+from typing import Any
 
 from domain.config import AppConfig
 from domain.stt import SttFailure, SttIdentity, SttRequest, SttResult, SttSegment
@@ -89,7 +90,7 @@ class FasterWhisperSttAdapter(SttProcessorPort):
                     segments=mapped_segments,
                     raw_text="\n".join(text_parts).strip(),
                 )
-            except Exception as exc:
+            except (OSError, RuntimeError, ValueError) as exc:
                 yield SttFailure(
                     call_id=request.call_id,
                     category="transcription_error",

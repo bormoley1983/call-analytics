@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Unit tests for src/core/ai_apply.py — AI keyword catalog apply logic.
 
 Covers:
@@ -11,10 +10,10 @@ Covers:
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, cast
 
 from adapters.ai_apply_postgres import PostgresAiApplyStore
-from api.schemas import AIApplyAction, AIMutation, AISkippedAction
+from api.schemas import AIApplyAction, AIMutation
 from core.ai_apply import (
     _do_deactivate,
     _do_expand_aliases,
@@ -37,15 +36,15 @@ from domain.keywords import KeywordDefinition
 class FakeKeywordSource:
     """In-memory keyword source for testing mutation execution."""
 
-    def __init__(self, items: List[KeywordDefinition]):
-        self._store: Dict[str, KeywordDefinition] = {
+    def __init__(self, items: list[KeywordDefinition]):
+        self._store: dict[str, KeywordDefinition] = {
             kw.keyword_id: copy.deepcopy(kw) for kw in items
         }
 
-    def list_keywords(self) -> List[KeywordDefinition]:
+    def list_keywords(self) -> list[KeywordDefinition]:
         return list(self._store.values())
 
-    def get_keyword(self, keyword_id: str) -> Optional[KeywordDefinition]:
+    def get_keyword(self, keyword_id: str) -> KeywordDefinition | None:
         kw = self._store.get(keyword_id)
         return copy.deepcopy(kw) if kw else None
 
@@ -72,19 +71,19 @@ class FakeApplyStore:
     """In-memory apply store for testing persistence."""
 
     def __init__(self):
-        self.apply_history: List[Dict[str, Any]] = []
+        self.apply_history: list[dict[str, Any]] = []
 
     def apply_actions(
         self,
         analysis_id: str,
-        applied_by: Optional[str],
+        applied_by: str | None,
         dry_run: bool,
-        actions_applied: List[Dict],
-        actions_skipped: List[Dict],
-        mutations: List[Dict],
+        actions_applied: list[dict],
+        actions_skipped: list[dict],
+        mutations: list[dict],
         keyword_refreshed: bool,
         follow_up_ran: bool,
-        error: Optional[str] = None,
+        error: str | None = None,
     ) -> str:
         import uuid
 
@@ -106,7 +105,7 @@ class FakeApplyStore:
 
     def get_apply_history(
         self, analysis_id: str, limit: int = 50, offset: int = 0
-    ) -> List[Dict]:
+    ) -> list[dict]:
         return [r for r in self.apply_history if r["analysis_id"] == analysis_id][
             offset : offset + limit
         ]
@@ -124,7 +123,7 @@ def _kw(
     keyword_id: str,
     label: str = "",
     is_active: bool = True,
-    terms: Optional[List[str]] = None,
+    terms: list[str] | None = None,
     category: str = "general",
 ) -> KeywordDefinition:
     return KeywordDefinition(
@@ -137,7 +136,7 @@ def _kw(
     )
 
 
-def _make_analysis(groups: List[Dict]) -> Dict[str, Any]:
+def _make_analysis(groups: list[dict]) -> dict[str, Any]:
     """Build a fake analysis dict with items["action"] populated from groups."""
 
     actions_items = []
@@ -160,8 +159,8 @@ def _make_analysis(groups: List[Dict]) -> Dict[str, Any]:
 
 def _make_groups_with_actions(
     group_label: str,
-    actions: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    actions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     return [
         {
             "group_label": group_label,
@@ -383,7 +382,7 @@ def test_validate_merge_missing_source():
             "reason": "overlap",
         }
     ]
-    applied, skipped, mutations = _validate_and_build_mutations(
+    applied, skipped, _mutations = _validate_and_build_mutations(
         resolved, {"target_kw"}, {}
     )
 
@@ -401,7 +400,7 @@ def test_validate_merge_missing_target():
             "reason": "overlap",
         }
     ]
-    applied, skipped, mutations = _validate_and_build_mutations(
+    applied, skipped, _mutations = _validate_and_build_mutations(
         resolved, {"source_kw"}, {}
     )
 
@@ -419,7 +418,7 @@ def test_validate_merge_self_merge_skipped():
             "reason": "self",
         }
     ]
-    applied, skipped, mutations = _validate_and_build_mutations(resolved, {"kw_a"}, {})
+    applied, skipped, _mutations = _validate_and_build_mutations(resolved, {"kw_a"}, {})
 
     assert len(applied) == 0
     assert len(skipped) == 1
@@ -436,7 +435,7 @@ def test_validate_rename():
             "reason": "clarity",
         }
     ]
-    applied, skipped, mutations = _validate_and_build_mutations(resolved, {"kw_a"}, {})
+    _applied, _skipped, mutations = _validate_and_build_mutations(resolved, {"kw_a"}, {})
 
     assert len(mutations) == 1
     assert mutations[0].action_type == "rename"
@@ -451,7 +450,7 @@ def test_validate_expand_aliases():
             "reason": "more coverage",
         }
     ]
-    applied, skipped, mutations = _validate_and_build_mutations(resolved, {"kw_a"}, {})
+    _applied, _skipped, mutations = _validate_and_build_mutations(resolved, {"kw_a"}, {})
 
     assert len(mutations) == 1
     assert mutations[0].action_type == "expand_aliases"
@@ -465,7 +464,7 @@ def test_validate_deactivate():
             "reason": "unused",
         }
     ]
-    applied, skipped, mutations = _validate_and_build_mutations(resolved, {"kw_a"}, {})
+    _applied, _skipped, mutations = _validate_and_build_mutations(resolved, {"kw_a"}, {})
 
     assert len(mutations) == 1
     assert mutations[0].action_type == "deactivate"
@@ -473,7 +472,7 @@ def test_validate_deactivate():
 
 def test_validate_unknown_action_type_skipped():
     resolved = [{"type": "unknown_type", "keyword_id": "a"}]
-    applied, skipped, mutations = _validate_and_build_mutations(resolved, {"a"}, {})
+    applied, skipped, _mutations = _validate_and_build_mutations(resolved, {"a"}, {})
 
     assert len(applied) == 0
     assert len(skipped) == 1
@@ -482,7 +481,7 @@ def test_validate_unknown_action_type_skipped():
 
 def test_validate_resolve_error_skipped():
     resolved = [{"_resolve_error": "Could not resolve", "keyword_id": "x"}]
-    applied, skipped, mutations = _validate_and_build_mutations(resolved, {"x"}, {})
+    applied, skipped, _mutations = _validate_and_build_mutations(resolved, {"x"}, {})
 
     assert len(applied) == 0
     assert len(skipped) == 1
@@ -783,7 +782,7 @@ def test_apply_keyword_id_resolution():
     keyword_source = FakeKeywordSource([_kw("my_kw", label="Original")])
     apply_store = FakeApplyStore()
 
-    result = apply_approved_actions(
+    apply_approved_actions(
         analysis_id="test-005",
         analysis=analysis,
         request_actions=[AIApplyAction(keyword_id="my_kw")],

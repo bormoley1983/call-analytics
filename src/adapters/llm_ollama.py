@@ -4,7 +4,7 @@ import os
 import re
 import threading
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import requests
 
@@ -134,25 +134,25 @@ class OllamaLlm:
         self.config = config
 
     def translate_segments_to_uk(
-        self, segments: List[Dict[str, Any]]
-    ) -> List[str] | None:
+        self, segments: list[dict[str, Any]]
+    ) -> list[str] | None:
         return translate_segments_to_uk(segments, self.config)
 
     def analyze(
-        self, call_meta: Dict[str, Any], transcript_text_uk: str
-    ) -> Dict[str, Any]:
+        self, call_meta: dict[str, Any], transcript_text_uk: str
+    ) -> dict[str, Any]:
         return ollama_analyze(call_meta, transcript_text_uk, self.config)
 
     def analyze_keyword_catalog(
-        self, analysis_payload: Dict[str, Any], max_groups: int = 20
-    ) -> Dict[str, Any]:
+        self, analysis_payload: dict[str, Any], max_groups: int = 20
+    ) -> dict[str, Any]:
         return ollama_analyze_keyword_catalog(
             analysis_payload, self.config, max_groups=max_groups
         )
 
     def enrich_candidates(
-        self, candidates: List[Dict[str, Any]], max_aliases: int = 3
-    ) -> Dict[str, Any]:
+        self, candidates: list[dict[str, Any]], max_aliases: int = 3
+    ) -> dict[str, Any]:
         return ollama_enrich_candidates(candidates, self.config, max_aliases)
 
     def expand_aliases(
@@ -160,17 +160,17 @@ class OllamaLlm:
         *,
         keyword_id: str,
         label: str,
-        current_terms: List[str],
-        evidence_texts: List[str],
+        current_terms: list[str],
+        evidence_texts: list[str],
         max_aliases: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return ollama_expand_aliases(
             keyword_id, label, current_terms, evidence_texts, max_aliases, self.config
         )
 
     def generate_deep_insights(
-        self, insight_type: str, analysis_records: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+        self, insight_type: str, analysis_records: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         return ollama_generate_deep_insights(
             insight_type, analysis_records, self.config
         )
@@ -218,7 +218,7 @@ def _ollama_generate(
                 data.get("total_duration", 0) / 1_000_000_000,
             )
             return data.get("response", "")
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
             last_err = e
         finally:
             _ollama_rate_limiter.release()
@@ -238,7 +238,7 @@ def _ollama_generate(
     )
 
 
-def _extract_json_object(raw: str) -> Dict[str, Any]:
+def _extract_json_object(raw: str) -> dict[str, Any]:
     """Extract JSON object from text response.
 
     Uses a state machine that tracks brace depth while respecting string
@@ -282,8 +282,8 @@ def _extract_json_object(raw: str) -> Dict[str, Any]:
 
 
 def translate_segments_to_uk(
-    segments: List[Dict[str, Any]], config: AppConfig
-) -> List[str] | None:
+    segments: list[dict[str, Any]], config: AppConfig
+) -> list[str] | None:
     """
     Translate segment texts to Ukrainian in a single call.
     Returns list of translated strings in same order, or None if too large.
@@ -298,7 +298,7 @@ def translate_segments_to_uk(
     if not texts:
         return None
 
-    combined = "\n".join(f"{i+1}. {t}" for i, t in enumerate(texts))
+    combined = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(texts))
     if len(combined) > config.max_chars_translate:
         return None
 
@@ -323,14 +323,14 @@ def translate_segments_to_uk(
             len(translated),
         )
         return None
-    except Exception as e:
+    except (RuntimeError, requests.exceptions.RequestException) as e:
         logger.warning("Translation error: %s", e)
         return None
 
 
 def ensure_transcript_uk(
-    transcript: Dict[str, Any], config: AppConfig
-) -> Tuple[Dict[str, Any], bool]:
+    transcript: dict[str, Any], config: AppConfig
+) -> tuple[dict[str, Any], bool]:
     """
     Ensure transcript has Ukrainian text fields.
     Returns (updated_transcript, changed_flag).
@@ -362,8 +362,8 @@ def ensure_transcript_uk(
 
 
 def ollama_analyze(
-    call_meta: Dict[str, Any], transcript_text_uk: str, config: AppConfig
-) -> Dict[str, Any]:
+    call_meta: dict[str, Any], transcript_text_uk: str, config: AppConfig
+) -> dict[str, Any]:
     """
     Analyze call via Ollama in Ukrainian, expecting a JSON response.
     """
@@ -401,10 +401,10 @@ def ollama_analyze(
     return ensure_analysis_schema(analysis, call_meta)
 
 
-def _normalize_string_list(value: Any) -> List[str]:
+def _normalize_string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
-    result: List[str] = []
+    result: list[str] = []
     for item in value:
         normalized = str(item).strip()
         if normalized:
@@ -413,10 +413,10 @@ def _normalize_string_list(value: Any) -> List[str]:
 
 
 def ollama_analyze_keyword_catalog(
-    analysis_payload: Dict[str, Any],
+    analysis_payload: dict[str, Any],
     config: AppConfig,
     max_groups: int = 20,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     started_at = time.perf_counter()
     prompt = KEYWORD_CATALOG_ANALYSIS_PROMPT_TEMPLATE.format(
         max_groups=max_groups,
@@ -443,13 +443,13 @@ def ollama_analyze_keyword_catalog(
         data = _extract_json_object(raw)
 
     if not isinstance(data, dict):
-        raise ValueError("Keyword catalog analysis response must be a JSON object")
+        raise TypeError("Keyword catalog analysis response must be a JSON object")
 
-    groups: List[Dict[str, Any]] = []
+    groups: list[dict[str, Any]] = []
     for item in data.get("groups", []):
         if not isinstance(item, dict):
             continue
-        actions: List[Dict[str, Any]] = []
+        actions: list[dict[str, Any]] = []
         for action in item.get("suggested_actions", []):
             if not isinstance(action, dict):
                 continue
@@ -682,10 +682,10 @@ Analysis records:
 
 
 def ollama_enrich_candidates(
-    candidates: List[Dict[str, Any]],
+    candidates: list[dict[str, Any]],
     config: AppConfig,
     max_aliases: int = 3,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     started_at = time.perf_counter()
     prompt = KEYWORD_ENRICHMENT_PROMPT_TEMPLATE.format(
         max_aliases=max_aliases,
@@ -708,9 +708,9 @@ def ollama_enrich_candidates(
         data = _extract_json_object(raw)
 
     if not isinstance(data, dict):
-        raise ValueError("Enrichment response must be a JSON object")
+        raise TypeError("Enrichment response must be a JSON object")
 
-    enriched: List[Dict[str, Any]] = []
+    enriched: list[dict[str, Any]] = []
     for item in data.get("enriched_candidates", []):
         if not isinstance(item, dict):
             continue
@@ -744,11 +744,11 @@ def ollama_enrich_candidates(
 def ollama_expand_aliases(
     keyword_id: str,
     label: str,
-    current_terms: List[str],
-    evidence_texts: List[str],
+    current_terms: list[str],
+    evidence_texts: list[str],
     max_aliases: int,
     config: AppConfig,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     started_at = time.perf_counter()
     prompt = KEYWORD_ALIAS_EXPANSION_PROMPT_TEMPLATE.format(
         keyword_id=keyword_id,
@@ -774,9 +774,9 @@ def ollama_expand_aliases(
         data = _extract_json_object(raw)
 
     if not isinstance(data, dict):
-        raise ValueError("Alias expansion response must be a JSON object")
+        raise TypeError("Alias expansion response must be a JSON object")
 
-    suggestions: List[Dict[str, Any]] = []
+    suggestions: list[dict[str, Any]] = []
     for item in data.get("suggested_aliases", []):
         if not isinstance(item, dict):
             continue
@@ -800,9 +800,9 @@ def ollama_expand_aliases(
 
 def ollama_generate_deep_insights(
     insight_type: str,
-    analysis_records: List[Dict[str, Any]],
+    analysis_records: list[dict[str, Any]],
     config: AppConfig,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     prompt_map = {
         "pain_points": PAIN_POINTS_PROMPT_TEMPLATE,
         "objections": OBJECTIONS_PROMPT_TEMPLATE,
@@ -839,9 +839,9 @@ def ollama_generate_deep_insights(
         data = _extract_json_object(raw)
 
     if not isinstance(data, dict):
-        raise ValueError("Deep insights response must be a JSON object")
+        raise TypeError("Deep insights response must be a JSON object")
 
-    insights: List[Dict[str, Any]] = []
+    insights: list[dict[str, Any]] = []
     for item in data.get("insights", []):
         if not isinstance(item, dict):
             continue

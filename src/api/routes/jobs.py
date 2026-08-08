@@ -3,8 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Path
 
 from api import job_store
-from api.runner import (run_export_snapshots, run_process, run_sync,
-                        run_sync_and_process)
+from api.runner import run_export_snapshots, run_process, run_sync, run_sync_and_process
 from api.schemas import JobResponse, ProcessRequest, SyncRequest
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])

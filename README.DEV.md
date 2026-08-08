@@ -50,6 +50,79 @@ mypy --no-incremental src tests
 - `requirements-dev-canary.txt`: optional dev tooling + Canary runtime stack
 - `requirements-qdrant.txt`: optional dependency file for the future Qdrant plan only
 
+## Logging System
+
+The application uses a centralized logging system (`src/logging_config.py`) with multiple output targets.
+
+### Architecture
+
+| Handler | Format | When Active | Purpose |
+| --------- | -------- | ------------- | ---------- |
+| Console | Text or JSON | Always | Local debugging, Docker stdout |
+| File (JSON) | Structured JSON | Always (failsafe) | Persistent log storage, post-mortem analysis |
+| Elasticsearch | Structured JSON | When `LOG_ES_URL` set | Centralized error monitoring, Kibana dashboards |
+
+### Configuration
+
+All logging is controlled via environment variables in `config/.env`:
+
+| Variable | Default | Description |
+| ---------- | --------- | ------------- |
+| `LOG_LEVEL` | `INFO` | Minimum log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
+| `LOG_FORMAT` | `text` | Console format: `text` (human-readable) or `json` (structured) |
+| `LOG_FILE` | `logs/app.json` | Path to rotating JSON log file (created automatically) |
+| `LOG_MAX_BYTES` | `10485760` | Max bytes per log file before rotation (10 MiB) |
+| `LOG_BACKUP_COUNT` | `5` | Number of rotated files to keep |
+| `LOG_ES_URL` | *(none)* | Elasticsearch URL, e.g., `https://es-host:9200` |
+| `LOG_ES_INDEX` | `call-analytics` | Index prefix; dates appended automatically |
+| `LOG_ES_LEVEL` | `ERROR` | Minimum level sent to Elasticsearch |
+| `LOG_ES_API_KEY` | *(none)* | Elasticsearch API key (recommended for ES 9.x). Accepts raw `id:key` or pre-encoded base64 from the ES response — auto-detected. |
+| `LOG_ES_USERNAME` | *(none)* | Elasticsearch username (deprecated, use `LOG_ES_API_KEY`) |
+| `LOG_ES_PASSWORD` | *(none)* | Elasticsearch password (deprecated, use `LOG_ES_API_KEY`) |
+
+### Correlation IDs
+
+Every HTTP request gets a unique correlation ID for tracing:
+
+- If the client sends `X-Correlation-Id` header, that value is used.
+- Otherwise, a UUID is generated automatically.
+- The ID is returned in the response `X-Correlation-Id` header.
+- All logs emitted during the request include `"correlation_id": "<id>"` in JSON output.
+
+```bash
+# Trace a specific request
+curl -H "X-Correlation-Id: req-debug-001" http://localhost:8800/jobs/process
+# Search logs for all entries with correlation_id=req-debug-001
+```
+
+### Development vs Production Examples
+
+**Local development** (human-readable console + JSON file fallback):
+
+```env
+LOG_LEVEL=DEBUG
+LOG_FORMAT=text
+```
+
+**Production** (JSON console + file + Elasticsearch for errors):
+
+```env
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+LOG_FILE=/var/log/call-analytics/app.json
+LOG_ES_URL=https://es-cluster:9200
+LOG_ES_LEVEL=ERROR
+```
+
+### Library Noise Suppression
+
+Third-party library log levels are suppressed by default. Override individually:
+
+```env
+LOG_LEVEL_PARAMIKO=DEBUG
+LOG_LEVEL_LIBRARIES=WARNING
+```
+
 ## Production Runtime Model
 
 ### Source of truth

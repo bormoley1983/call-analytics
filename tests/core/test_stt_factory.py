@@ -1,28 +1,26 @@
 from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
 from adapters.stt_canary import CanarySttAdapter
 from adapters.stt_faster_whisper import FasterWhisperSttAdapter
 from core.stt_factory import build_stt_adapter
-from domain.config import AppConfig
 
 
 def _base_config():
-    return dict(
-        stt_engine="faster-whisper",
-        whisper_model="large-v3-turbo",
-        whisper_device="cpu",
-        whisper_compute_type="float32",
-        whisper_beam_size=5,
-        whisper_initial_prompt="prompt",
-        canary_model_id="nvidia/canary-1b-v2",
-        canary_model_revision="unknown",
-        canary_compute_type="float16",
-        canary_batch_size=1,
-        canary_beam_size=1,
-    )
+    return {
+        "stt_engine": "faster-whisper",
+        "whisper_model": "large-v3-turbo",
+        "whisper_device": "cpu",
+        "whisper_compute_type": "float32",
+        "whisper_beam_size": 5,
+        "whisper_initial_prompt": "prompt",
+        "canary_model_id": "nvidia/canary-1b-v2",
+        "canary_model_revision": "unknown",
+        "canary_compute_type": "float16",
+        "canary_batch_size": 1,
+        "canary_beam_size": 1,
+    }
 
 
 def test_build_stt_adapter_returns_faster_whisper():

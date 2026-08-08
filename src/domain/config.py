@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Configuration management for call analytics.
 Loads settings from environment variables and YAML files.
@@ -9,7 +8,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Tuple, cast
+from typing import Any, Literal, cast
 
 import requests
 import yaml
@@ -158,9 +157,9 @@ class ManagerMapper:
     """Maps phone numbers to managers based on configuration."""
 
     def __init__(self, config_path: Path):
-        self.management_dev: Dict[str, Any] = {}
-        self.sales: List[Dict[str, Any]] = []
-        self.default_manager: Dict[str, str] = {
+        self.management_dev: dict[str, Any] = {}
+        self.sales: list[dict[str, Any]] = []
+        self.default_manager: dict[str, str] = {
             "name": "Unknown/General",
             "id": "manager_unknown",
             "role": "unknown",
@@ -183,7 +182,7 @@ class ManagerMapper:
 
     def find_manager(
         self, src_number: str, dst_number: str, direction: str
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Find manager based on phone numbers and call direction."""
         src_norm = self.normalize_number(src_number)
         dst_norm = self.normalize_number(dst_number)
@@ -195,13 +194,12 @@ class ManagerMapper:
                 for ext in mgr.get("internal_extensions", [])
             ]
 
-            if direction == "incoming" and dst_norm in internal_exts:
-                return {
-                    "name": mgr["name"],
-                    "id": mgr["id"],
-                    "role": mgr.get("role", "management"),
-                }
-            elif direction == "outgoing" and src_norm in internal_exts:
+            if (
+                direction == "incoming"
+                and dst_norm in internal_exts
+                or direction == "outgoing"
+                and src_norm in internal_exts
+            ):
                 return {
                     "name": mgr["name"],
                     "id": mgr["id"],
@@ -318,8 +316,8 @@ class AppConfig:
     spam_probability_threshold: float
 
     # Analysis configuration
-    analysis_config: Dict[str, Any]
-    brand_corrections: Dict[str, str]
+    analysis_config: dict[str, Any]
+    brand_corrections: dict[str, str]
     manager_mapper: "ManagerMapper"
 
 
@@ -330,7 +328,7 @@ def load_app_config() -> AppConfig:
 
     try:
         detected_context_window = get_ollama_model_context_window()
-    except Exception as e:
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
         logger.warning("Could not query Ollama, using default context: %s", e)
         detected_context_window = 4096
 
@@ -475,12 +473,12 @@ def get_ollama_model_context_window() -> int:
             OLLAMA_URL,
         )
         return 4096
-    except Exception as e:
+    except (requests.exceptions.Timeout, ValueError) as e:
         logger.warning("Could not query model info: %s", e)
         return 4096
 
 
-def load_analysis_config() -> Dict[str, Any]:
+def load_analysis_config() -> dict[str, Any]:
     """Load analysis configuration including company info and prompt template."""
     default_config = {
         "company": {
@@ -523,12 +521,12 @@ def load_analysis_config() -> Dict[str, Any]:
         with open(ANALYSIS_CONFIG, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
             return config if config else default_config
-    except Exception as e:
+    except (OSError, yaml.YAMLError) as e:
         logger.warning("Could not load analysis config: %s", e)
         return default_config
 
 
-def load_brand_corrections() -> Tuple[Dict[str, str], str]:
+def load_brand_corrections() -> tuple[dict[str, str], str]:
     """
     Load brand name corrections and initial prompt from config.
     Returns (corrections_dict, initial_prompt).
@@ -549,6 +547,6 @@ def load_brand_corrections() -> Tuple[Dict[str, str], str]:
             corrections = config.get("corrections", default_corrections)
             prompt = config.get("initial_prompt", default_prompt)
             return corrections, prompt
-    except Exception as e:
+    except (OSError, yaml.YAMLError) as e:
         logger.warning("Could not load brands config: %s", e)
         return default_corrections, default_prompt

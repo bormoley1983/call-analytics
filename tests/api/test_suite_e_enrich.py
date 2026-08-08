@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Suite E: Keyword Enrichment Integration Tests
 

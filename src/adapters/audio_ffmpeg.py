@@ -30,7 +30,7 @@ def ffprobe_duration_seconds(path: Path) -> float:
         str(path),
     ]
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         logger.error("ffprobe failed for %s: %s", path, exc)
         return 0.0

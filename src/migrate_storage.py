@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, Literal
+from typing import Any, Literal
 
 import psycopg2
 
@@ -20,17 +21,17 @@ Entity = Literal["transcripts", "analyses"]
 class Record:
     entity: Entity
     call_id: str
-    data: Dict[str, Any]
+    data: dict[str, Any]
 
 
-def _read_json_file(path: Path) -> Dict[str, Any]:
+def _read_json_file(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         raise RuntimeError(f"Failed to read JSON file: {path}: {exc}") from exc
 
 
-def _write_json_file(path: Path, data: Dict[str, Any]) -> None:
+def _write_json_file(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -59,6 +60,9 @@ class JsonBackend:
         base.mkdir(parents=True, exist_ok=True)
         out = base / f"{record.call_id}.json"
         _write_json_file(out, record.data)
+
+    def close(self) -> None:
+        pass
 
 
 class PostgresBackend:
@@ -132,8 +136,8 @@ def migrate_entities(
     entities: Iterable[Entity],
     dry_run: bool,
     stop_on_error: bool,
-) -> Dict[str, Dict[str, int]]:
-    stats: Dict[str, Dict[str, int]] = {}
+) -> dict[str, dict[str, int]]:
+    stats: dict[str, dict[str, int]] = {}
 
     for entity in entities:
         copied = 0

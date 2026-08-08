@@ -68,7 +68,6 @@ _STOPWORDS = {
     "таке",
     "також",
     "що",
-    "це",
     "мене",
     "вам",
     "нам",
@@ -126,7 +125,7 @@ def _iter_phrases(tokens: list[str], max_ngram_words: int) -> list[str]:
         return phrases
     max_len = min(max_ngram_words, len(tokens))
     for phrase_len in range(1, max_len + 1):
-        for start in range(0, len(tokens) - phrase_len + 1):
+        for start in range(len(tokens) - phrase_len + 1):
             phrase_tokens = tokens[start : start + phrase_len]
             if phrase_tokens[0] in _STOPWORDS or phrase_tokens[-1] in _STOPWORDS:
                 continue

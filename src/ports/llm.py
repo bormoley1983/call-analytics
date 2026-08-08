@@ -1,30 +1,30 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Protocol
+from typing import Any, Protocol
 
 
 class LlmPort(Protocol):
     def translate_segments_to_uk(
-        self, segments: List[Dict[str, Any]]
-    ) -> List[str] | None: ...
+        self, segments: list[dict[str, Any]]
+    ) -> list[str] | None: ...
     def analyze(
-        self, call_meta: Dict[str, Any], transcript_text_uk: str
-    ) -> Dict[str, Any]: ...
+        self, call_meta: dict[str, Any], transcript_text_uk: str
+    ) -> dict[str, Any]: ...
     def analyze_keyword_catalog(
-        self, analysis_payload: Dict[str, Any], max_groups: int = 20
-    ) -> Dict[str, Any]: ...
+        self, analysis_payload: dict[str, Any], max_groups: int = 20
+    ) -> dict[str, Any]: ...
     def enrich_candidates(
-        self, candidates: List[Dict[str, Any]], max_aliases: int = 3
-    ) -> Dict[str, Any]: ...
+        self, candidates: list[dict[str, Any]], max_aliases: int = 3
+    ) -> dict[str, Any]: ...
     def expand_aliases(
         self,
         *,
         keyword_id: str,
         label: str,
-        current_terms: List[str],
-        evidence_texts: List[str],
+        current_terms: list[str],
+        evidence_texts: list[str],
         max_aliases: int,
-    ) -> Dict[str, Any]: ...
+    ) -> dict[str, Any]: ...
     def generate_deep_insights(
-        self, insight_type: str, analysis_records: List[Dict[str, Any]]
-    ) -> Dict[str, Any]: ...
+        self, insight_type: str, analysis_records: list[dict[str, Any]]
+    ) -> dict[str, Any]: ...

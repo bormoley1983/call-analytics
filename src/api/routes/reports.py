@@ -4,21 +4,27 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 
-from adapters.keyword_ai_analysis_postgres import \
-    PostgresKeywordAiAnalysisStore
+from adapters.keyword_ai_analysis_postgres import PostgresKeywordAiAnalysisStore
 from adapters.keywords_postgres import PostgresKeywordSource
 from adapters.keywords_yaml import YamlKeywordSource
 from adapters.reporting_json import JsonReportingSource
 from adapters.reporting_postgres import PostgresReportingSource
-from api.schemas import (CustomersSortQuery, KeywordCallsSortQuery,
-                         KeywordManagersSortQuery, KeywordsSortQuery,
-                         ManagersSortQuery, PaginationQuery,
-                         ReportFiltersQuery)
+from api.schemas import (
+    CustomersSortQuery,
+    KeywordCallsSortQuery,
+    KeywordManagersSortQuery,
+    KeywordsSortQuery,
+    ManagersSortQuery,
+    PaginationQuery,
+    ReportFiltersQuery,
+)
 from core.keywords_service import build_keywords_report
-from core.reporting_service import (build_customer_followup_report,
-                                    build_customers_report,
-                                    build_managers_report,
-                                    build_overall_report)
+from core.reporting_service import (
+    build_customer_followup_report,
+    build_customers_report,
+    build_managers_report,
+    build_overall_report,
+)
 from domain.config import ANALYSIS, KEYWORDS_CONFIG
 from domain.reporting import ReportFilters
 
@@ -166,8 +172,7 @@ def _get_freshness_metadata() -> dict[str, Any] | None:
     if not dsn:
         return None
 
-    from adapters.postgres_single_connection import \
-        SingleConnectionPostgresAdapter
+    from adapters.postgres_single_connection import SingleConnectionPostgresAdapter
     
     class FreshnessQuery(SingleConnectionPostgresAdapter):
         def _initialize_connection(self, conn):

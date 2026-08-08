@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any
 
 from domain.reporting import ReportFilters
 from ports.llm import LlmPort
@@ -14,7 +13,7 @@ logger = logging.getLogger(__name__)
 VALID_INSIGHT_TYPES = {"pain_points", "objections", "trends", "follow_up_risk"}
 
 
-def _validate_record_quality(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _validate_record_quality(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Validate that analysis records have sufficient content for meaningful insights.
 
     A record is considered "usable" if it has at least one non-empty field
@@ -23,7 +22,7 @@ def _validate_record_quality(records: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     Returns a dict with usable_records count and any warnings.
     """
-    warnings: List[str] = []
+    warnings: list[str] = []
     total = len(records)
     usable = 0
     empty_all = 0
@@ -51,10 +50,10 @@ def generate_deep_insights(
     reporting_source: ReportingSource,
     llm: LlmPort,
     *,
-    insight_types: List[str],
+    insight_types: list[str],
     filters: Any | None = None,
     max_insights: int = 20,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Generate deep business insights from analysis records.
 
     Fetches analysis records matching filters, calls LLM per insight type,
@@ -104,8 +103,8 @@ def generate_deep_insights(
         max_insights,
     )
 
-    all_insights: List[Dict[str, Any]] = []
-    insight_counts: Dict[str, int] = {}
+    all_insights: list[dict[str, Any]] = []
+    insight_counts: dict[str, int] = {}
 
     for insight_type in insight_types:
         try:
@@ -124,7 +123,7 @@ def generate_deep_insights(
                 len(insights),
                 insight_type,
             )
-        except Exception as exc:
+        except (RuntimeError, TypeError) as exc:
             logger.error(
                 "Failed to generate insights for type=%s: %s", insight_type, exc
             )
@@ -143,7 +142,7 @@ def _collect_analysis_records(
     reporting_source: ReportingSource,
     filters: Any | None,
     max_records: int = 100,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Collect analysis records as dicts suitable for LLM prompts.
 
     Args:
@@ -165,7 +164,7 @@ def _collect_analysis_records(
     else:
         rf = filters
 
-    records: List[Dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
 
     for record in reporting_source.iter_call_records(rf):
         records.append(
@@ -194,11 +193,11 @@ def _collect_analysis_records(
 
 def store_deep_insights_run(
     store: Any,
-    run_data: Dict[str, Any],
+    run_data: dict[str, Any],
     *,
     ai_model: str | None = None,
     filters: Any | None = None,
-    insight_types: List[str] | None = None,
+    insight_types: list[str] | None = None,
 ) -> str:
     """Store a deep insights run in the Postgres store.
 
@@ -207,7 +206,7 @@ def store_deep_insights_run(
     run_id = run_data.get("run_id", str(uuid.uuid4()))
 
     # Build request data
-    request_data: Dict[str, Any] = {
+    request_data: dict[str, Any] = {
         "insight_types": insight_types or [],
         "max_insights": run_data.get("max_insights", 20),
     }

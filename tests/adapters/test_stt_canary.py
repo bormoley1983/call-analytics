@@ -18,7 +18,7 @@ def _build_config():
 
 
 def test_canary_adapter_returns_typed_init_failure_when_runtime_missing(tmp_path):
-    adapter = CanarySttAdapter(_build_config())
+    adapter = CanarySttAdapter(_build_config())  # type: ignore[arg-type]
     req = SttRequest(
         call_id="c1",
         audio_path=tmp_path / "a.wav",
@@ -34,7 +34,7 @@ def test_canary_adapter_returns_typed_init_failure_when_runtime_missing(tmp_path
 
 
 def test_canary_kwargs_omit_source_target_when_auto_language():
-    adapter = CanarySttAdapter(_build_config())
+    adapter = CanarySttAdapter(_build_config())  # type: ignore[arg-type]
     req = SttRequest(
         call_id="c1",
         audio_path=Path("/tmp/unused.wav"),

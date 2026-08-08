@@ -1,5 +1,4 @@
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 from adapters.stt_faster_whisper import FasterWhisperSttAdapter
@@ -60,9 +59,11 @@ def _build_config():
 
 
 def test_faster_whisper_adapter_maps_segments(monkeypatch, tmp_path):
-    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=_WhisperModelOk))
+    monkeypatch.setitem(
+        sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=_WhisperModelOk)
+    )
 
-    adapter = FasterWhisperSttAdapter(_build_config())
+    adapter = FasterWhisperSttAdapter(_build_config())  # type: ignore[arg-type]
     req = SttRequest(
         call_id="c1",
         audio_path=tmp_path / "a.wav",
@@ -80,9 +81,11 @@ def test_faster_whisper_adapter_maps_segments(monkeypatch, tmp_path):
 
 
 def test_faster_whisper_adapter_returns_failure(monkeypatch, tmp_path):
-    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=_WhisperModelFail))
+    monkeypatch.setitem(
+        sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=_WhisperModelFail)
+    )
 
-    adapter = FasterWhisperSttAdapter(_build_config())
+    adapter = FasterWhisperSttAdapter(_build_config())  # type: ignore[arg-type]
     req = SttRequest(
         call_id="c1",
         audio_path=tmp_path / "a.wav",
@@ -98,9 +101,13 @@ def test_faster_whisper_adapter_returns_failure(monkeypatch, tmp_path):
 
 
 def test_faster_whisper_adapter_uses_auto_language_detection(monkeypatch, tmp_path):
-    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=_WhisperModelCaptureLang))
+    monkeypatch.setitem(
+        sys.modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel=_WhisperModelCaptureLang),
+    )
 
-    adapter = FasterWhisperSttAdapter(_build_config())
+    adapter = FasterWhisperSttAdapter(_build_config())  # type: ignore[arg-type]
     req = SttRequest(
         call_id="c1",
         audio_path=tmp_path / "a.wav",

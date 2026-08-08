@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Suite C: AI Apply Integration Tests
 
@@ -28,7 +27,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 
@@ -44,22 +43,22 @@ from domain.keywords import DEFAULT_MATCH_FIELDS, KeywordDefinition
 def _build_analysis(
     *,
     analysis_id: str,
-    keywords: List[KeywordDefinition],
-    groups: List[Dict[str, Any]],
-) -> Dict[str, Any]:
+    keywords: list[KeywordDefinition],
+    groups: list[dict[str, Any]],
+) -> dict[str, Any]:
     """Build an analysis dict that matches what PostgresKeywordAiAnalysisStore.get_analysis returns.
 
     The store returns a flat dict with nested 'items' (by item_type) and 'ai_analysis'.
     Items include keywords, groups, actions (with item_key = "group_index:action_index"), etc.
     """
-    ai_analysis: Dict[str, Any] = {
+    ai_analysis: dict[str, Any] = {
         "groups": groups,
         "summary": "Test analysis",
         "global_recommendations": [],
         "ungrouped_keyword_ids": [],
     }
 
-    analysis_input: Dict[str, Any] = {
+    analysis_input: dict[str, Any] = {
         "keywords": [
             {
                 "keyword_id": kw.keyword_id,
@@ -74,7 +73,7 @@ def _build_analysis(
     }
 
     # Build items the same way _build_items does
-    items: List[Dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
 
     # Keyword items
     for kw in keywords:
@@ -135,9 +134,9 @@ def _build_analysis(
 
 
 def _group_items_by_type(
-    items: List[Dict[str, Any]],
-) -> Dict[str, List[Dict[str, Any]]]:
-    by_type: Dict[str, List[Dict[str, Any]]] = {}
+    items: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    by_type: dict[str, list[dict[str, Any]]] = {}
     for item in items:
         by_type.setdefault(item["item_type"], []).append(item)
     return by_type
@@ -146,7 +145,7 @@ def _group_items_by_type(
 def _make_keyword(
     keyword_id: str,
     label: str,
-    terms: List[str],
+    terms: list[str],
     category: str = "test",
     is_active: bool = True,
 ) -> KeywordDefinition:
@@ -161,9 +160,9 @@ def _make_keyword(
 
 
 def _make_groups_with_actions(
-    actions: List[Dict[str, Any]],
+    actions: list[dict[str, Any]],
     group_label: str = "Test Group",
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Build a single group with the given suggested_actions."""
     return [
         {
@@ -198,19 +197,19 @@ def seed_keywords_for_apply(keyword_adapter: PostgresKeywordSource):
 
 def _seed_analysis(
     analyses_adapter: PostgresKeywordAiAnalysisStore,
-    keywords: List[KeywordDefinition],
-    groups: List[Dict[str, Any]],
+    keywords: list[KeywordDefinition],
+    groups: list[dict[str, Any]],
 ) -> str:
     """Save an analysis via the store (which creates items). Returns analysis_id."""
 
-    ai_analysis: Dict[str, Any] = {
+    ai_analysis: dict[str, Any] = {
         "groups": groups,
         "summary": "Test analysis for apply",
         "global_recommendations": [],
         "ungrouped_keyword_ids": [],
     }
 
-    analysis_input: Dict[str, Any] = {
+    analysis_input: dict[str, Any] = {
         "keywords": [
             {
                 "keyword_id": kw.keyword_id,

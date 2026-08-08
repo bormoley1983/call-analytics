@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Iterable
 
 from adapters.postgres_single_connection import SingleConnectionPostgresAdapter
 from adapters.storage_postgres import DDL, _jsonb

@@ -1,0 +1,38 @@
+# Markdownlint Configuration
+# Rules: https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+
+# Default state for all rules
+default: true
+
+# MD013/line-length - Line length
+# Tables and code blocks can't be shortened without breaking them
+MD013:
+  line_length: 999
+
+# MD024/no-duplicate-heading - Multiple headings with the same content
+# Dev plans have repeated section headers across entries
+MD024: false
+
+# MD036/no-emphasis-as-heading - Emphasis used instead of a heading
+# Some notes use bold for verdicts/summaries intentionally
+MD036: false
+
+# MD031/blanks-around-fences - Fenced code blocks should be surrounded by blank lines
+# Only fires on third-party .venv vendored files
+MD031: false
+
+# MD032/blanks-around-lists - Lists should be surrounded by blank lines
+# Only fires on third-party .venv vendored files
+MD032: false
+
+# MD033/no-inline-html - Inline HTML
+# Only fires on third-party .venv files that can't be modified
+MD033: false
+
+# MD040/fenced-code-language - Fenced code blocks should have a language specified
+# Only fires on third-party .venv vendored files
+MD040: false
+
+# MD041/first-line-heading - First line in a file should be a top-level heading
+# Some files (backlogs, notes) start with lists or paragraphs intentionally
+MD041: false

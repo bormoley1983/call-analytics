@@ -2,8 +2,6 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import cast
 
-import pytest
-
 from adapters import (
     audio_ffmpeg,
     keyword_ai_analysis_postgres,
@@ -479,7 +477,7 @@ def test_keywords_source_retries_read_after_operational_error(monkeypatch):
 
         def execute(self, query, params=None):
             if query == keywords_postgres.DDL:
-                return None
+                return
             if self.conn.fail_query:
                 self.conn.fail_query = False
                 raise postgres_single_connection.psycopg2.OperationalError(
@@ -587,10 +585,10 @@ def test_qdrant_storage_upsert_is_deterministic(monkeypatch):
     payload = {"meta": "data"}
 
     storage.upsert(call_id, embedding, payload)
-    first_id = list(cast(DummyClient, storage.client).points.keys())[0]  # type: ignore[union-attr]
+    first_id = next(iter(cast(DummyClient, storage.client).points.keys()))  # type: ignore[union-attr]
 
     storage.upsert(call_id, embedding, payload)
-    second_id = (
+    (
         list(cast(DummyClient, storage.client).points.keys())[-1]
         if len(cast(DummyClient, storage.client).points) > 1
         else first_id

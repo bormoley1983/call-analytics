@@ -12,14 +12,14 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _include_record(record: ReportCallRecord, filters: ReportFilters, spam_threshold: float) -> bool:
+def _include_record(
+    record: ReportCallRecord, filters: ReportFilters, spam_threshold: float
+) -> bool:
     if not filters.matches_record(record):
         return False
     if filters.spam_only and record.spam_probability < spam_threshold:
         return False
-    if filters.effective_only and not record.effective_call:
-        return False
-    return True
+    return not (filters.effective_only and not record.effective_call)
 
 
 def build_overall_report(
@@ -79,8 +79,12 @@ def build_overall_report(
         "effective_calls": effective_calls,
         "total_duration_seconds": total_duration,
         "top_intents": sorted(intents.items(), key=lambda kv: kv[1], reverse=True)[:10],
-        "top_outcomes": sorted(outcomes.items(), key=lambda kv: kv[1], reverse=True)[:5],
-        "top_questions": sorted(questions.items(), key=lambda kv: kv[1], reverse=True)[:10],
+        "top_outcomes": sorted(outcomes.items(), key=lambda kv: kv[1], reverse=True)[
+            :5
+        ],
+        "top_questions": sorted(questions.items(), key=lambda kv: kv[1], reverse=True)[
+            :10
+        ],
     }
 
 
@@ -103,9 +107,15 @@ def _manager_bucket(record: ReportCallRecord) -> dict[str, Any]:
 
 def _finalize_manager_stats(stats: dict[str, Any]) -> dict[str, Any]:
     result = dict(stats)
-    result["top_intents"] = sorted(result.pop("intents").items(), key=lambda kv: kv[1], reverse=True)[:10]
-    result["top_outcomes"] = sorted(result.pop("outcomes").items(), key=lambda kv: kv[1], reverse=True)[:5]
-    result["top_questions"] = sorted(result.pop("questions").items(), key=lambda kv: kv[1], reverse=True)[:10]
+    result["top_intents"] = sorted(
+        result.pop("intents").items(), key=lambda kv: kv[1], reverse=True
+    )[:10]
+    result["top_outcomes"] = sorted(
+        result.pop("outcomes").items(), key=lambda kv: kv[1], reverse=True
+    )[:5]
+    result["top_questions"] = sorted(
+        result.pop("questions").items(), key=lambda kv: kv[1], reverse=True
+    )[:10]
     return result
 
 
@@ -117,7 +127,9 @@ def build_managers_report(
     order: str = "desc",
 ) -> dict[str, Any]:
     if hasattr(source, "build_managers_report_data"):
-        data = source.build_managers_report_data(filters, spam_threshold, sort_by, order)  # type: ignore[attr-defined]
+        data = source.build_managers_report_data(  # type: ignore[attr-defined]
+            filters, spam_threshold, sort_by, order
+        )
         return {
             "generated_at": _utc_now_iso(),
             "data_source": source.source_name,
@@ -153,7 +165,9 @@ def build_managers_report(
         for question in record.key_questions:
             normalized = question.lower().strip()
             if normalized:
-                stats["questions"][normalized] = stats["questions"].get(normalized, 0) + 1
+                stats["questions"][normalized] = (
+                    stats["questions"].get(normalized, 0) + 1
+                )
 
         role = record.role or "unknown"
         summary = role_summary.setdefault(role, {"total_calls": 0})
@@ -169,10 +183,16 @@ def build_managers_report(
 
     reverse = order == "desc"
     if sort_by == "manager_name":
-        all_managers.sort(key=lambda item: (item["manager_name"], item["manager_id"]), reverse=reverse)
+        all_managers.sort(
+            key=lambda item: (item["manager_name"], item["manager_id"]), reverse=reverse
+        )
     else:
         all_managers.sort(
-            key=lambda item: (item.get(sort_by, 0), item["manager_name"], item["manager_id"]),
+            key=lambda item: (
+                item.get(sort_by, 0),
+                item["manager_name"],
+                item["manager_id"],
+            ),
             reverse=reverse,
         )
 
@@ -196,8 +216,7 @@ def _normalize_phone_number(value: str | None) -> str:
     digits = re.sub(r"[^\d]", "", str(value or ""))
     if not digits:
         return ""
-    if digits.startswith("00"):
-        digits = digits[2:]
+    digits = digits.removeprefix("00")
     # Treat local UA 10-digit mobile format as international to avoid split buckets.
     if len(digits) == 10 and digits.startswith("0"):
         digits = f"38{digits}"
@@ -266,7 +285,9 @@ def _accumulate_customer_stats(
     if record.effective_call:
         stats["effective_calls"] += 1
 
-    call_date = (record.call_datetime.date().isoformat() if record.call_datetime else "").strip()
+    call_date = (
+        record.call_datetime.date().isoformat() if record.call_datetime else ""
+    ).strip()
     if call_date:
         first_call_date = stats.get("first_call_date")
         last_call_date = stats.get("last_call_date")
@@ -299,12 +320,20 @@ def _finalize_customer_stats(stats: dict[str, Any]) -> dict[str, Any]:
     result = dict(stats)
 
     managers = list(result.pop("managers").values())
-    managers.sort(key=lambda item: (-item["calls"], item["manager_name"], item["manager_id"]))
+    managers.sort(
+        key=lambda item: (-item["calls"], item["manager_name"], item["manager_id"])
+    )
     result["managers"] = managers
 
-    result["top_intents"] = sorted(result.pop("intents").items(), key=lambda kv: kv[1], reverse=True)[:10]
-    result["top_outcomes"] = sorted(result.pop("outcomes").items(), key=lambda kv: kv[1], reverse=True)[:5]
-    result["top_questions"] = sorted(result.pop("questions").items(), key=lambda kv: kv[1], reverse=True)[:10]
+    result["top_intents"] = sorted(
+        result.pop("intents").items(), key=lambda kv: kv[1], reverse=True
+    )[:10]
+    result["top_outcomes"] = sorted(
+        result.pop("outcomes").items(), key=lambda kv: kv[1], reverse=True
+    )[:5]
+    result["top_questions"] = sorted(
+        result.pop("questions").items(), key=lambda kv: kv[1], reverse=True
+    )[:10]
     return result
 
 
@@ -316,7 +345,9 @@ def build_customers_report(
     order: str = "desc",
 ) -> dict[str, Any]:
     if hasattr(source, "build_customers_report_data"):
-        data = source.build_customers_report_data(filters, spam_threshold, sort_by, order)  # type: ignore[attr-defined]
+        data = source.build_customers_report_data(  # type: ignore[attr-defined]
+            filters, spam_threshold, sort_by, order
+        )
         return {
             "generated_at": _utc_now_iso(),
             "data_source": source.source_name,
@@ -332,7 +363,9 @@ def build_customers_report(
             continue
 
         customer_phone, display_phone = _resolve_customer_phone(record)
-        stats = customers_stats.setdefault(customer_phone, _customer_bucket(customer_phone, display_phone))
+        stats = customers_stats.setdefault(
+            customer_phone, _customer_bucket(customer_phone, display_phone)
+        )
         if stats["display_phone"] == "unknown" and display_phone != "unknown":
             stats["display_phone"] = display_phone
         _accumulate_customer_stats(stats, record, spam_threshold)
@@ -343,7 +376,12 @@ def build_customers_report(
     ]
 
     reverse = order == "desc"
-    if sort_by in {"customer_phone", "display_phone", "first_call_date", "last_call_date"}:
+    if sort_by in {
+        "customer_phone",
+        "display_phone",
+        "first_call_date",
+        "last_call_date",
+    }:
         all_customers.sort(
             key=lambda item: (item.get(sort_by) or "", item["customer_phone"]),
             reverse=reverse,
@@ -396,7 +434,9 @@ def build_customer_followup_report(
         calls.append(
             {
                 "call_id": record.call_id,
-                "call_date": record.call_datetime.date().isoformat() if record.call_datetime else "",
+                "call_date": record.call_datetime.date().isoformat()
+                if record.call_datetime
+                else "",
                 "direction": record.direction,
                 "manager_id": record.manager_id,
                 "manager_name": record.manager_name,
@@ -417,7 +457,9 @@ def build_customer_followup_report(
     if customer_stats is None:
         return None
 
-    calls.sort(key=lambda item: ((item.get("call_date") or ""), item["call_id"]), reverse=True)
+    calls.sort(
+        key=lambda item: ((item.get("call_date") or ""), item["call_id"]), reverse=True
+    )
     report = _finalize_customer_stats(customer_stats)
     report["calls"] = calls
     report["generated_at"] = _utc_now_iso()

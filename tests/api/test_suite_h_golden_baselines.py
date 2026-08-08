@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Suite H: Golden Baseline Regression Tests (DEVPLAN_ONLINE_TESTS_TBD_20_03_2026.md)
 
@@ -16,9 +15,6 @@ Run: pytest tests/api/test_suite_h_golden_baselines.py -m "integration and postg
 """
 
 from __future__ import annotations
-
-import os
-from pathlib import Path
 
 import pytest
 

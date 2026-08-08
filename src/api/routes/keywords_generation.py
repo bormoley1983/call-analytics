@@ -7,7 +7,6 @@ from adapters.keywords_postgres import PostgresKeywordSource
 from adapters.reporting_postgres import PostgresReportingSource
 from api.schemas import (
     KeywordGenerationBootstrapRequest,
-    KeywordGenerationEnrichCandidate,
     KeywordGenerationEnrichRequest,
     KeywordGenerationPipelineRequest,
     KeywordGenerationPublishRequest,
@@ -191,7 +190,9 @@ def publish_candidates(req: KeywordGenerationPublishRequest):
         },
     },
 )
-def bootstrap_keywords(req: KeywordGenerationBootstrapRequest):
+def bootstrap_keywords(
+    req: KeywordGenerationBootstrapRequest,
+) -> dict[str, object]:
     reporting_source = _get_postgres_reporting_source()
     keyword_source = _get_postgres_keyword_source()
     try:
@@ -312,7 +313,7 @@ def enrich_candidates(req: KeywordGenerationEnrichRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Enrichment failed: {exc}",
-        )
+        ) from exc
 
 
 # ---------- Pipeline endpoint (generate + enrich + publish + materialize + analyze) ----------

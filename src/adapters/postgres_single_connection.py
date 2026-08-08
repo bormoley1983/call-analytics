@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 import psycopg2
 
@@ -48,7 +49,7 @@ class SingleConnectionPostgresAdapter:
         try:
             if not conn.closed:
                 conn.close()
-        except Exception:
+        except psycopg2.Error:
             pass
 
     def _connect(self):
@@ -57,7 +58,7 @@ class SingleConnectionPostgresAdapter:
         )
         try:
             self._initialize_connection(conn)
-        except Exception:
+        except psycopg2.Error:
             try:
                 if not conn.closed:
                     conn.close()
@@ -86,7 +87,7 @@ class SingleConnectionPostgresAdapter:
             return
         try:
             conn.rollback()
-        except Exception:
+        except psycopg2.Error:
             self._close_conn()
 
     def _run_read(self, fn: Callable[[Any], T]) -> T:

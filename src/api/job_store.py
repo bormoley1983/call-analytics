@@ -1,11 +1,10 @@
 import uuid
 from datetime import datetime, timezone
 from threading import RLock
-from typing import Dict, Optional
 
 from api.schemas import JobResponse, JobStatus
 
-_jobs: Dict[str, JobResponse] = {}
+_jobs: dict[str, JobResponse] = {}
 _lock = RLock()
 _ACTIVE_JOB_STATUSES = {JobStatus.pending, JobStatus.running}
 
@@ -33,7 +32,7 @@ def create_job(type: str) -> JobResponse:
         return _create_job_locked(type)
 
 
-def get_job(job_id: str) -> Optional[JobResponse]:
+def get_job(job_id: str) -> JobResponse | None:
     with _lock:
         return _jobs.get(job_id)
 

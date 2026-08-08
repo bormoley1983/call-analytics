@@ -4,8 +4,8 @@ import logging
 import time
 from typing import Any
 
-from core.reporting_service import build_customers_report
 from core.keywords_service import build_keywords_report, list_keywords
+from core.reporting_service import build_customers_report
 from domain.reporting import ReportFilters
 
 logger = logging.getLogger(__name__)

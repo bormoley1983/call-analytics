@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import html
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 
 def _esc(v: Any) -> str:
@@ -19,8 +19,8 @@ def _fmt_duration(seconds: float) -> str:
     return f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
 
 
-def render_overall_report(report: Dict[str, Any], out_path: Path) -> None:
-    total = report["total_calls"]
+def render_overall_report(report: dict[str, Any], out_path: Path) -> None:
+    _ = report["total_calls"]  # tracked for future use
     rows = ""
     for label, key in [
         ("Total calls", "total_calls"),
@@ -34,28 +34,30 @@ def render_overall_report(report: Dict[str, Any], out_path: Path) -> None:
 
     duration = _fmt_duration(report.get("total_duration_seconds", 0))
 
-    def top_table(items: List, title: str) -> str:
+    def top_table(items: list, title: str) -> str:
         if not items:
             return ""
-        item_rows = "".join(f"<tr><td>{_esc(k)}</td><td>{_esc(v)}</td></tr>" for k, v in items)
+        item_rows = "".join(
+            f"<tr><td>{_esc(k)}</td><td>{_esc(v)}</td></tr>" for k, v in items
+        )
         return f"<h3>{title}</h3><table><tr><th>Value</th><th>Count</th></tr>{item_rows}</table>"
 
     body = f"""
     <h1>Call Analytics — Overall Report</h1>
-    <p>Generated: {_esc(report.get('generated_at', ''))}</p>
+    <p>Generated: {_esc(report.get("generated_at", ""))}</p>
     <p>Total duration: {duration}</p>
     <table>
       <tr><th>Metric</th><th>Count</th></tr>
       {rows}
     </table>
-    {top_table(report.get('top_intents', []), 'Top Intents')}
-    {top_table(report.get('top_outcomes', []), 'Top Outcomes')}
-    {top_table(report.get('top_questions', []), 'Top Questions')}
+    {top_table(report.get("top_intents", []), "Top Intents")}
+    {top_table(report.get("top_outcomes", []), "Top Outcomes")}
+    {top_table(report.get("top_questions", []), "Top Questions")}
     """
     _write_html(out_path, "Overall Report", body)
 
 
-def render_manager_report(report: Dict[str, Any], out_path: Path) -> None:
+def render_manager_report(report: dict[str, Any], out_path: Path) -> None:
     sections = ""
     for role, managers in report.get("by_role", {}).items():
         cards = ""
@@ -63,17 +65,17 @@ def render_manager_report(report: Dict[str, Any], out_path: Path) -> None:
             total = m["total_calls"]
             cards += f"""
             <div class="card">
-              <h3>{_esc(m['manager_name'])} <small>({_esc(role)})</small></h3>
-              <p>Calls: {total} — Effective: {m['effective_calls']} ({_pct(m['effective_calls'], total)})
-                 — Spam: {m['spam_calls']} — Duration: {_fmt_duration(m['total_duration_seconds'])}</p>
-              <p>Incoming: {m['incoming']} / Outgoing: {m['outgoing']}</p>
+              <h3>{_esc(m["manager_name"])} <small>({_esc(role)})</small></h3>
+              <p>Calls: {total} — Effective: {m["effective_calls"]} ({_pct(m["effective_calls"], total)})
+                 — Spam: {m["spam_calls"]} — Duration: {_fmt_duration(m["total_duration_seconds"])}</p>
+              <p>Incoming: {m["incoming"]} / Outgoing: {m["outgoing"]}</p>
             </div>"""
         sections += f"<h2>Role: {_esc(role)}</h2>{cards}"
 
     body = f"""
     <h1>Call Analytics — Per-Manager Report</h1>
-    <p>Generated: {_esc(report.get('generated_at', ''))}</p>
-    <p>Total managers: {report.get('total_managers', 0)}</p>
+    <p>Generated: {_esc(report.get("generated_at", ""))}</p>
+    <p>Total managers: {report.get("total_managers", 0)}</p>
     {sections}
     """
     _write_html(out_path, "Manager Report", body)

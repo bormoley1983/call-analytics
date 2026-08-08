@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import logging
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Callable, List, Optional
 
 import paramiko
 
@@ -23,9 +22,9 @@ class PbxSshDownloader:
         host: str,
         port: int = 22,
         username: str = "asterisk",
-        password: Optional[str] = None,
-        key_path: Optional[str] = None,
-        known_hosts_path: Optional[str] = None,
+        password: str | None = None,
+        key_path: str | None = None,
+        known_hosts_path: str | None = None,
         remote_dir: str = "/var/spool/asterisk/monitor",
     ):
         self.host = host
@@ -35,7 +34,7 @@ class PbxSshDownloader:
         self.key_path = key_path
         self.known_hosts_path = known_hosts_path
         self.remote_dir = remote_dir
-        self._client: Optional[paramiko.SSHClient] = None
+        self._client: paramiko.SSHClient | None = None
 
     def connect(self) -> None:
         logger.info(
@@ -58,7 +57,7 @@ class PbxSshDownloader:
                 # After load_system_host_keys, check if any keys are loaded.
                 host_keys = self._client.get_host_keys()
                 host_keys_loaded = bool(hasattr(host_keys, "keys") and len(host_keys))
-            except Exception:
+            except OSError:
                 pass  # No system host keys available
 
         if not host_keys_loaded:
@@ -104,13 +103,13 @@ class PbxSshDownloader:
     def _iter_scan_roots(
         self,
         remote_root: str,
-        allowed_days: Optional[set[str]] = None,
-    ) -> List[tuple[str, str]]:
+        allowed_days: set[str] | None = None,
+    ) -> list[tuple[str, str]]:
         root = remote_root.rstrip("/")
         if not allowed_days:
             return [("", root)]
 
-        scan_roots: List[tuple[str, str]] = []
+        scan_roots: list[tuple[str, str]] = []
         for day in sorted(allowed_days):
             parts = [part for part in day.split("/") if part]
             if len(parts) != 3:
@@ -124,12 +123,12 @@ class PbxSshDownloader:
         self,
         sftp: paramiko.SFTPClient,
         remote_root: str,
-        allowed_days: Optional[set[str]] = None,
+        allowed_days: set[str] | None = None,
     ) -> Iterator[str]:
         """
         Recursively yield file paths under remote_root as POSIX-relative paths.
         """
-        stack: List[tuple[str, str]] = list(
+        stack: list[tuple[str, str]] = list(
             reversed(self._iter_scan_roots(remote_root, allowed_days))
         )
         directories_scanned = 0
@@ -197,9 +196,9 @@ class PbxSshDownloader:
         self,
         local_dir: Path,
         extensions: tuple = (".wav", ".mp3"),
-        on_download: Optional[Callable[[str], None]] = None,
-        allowed_days: Optional[set[str]] = None,
-    ) -> List[Path]:
+        on_download: Callable[[str], None] | None = None,
+        allowed_days: set[str] | None = None,
+    ) -> list[Path]:
         """
         Download files not already present in local_dir.
         Returns list of newly downloaded paths.
@@ -207,7 +206,7 @@ class PbxSshDownloader:
         assert self._client, "Call connect() first"
         local_dir.mkdir(parents=True, exist_ok=True)
 
-        downloaded: List[Path] = []
+        downloaded: list[Path] = []
         scanned = 0
         matched_extension = 0
         skipped_existing = 0

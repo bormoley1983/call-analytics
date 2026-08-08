@@ -6,13 +6,13 @@ from typing import Annotated, Any
 from fastapi import APIRouter, HTTPException, Path, status
 
 from adapters.keywords_postgres import PostgresKeywordSource
-from adapters.reporting_postgres import PostgresReportingSource
 from adapters.keywords_yaml import YamlKeywordSource
+from adapters.reporting_postgres import PostgresReportingSource
 from api.schemas import KeywordSyncRequest, KeywordUpsertRequest
 from core.keywords_ai_runtime import run_keyword_ai_analysis_once
+from core.keywords_materialize import materialize_call_keywords
 from core.keywords_refresh import refresh_keywords_data
 from core.keywords_service import list_keywords
-from core.keywords_materialize import materialize_call_keywords
 from core.keywords_sync import sync_keywords_to_postgres
 from domain.config import KEYWORDS_CONFIG
 from domain.keywords import KeywordDefinition

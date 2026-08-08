@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -36,12 +35,12 @@ class Transcript:
     text: str
     text_uk: str
     language: str
-    segments: List[Segment] = field(default_factory=list)
-    segments_uk: List[Segment] = field(default_factory=list)
+    segments: list[Segment] = field(default_factory=list)
+    segments_uk: list[Segment] = field(default_factory=list)
     manager_name: str = ""
     manager_id: str = ""
     role: str = ""
-    translation_error: Optional[str] = None
+    translation_error: str | None = None
 
 
 @dataclass
@@ -53,17 +52,17 @@ class Analysis:
     direction: str
     outcome: str            # from VALID_OUTCOMES_UK
     summary: str
-    key_questions: List[str] = field(default_factory=list)
-    objections: List[str] = field(default_factory=list)
+    key_questions: list[str] = field(default_factory=list)
+    objections: list[str] = field(default_factory=list)
     manager_name: str = ""
     manager_id: str = ""
     role: str = ""
-    analysis_error: Optional[str] = None
+    analysis_error: str | None = None
 
 
 @dataclass
 class CallResult:
     meta: CallMeta
     status: str             # "processed" | "skipped_too_small" | "skipped_too_short"
-    analysis: Optional[Analysis] = None
-    transcript: Optional[Transcript] = None
+    analysis: Analysis | None = None
+    transcript: Transcript | None = None

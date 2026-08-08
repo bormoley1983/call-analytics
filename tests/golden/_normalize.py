@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Golden baseline normalization and comparison utilities.
 
 Strips non-deterministic fields (timestamps, generated_at) from responses
@@ -10,7 +9,6 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 

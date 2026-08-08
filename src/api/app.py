@@ -1,10 +1,18 @@
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
-from api.routes import (health, jobs, keywords, keywords_ai,
-                        keywords_generation, managers, reports)
-from logging_config import setup_logging
+from api.routes import (
+    health,
+    jobs,
+    keywords,
+    keywords_ai,
+    keywords_generation,
+    managers,
+    reports,
+)
+from logging_config import set_correlation_id, setup_logging
 
 description = """
 Internal API for Call Analytics.
@@ -47,18 +55,38 @@ Internal API for Call Analytics.
 
 tags_metadata = [
     {"name": "health", "description": "Liveness and dependency checks."},
-    {"name": "jobs", "description": "Trigger and monitor async synchronization/processing jobs."},
-    {"name": "reports", "description": "Fetch aggregated analytics and drill-down call reports."},
-    {"name": "keywords", "description": "Manage keyword catalog and materialized keyword matches."},
-    {"name": "keywords-ai", "description": "AI-assisted analysis of the keyword catalog with grouping and cleanup suggestions."},
-    {"name": "keywords-generation", "description": "Generate keyword candidates from analyses and publish them."},
-    {"name": "managers", "description": "List configured managers and their extensions."},
+    {
+        "name": "jobs",
+        "description": "Trigger and monitor async synchronization/processing jobs.",
+    },
+    {
+        "name": "reports",
+        "description": "Fetch aggregated analytics and drill-down call reports.",
+    },
+    {
+        "name": "keywords",
+        "description": "Manage keyword catalog and materialized keyword matches.",
+    },
+    {
+        "name": "keywords-ai",
+        "description": "AI-assisted analysis of the keyword catalog with grouping and cleanup suggestions.",
+    },
+    {
+        "name": "keywords-generation",
+        "description": "Generate keyword candidates from analyses and publish them.",
+    },
+    {
+        "name": "managers",
+        "description": "List configured managers and their extensions.",
+    },
 ]
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
     yield
+
 
 app = FastAPI(
     title="Call Analytics API",
@@ -67,6 +95,29 @@ app = FastAPI(
     openapi_tags=tags_metadata,
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def add_correlation_id(request: Request, call_next):
+    """Add correlation ID to all requests for log tracing."""
+    # Use provided correlation ID or generate a new one
+    correlation_id = request.headers.get("X-Correlation-Id", str(uuid.uuid4()))
+
+    # Set correlation ID in logging context
+    token = set_correlation_id(correlation_id)
+
+    try:
+        response = await call_next(request)
+        # Add correlation ID to response headers for debugging
+        response.headers["X-Correlation-Id"] = correlation_id
+        return response
+    finally:
+        # Reset correlation ID after request completes
+        from logging_config import _correlation_id
+
+        _correlation_id.reset(token)
+
+
 app.include_router(health.router)
 app.include_router(jobs.router)
 app.include_router(reports.router)

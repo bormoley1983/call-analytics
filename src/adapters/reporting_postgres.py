@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Iterable, cast
+from collections.abc import Iterable
+from typing import ClassVar, cast
 
 from adapters.postgres_single_connection import (
     RETRYABLE_CONNECTION_ERRORS,
@@ -12,7 +13,7 @@ from domain.reporting import ReportCallRecord, ReportFilters
 class PostgresReportingSource(SingleConnectionPostgresAdapter):
     source_name = "postgres"
 
-    _ALLOWED_PHONE_COLUMNS = {"src_number", "dst_number"}
+    _ALLOWED_PHONE_COLUMNS: ClassVar[set[str]] = {"src_number", "dst_number"}
 
     @staticmethod
     def _normalize_phone_sql(column: str) -> str:
@@ -112,7 +113,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
         def _fetch(conn):
             with conn.cursor() as cur:
                 cur.execute(
-                    base_cte + """
+                    base_cte
+                    + """
                     SELECT
                         COUNT(*)::bigint AS total_calls,
                         COUNT(DISTINCT manager_id)::bigint AS unique_managers,
@@ -131,7 +133,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 total_duration = float(row[4] or 0.0)
 
                 cur.execute(
-                    base_cte + """
+                    base_cte
+                    + """
                     SELECT intent, COUNT(*)::bigint AS cnt
                     FROM base
                     GROUP BY intent
@@ -145,7 +148,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 ]
 
                 cur.execute(
-                    base_cte + """
+                    base_cte
+                    + """
                     SELECT outcome, COUNT(*)::bigint AS cnt
                     FROM base
                     GROUP BY outcome
@@ -159,7 +163,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 ]
 
                 cur.execute(
-                    base_cte + """
+                    base_cte
+                    + """
                     SELECT normalized_question, COUNT(*)::bigint AS cnt
                     FROM (
                         SELECT lower(btrim(q.value)) AS normalized_question
@@ -203,7 +208,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
         def _fetch(conn):
             with conn.cursor() as cur:
                 cur.execute(
-                    base_cte + """
+                    base_cte
+                    + """
                     SELECT
                         manager_id,
                         manager_name,
@@ -223,7 +229,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 aggregate_rows = cur.fetchall()
 
                 cur.execute(
-                    base_cte + """
+                    base_cte
+                    + """
                     SELECT role, COUNT(*)::bigint AS total_calls
                     FROM base
                     GROUP BY role
@@ -237,7 +244,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 }
 
                 cur.execute(
-                    base_cte + """
+                    base_cte
+                    + """
                     SELECT manager_id, intent, COUNT(*)::bigint AS cnt
                     FROM base
                     GROUP BY manager_id, intent
@@ -248,7 +256,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 intent_rows = cur.fetchall()
 
                 cur.execute(
-                    base_cte + """
+                    base_cte
+                    + """
                     SELECT manager_id, outcome, COUNT(*)::bigint AS cnt
                     FROM base
                     GROUP BY manager_id, outcome
@@ -259,7 +268,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 outcome_rows = cur.fetchall()
 
                 cur.execute(
-                    base_cte + """
+                    base_cte
+                    + """
                     SELECT manager_id, normalized_question, COUNT(*)::bigint AS cnt
                     FROM (
                         SELECT
@@ -372,7 +382,9 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
         src_norm = self._normalize_phone_sql("src_number")
         dst_norm = self._normalize_phone_sql("dst_number")
 
-        enriched_cte = base_cte + f"""
+        enriched_cte = (
+            base_cte
+            + f"""
             , enriched AS (
                 SELECT
                     base.*,
@@ -421,11 +433,13 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 FROM base
             )
             """
+        )
 
         def _fetch(conn):
             with conn.cursor() as cur:
                 cur.execute(
-                    enriched_cte + """
+                    enriched_cte
+                    + """
                     SELECT
                         customer_phone,
                         COUNT(*)::bigint AS total_calls,
@@ -446,7 +460,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 aggregate_rows = cur.fetchall()
 
                 cur.execute(
-                    enriched_cte + """
+                    enriched_cte
+                    + """
                     SELECT
                         customer_phone,
                         manager_id,
@@ -462,7 +477,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 manager_rows = cur.fetchall()
 
                 cur.execute(
-                    enriched_cte + """
+                    enriched_cte
+                    + """
                     SELECT customer_phone, intent, COUNT(*)::bigint AS cnt
                     FROM enriched
                     GROUP BY customer_phone, intent
@@ -473,7 +489,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 intent_rows = cur.fetchall()
 
                 cur.execute(
-                    enriched_cte + """
+                    enriched_cte
+                    + """
                     SELECT customer_phone, outcome, COUNT(*)::bigint AS cnt
                     FROM enriched
                     GROUP BY customer_phone, outcome
@@ -484,7 +501,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 outcome_rows = cur.fetchall()
 
                 cur.execute(
-                    enriched_cte + """
+                    enriched_cte
+                    + """
                     SELECT customer_phone, normalized_question, COUNT(*)::bigint AS cnt
                     FROM (
                         SELECT

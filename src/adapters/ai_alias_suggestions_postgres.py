@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import json
 import logging
 import uuid
-from typing import Any, Dict, List
+from typing import Any
 
 from adapters.postgres_single_connection import SingleConnectionPostgresAdapter
 from adapters.storage_postgres import DDL, _jsonb
@@ -22,9 +21,9 @@ class PostgresAiAliasSuggestionStore(SingleConnectionPostgresAdapter):
     def create_suggestion(
         self,
         keyword_id: str,
-        suggested_aliases: List[Dict[str, Any]],
+        suggested_aliases: list[dict[str, Any]],
         *,
-        source_evidence: Dict[str, Any] | None = None,
+        source_evidence: dict[str, Any] | None = None,
         ai_model: str | None = None,
     ) -> str:
         """Create a new alias suggestion record. Returns suggestion_id."""
@@ -50,7 +49,7 @@ class PostgresAiAliasSuggestionStore(SingleConnectionPostgresAdapter):
 
         return self._run_write(_write)
 
-    def get_suggestion(self, suggestion_id: str) -> Dict[str, Any] | None:
+    def get_suggestion(self, suggestion_id: str) -> dict[str, Any] | None:
         """Get a single suggestion by ID."""
 
         def _read(conn):
@@ -73,10 +72,10 @@ class PostgresAiAliasSuggestionStore(SingleConnectionPostgresAdapter):
 
     def list_suggestions(
         self, keyword_id: str | None = None, status: str | None = None
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """List suggestions, optionally filtered by keyword_id and/or status."""
-        conditions: List[str] = []
-        params: List[Any] = []
+        conditions: list[str] = []
+        params: list[Any] = []
 
         if keyword_id:
             conditions.append("keyword_id = %s")
@@ -170,7 +169,7 @@ class PostgresAiAliasSuggestionStore(SingleConnectionPostgresAdapter):
         return self._run_write(_write)
 
     @staticmethod
-    def _row_to_dict(row: tuple) -> Dict[str, Any]:
+    def _row_to_dict(row: tuple) -> dict[str, Any]:
         return {
             "suggestion_id": row[0],
             "keyword_id": row[1],

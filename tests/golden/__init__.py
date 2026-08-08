@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Golden baseline responses for report endpoints.
 
 Each JSON file captures the expected structure for a key report endpoint.

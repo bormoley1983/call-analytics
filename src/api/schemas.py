@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -19,7 +19,7 @@ class SortOrder(str, Enum):
     desc = "desc"
 
 
-def _normalize_days(value: Optional[str]) -> Optional[str]:
+def _normalize_days(value: str | None) -> str | None:
     if value is None:
         return None
     if isinstance(value, int):
@@ -33,12 +33,12 @@ def _normalize_days(value: Optional[str]) -> Optional[str]:
 
 
 class ProcessRequest(BaseModel):
-    days: Optional[str] = Field(
+    days: str | None = Field(
         default=None,
         description="Optional processing scope like 2026/01/14,2026/01/15. Leave empty to process all unfinished calls.",
         examples=["2026/01/14,2026/01/15"],
     )
-    limit: Optional[int] = Field(
+    limit: int | None = Field(
         default=None,
         description="Optional max number of calls to process. Use 0 for unlimited, or leave empty for the configured default.",
         examples=[0, 30],
@@ -56,12 +56,12 @@ class ProcessRequest(BaseModel):
 
     @field_validator("days", mode="before")
     @classmethod
-    def validate_days(cls, value: Optional[str]) -> Optional[str]:
+    def validate_days(cls, value: str | None) -> str | None:
         return _normalize_days(value)
 
 
 class SyncRequest(BaseModel):
-    days: Optional[str] = Field(
+    days: str | None = Field(
         default=None,
         description="Optional PBX download scope like 2026/01/14,2026/01/15. Leave empty to sync all available dates.",
         examples=["2026/01/14,2026/01/15"],
@@ -69,7 +69,7 @@ class SyncRequest(BaseModel):
 
     @field_validator("days", mode="before")
     @classmethod
-    def validate_days(cls, value: Optional[str]) -> Optional[str]:
+    def validate_days(cls, value: str | None) -> str | None:
         return _normalize_days(value)
 
 
@@ -83,53 +83,53 @@ class JobResponse(BaseModel):
     )
     status: JobStatus = Field(description="Current job execution status.")
     created_at: datetime = Field(description="UTC timestamp when the job was created.")
-    started_at: Optional[datetime] = Field(
+    started_at: datetime | None = Field(
         default=None, description="UTC timestamp when execution started."
     )
-    finished_at: Optional[datetime] = Field(
+    finished_at: datetime | None = Field(
         default=None, description="UTC timestamp when execution finished."
     )
-    result: Optional[Dict[str, Any]] = Field(
+    result: dict[str, Any] | None = Field(
         default=None,
         description="Optional result payload returned by the completed job.",
     )
-    error: Optional[str] = Field(
+    error: str | None = Field(
         default=None, description="Error details when `status=failed`."
     )
 
 
 class ReportFiltersQuery(BaseModel):
-    date_from: Optional[date] = Field(
+    date_from: date | None = Field(
         default=None,
         description="Inclusive report start date in YYYY-MM-DD format.",
         examples=["2024-11-01"],
     )
-    date_to: Optional[date] = Field(
+    date_to: date | None = Field(
         default=None,
         description="Inclusive report end date in YYYY-MM-DD format.",
         examples=["2024-11-30"],
     )
-    manager_id: Optional[str] = Field(
+    manager_id: str | None = Field(
         default=None,
         description="Filter by exact manager identifier.",
         examples=["petrenko_aa"],
     )
-    role: Optional[str] = Field(
+    role: str | None = Field(
         default=None,
         description="Filter by exact manager role.",
         examples=["sales"],
     )
-    direction: Optional[str] = Field(
+    direction: str | None = Field(
         default=None,
         description="Filter by call direction.",
         examples=["incoming"],
     )
-    intent: Optional[str] = Field(
+    intent: str | None = Field(
         default=None,
         description="Filter by exact call intent label from analysis.",
         examples=["order_status"],
     )
-    outcome: Optional[str] = Field(
+    outcome: str | None = Field(
         default=None,
         description="Filter by exact outcome label from analysis.",
         examples=["success"],
@@ -149,7 +149,7 @@ class ReportFiltersQuery(BaseModel):
         "manager_id", "role", "direction", "intent", "outcome", mode="before"
     )
     @classmethod
-    def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
+    def normalize_optional_text(cls, value: str | None) -> str | None:
         if value is None:
             return None
         normalized = value.strip()
@@ -172,12 +172,12 @@ class KeywordUpsertRequest(BaseModel):
         min_length=1,
         examples=["logistics"],
     )
-    terms: List[str] = Field(
+    terms: list[str] = Field(
         default_factory=list,
         description="Phrases used to match the keyword.",
         examples=[["delivery", "order"]],
     )
-    match_fields: List[str] = Field(
+    match_fields: list[str] = Field(
         default_factory=lambda: ["summary", "key_questions", "objections"],
         description="Analysis fields scanned for term matches.",
     )
@@ -193,12 +193,12 @@ class KeywordUpsertRequest(BaseModel):
 
     @field_validator("terms", "match_fields", mode="before")
     @classmethod
-    def normalize_text_list(cls, value: Any) -> List[str]:
+    def normalize_text_list(cls, value: Any) -> list[str]:
         if value is None:
             return []
         if not isinstance(value, list):
-            raise ValueError("Expected a list")
-        result: List[str] = []
+            raise TypeError("Expected a list")
+        result: list[str] = []
         for item in value:
             normalized = str(item).strip()
             if normalized:
@@ -214,37 +214,37 @@ class KeywordSyncRequest(BaseModel):
 
 
 class KeywordGenerationRequest(BaseModel):
-    date_from: Optional[date] = Field(
+    date_from: date | None = Field(
         default=None,
         description="Optional inclusive start date for candidate generation. Leave empty to scan across all available analyses.",
         examples=["2026-03-01"],
     )
-    date_to: Optional[date] = Field(
+    date_to: date | None = Field(
         default=None,
         description="Optional inclusive end date for candidate generation. Leave empty to scan across all available analyses.",
         examples=["2026-03-20"],
     )
-    manager_id: Optional[str] = Field(
+    manager_id: str | None = Field(
         default=None,
         description="Optional exact manager id filter.",
         examples=["petrenko_aa"],
     )
-    role: Optional[str] = Field(
+    role: str | None = Field(
         default=None,
         description="Optional exact role filter.",
         examples=["sales"],
     )
-    direction: Optional[str] = Field(
+    direction: str | None = Field(
         default=None,
         description="Optional exact direction filter.",
         examples=["incoming"],
     )
-    intent: Optional[str] = Field(
+    intent: str | None = Field(
         default=None,
         description="Optional exact intent filter.",
         examples=["order_status"],
     )
-    outcome: Optional[str] = Field(
+    outcome: str | None = Field(
         default=None,
         description="Optional exact outcome filter.",
         examples=["success"],
@@ -308,14 +308,14 @@ class KeywordGenerationRequest(BaseModel):
         "manager_id", "role", "direction", "intent", "outcome", mode="before"
     )
     @classmethod
-    def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
+    def normalize_optional_text(cls, value: str | None) -> str | None:
         if value is None:
             return None
         normalized = value.strip()
         return normalized or None
 
     @model_validator(mode="after")
-    def ensure_at_least_one_source_field(self) -> "KeywordGenerationRequest":
+    def ensure_at_least_one_source_field(self) -> KeywordGenerationRequest:
         if not (
             self.include_summary
             or self.include_key_questions
@@ -333,34 +333,34 @@ class KeywordGenerationPublishCandidate(BaseModel):
         description="Candidate phrase to publish into keyword catalog terms.",
         examples=["delivery delay"],
     )
-    keyword_id: Optional[str] = Field(
+    keyword_id: str | None = Field(
         default=None,
         description="Optional explicit keyword_id. Generated automatically when omitted.",
         examples=["delivery_delay"],
     )
-    label: Optional[str] = Field(
+    label: str | None = Field(
         default=None,
         description="Optional explicit label. Auto-derived from phrase when omitted.",
         examples=["Delivery Delay"],
     )
-    category: Optional[str] = Field(
+    category: str | None = Field(
         default=None,
         description="Optional category override for this candidate.",
         examples=["generated"],
     )
-    match_fields: Optional[List[str]] = Field(
+    match_fields: list[str] | None = Field(
         default=None,
         description="Optional match fields override for this candidate.",
         examples=[["summary", "key_questions"]],
     )
-    is_active: Optional[bool] = Field(
+    is_active: bool | None = Field(
         default=None,
         description="Optional activity flag override for this candidate.",
     )
 
     @field_validator("phrase", "keyword_id", "label", "category", mode="before")
     @classmethod
-    def normalize_optional_scalar_text(cls, value: Optional[str]) -> Optional[str]:
+    def normalize_optional_scalar_text(cls, value: str | None) -> str | None:
         if value is None:
             return None
         normalized = str(value).strip()
@@ -370,12 +370,12 @@ class KeywordGenerationPublishCandidate(BaseModel):
 
     @field_validator("match_fields", mode="before")
     @classmethod
-    def normalize_match_fields(cls, value: Any) -> Optional[List[str]]:
+    def normalize_match_fields(cls, value: Any) -> list[str] | None:
         if value is None:
             return None
         if not isinstance(value, list):
-            raise ValueError("match_fields must be a list")
-        result: List[str] = []
+            raise TypeError("match_fields must be a list")
+        result: list[str] = []
         for item in value:
             normalized = str(item).strip()
             if normalized:
@@ -384,7 +384,7 @@ class KeywordGenerationPublishCandidate(BaseModel):
 
 
 class KeywordGenerationPublishRequest(BaseModel):
-    candidates: List[KeywordGenerationPublishCandidate] = Field(
+    candidates: list[KeywordGenerationPublishCandidate] = Field(
         min_length=1,
         description="Candidates to publish into keyword catalog.",
     )
@@ -393,7 +393,7 @@ class KeywordGenerationPublishRequest(BaseModel):
         min_length=1,
         description="Default category for candidates that do not provide one.",
     )
-    default_match_fields: List[str] = Field(
+    default_match_fields: list[str] = Field(
         default_factory=lambda: ["summary", "key_questions", "objections"],
         description="Default match fields for candidates that do not provide them.",
     )
@@ -416,12 +416,12 @@ class KeywordGenerationPublishRequest(BaseModel):
 
     @field_validator("default_match_fields", mode="before")
     @classmethod
-    def normalize_default_match_fields(cls, value: Any) -> List[str]:
+    def normalize_default_match_fields(cls, value: Any) -> list[str]:
         if value is None:
             return ["summary", "key_questions", "objections"]
         if not isinstance(value, list):
-            raise ValueError("default_match_fields must be a list")
-        result: List[str] = []
+            raise TypeError("default_match_fields must be a list")
+        result: list[str] = []
         for item in value:
             normalized = str(item).strip()
             if normalized:
@@ -437,7 +437,7 @@ class KeywordGenerationBootstrapRequest(KeywordGenerationRequest):
         min_length=1,
         description="Default category for newly published generated keywords.",
     )
-    default_match_fields: List[str] = Field(
+    default_match_fields: list[str] = Field(
         default_factory=lambda: ["summary", "key_questions", "objections"],
         description="Default match fields when candidate-specific fields are absent.",
     )
@@ -474,12 +474,12 @@ class KeywordGenerationBootstrapRequest(KeywordGenerationRequest):
 
     @field_validator("default_match_fields", mode="before")
     @classmethod
-    def normalize_bootstrap_default_match_fields(cls, value: Any) -> List[str]:
+    def normalize_bootstrap_default_match_fields(cls, value: Any) -> list[str]:
         if value is None:
             return ["summary", "key_questions", "objections"]
         if not isinstance(value, list):
-            raise ValueError("default_match_fields must be a list")
-        result: List[str] = []
+            raise TypeError("default_match_fields must be a list")
+        result: list[str] = []
         for item in value:
             normalized = str(item).strip()
             if normalized:
@@ -490,7 +490,7 @@ class KeywordGenerationBootstrapRequest(KeywordGenerationRequest):
 
 
 class KeywordCatalogAnalysisRequest(BaseModel):
-    keyword_ids: Optional[List[str]] = Field(
+    keyword_ids: list[str] | None = Field(
         default=None,
         description="Optional subset of keyword ids to analyze. Leave empty to analyze the current catalog slice.",
         examples=[["delivery", "refund"]],
@@ -518,12 +518,12 @@ class KeywordCatalogAnalysisRequest(BaseModel):
 
     @field_validator("keyword_ids", mode="before")
     @classmethod
-    def normalize_keyword_ids(cls, value: Any) -> Optional[List[str]]:
+    def normalize_keyword_ids(cls, value: Any) -> list[str] | None:
         if value is None:
             return None
         if not isinstance(value, list):
-            raise ValueError("keyword_ids must be a list")
-        result: List[str] = []
+            raise TypeError("keyword_ids must be a list")
+        result: list[str] = []
         for item in value:
             normalized = str(item).strip()
             if normalized:
@@ -634,7 +634,7 @@ class CustomersSortQuery(BaseModel):
 class AIApplyAction(BaseModel):
     """Single action to apply, referenced by group/action index from analysis."""
 
-    group_index: Optional[int] = Field(
+    group_index: int | None = Field(
         default=None,
         ge=0,
         description=(
@@ -643,12 +643,12 @@ class AIApplyAction(BaseModel):
             "Use -1 or omit for ungrouped keyword actions."
         ),
     )
-    action_index: Optional[int] = Field(
+    action_index: int | None = Field(
         default=None,
         ge=0,
         description="Zero-based index of the action within the group. Required for grouped actions.",
     )
-    keyword_id: Optional[str] = Field(
+    keyword_id: str | None = Field(
         default=None,
         description=(
             "Direct keyword_id to apply action on. "
@@ -658,7 +658,7 @@ class AIApplyAction(BaseModel):
 
     @field_validator("group_index", mode="before")
     @classmethod
-    def normalize_group_index(cls, value: Any) -> Optional[int]:
+    def normalize_group_index(cls, value: Any) -> int | None:
         if value is None:
             return None
         try:
@@ -668,7 +668,7 @@ class AIApplyAction(BaseModel):
 
     @field_validator("action_index", mode="before")
     @classmethod
-    def normalize_action_index(cls, value: Any) -> Optional[int]:
+    def normalize_action_index(cls, value: Any) -> int | None:
         if value is None:
             return None
         try:
@@ -678,14 +678,14 @@ class AIApplyAction(BaseModel):
 
     @field_validator("keyword_id", mode="before")
     @classmethod
-    def normalize_keyword_id(cls, value: Any) -> Optional[str]:
+    def normalize_keyword_id(cls, value: Any) -> str | None:
         if value is None:
             return None
         normalized = str(value).strip()
         return normalized or None
 
     @model_validator(mode="after")
-    def validate_reference_method(self) -> "AIApplyAction":
+    def validate_reference_method(self) -> AIApplyAction:
         """Ensure either index-based or keyword_id-based referencing is used."""
         has_indices = self.group_index is not None and self.action_index is not None
         has_keyword_id = bool(self.keyword_id)
@@ -699,7 +699,7 @@ class AIApplyAction(BaseModel):
 class AIApplyRequest(BaseModel):
     """Request to apply selected actions from a catalog analysis."""
 
-    actions: List[AIApplyAction] = Field(
+    actions: list[AIApplyAction] = Field(
         min_length=1,
         description="Selected actions to apply from the analysis.",
     )
@@ -718,7 +718,7 @@ class AIApplyRequest(BaseModel):
 
     @field_validator("actions", mode="before")
     @classmethod
-    def normalize_actions(cls, value: Any) -> List[AIApplyAction]:
+    def normalize_actions(cls, value: Any) -> list[AIApplyAction]:
         if value is None or not isinstance(value, list):
             raise ValueError("actions must be a non-empty list")
         if len(value) == 0:
@@ -737,7 +737,7 @@ class AIMutation(BaseModel):
         description="Primary keyword_id affected by this mutation.",
         examples=["old_keyword_id"],
     )
-    detail: Dict[str, Any] = Field(
+    detail: dict[str, Any] = Field(
         default_factory=dict,
         description="Action-specific details (target_keyword_id, suggested_label, etc.).",
     )
@@ -746,7 +746,7 @@ class AIMutation(BaseModel):
 class AISkippedAction(BaseModel):
     """Action that was skipped during apply with reason."""
 
-    action: Dict[str, Any] = Field(
+    action: dict[str, Any] = Field(
         description="The original action data that was skipped.",
     )
     reason: str = Field(
@@ -770,15 +770,15 @@ class AIApplyResult(BaseModel):
     dry_run: bool = Field(
         description="Whether this was a dry-run (no mutations applied).",
     )
-    actions_applied: List[Dict[str, Any]] = Field(
+    actions_applied: list[dict[str, Any]] = Field(
         default_factory=list,
         description="List of actions that were successfully applied.",
     )
-    actions_skipped: List[AISkippedAction] = Field(
+    actions_skipped: list[AISkippedAction] = Field(
         default_factory=list,
         description="List of actions that were skipped with reasons.",
     )
-    mutations: List[AIMutation] = Field(
+    mutations: list[AIMutation] = Field(
         default_factory=list,
         description="List of mutations that were performed (or previewed in dry-run).",
     )
@@ -802,11 +802,11 @@ class AIApplyDryRunResult(BaseModel):
     actions_validated: int = Field(
         description="Number of actions that passed validation.",
     )
-    actions_skipped: List[AISkippedAction] = Field(
+    actions_skipped: list[AISkippedAction] = Field(
         default_factory=list,
         description="Actions that would be skipped with reasons.",
     )
-    mutations_preview: List[AIMutation] = Field(
+    mutations_preview: list[AIMutation] = Field(
         default_factory=list,
         description="Preview of mutations that would be performed.",
     )
@@ -821,7 +821,7 @@ class AIApplyHistoryEntry(BaseModel):
 
     apply_id: str = Field(description="UUID of the apply record.")
     applied_at: str = Field(description="ISO 8601 timestamp.")
-    applied_by: Optional[str] = Field(
+    applied_by: str | None = Field(
         default=None, description="User who triggered the apply."
     )
     dry_run: bool = Field(description="Whether this was a dry-run.")
@@ -829,7 +829,7 @@ class AIApplyHistoryEntry(BaseModel):
     mutations_count: int = Field(description="Number of mutations performed.")
     keyword_refreshed: bool = Field(description="Whether refresh was triggered.")
     follow_up_ran: bool = Field(description="Whether follow-up analysis ran.")
-    error: Optional[str] = Field(
+    error: str | None = Field(
         default=None, description="Error message if apply failed."
     )
 
@@ -859,7 +859,7 @@ class KeywordGenerationEnrichCandidate(BaseModel):
         default=0,
         description="Total number of phrase matches across all texts.",
     )
-    sample_call_ids: List[str] = Field(
+    sample_call_ids: list[str] = Field(
         default_factory=list,
         description="Sample call IDs where this phrase was found.",
     )
@@ -868,7 +868,7 @@ class KeywordGenerationEnrichCandidate(BaseModel):
 class KeywordGenerationEnrichRequest(BaseModel):
     """Request to enrich generated candidates using AI."""
 
-    candidates: List[KeywordGenerationEnrichCandidate] = Field(
+    candidates: list[KeywordGenerationEnrichCandidate] = Field(
         min_length=1,
         description="Candidates from /keywords/generation/candidates output.",
     )
@@ -885,7 +885,7 @@ class KeywordGenerationEnrichRequest(BaseModel):
 
     @field_validator("candidates", mode="before")
     @classmethod
-    def normalize_candidates(cls, value: Any) -> List[KeywordGenerationEnrichCandidate]:
+    def normalize_candidates(cls, value: Any) -> list[KeywordGenerationEnrichCandidate]:
         if value is None or not isinstance(value, list):
             raise ValueError("candidates must be a non-empty list")
         if len(value) == 0:
@@ -900,35 +900,35 @@ class EnrichedCandidate(BaseModel):
         description="Original candidate identifier.",
     )
     phrase: str = Field(description="Original phrase.")
-    suggested_label: Optional[str] = Field(
+    suggested_label: str | None = Field(
         default=None,
         description="AI-suggested label (stronger than auto-derived).",
     )
-    suggested_category: Optional[str] = Field(
+    suggested_category: str | None = Field(
         default=None,
         description="AI-suggested category.",
     )
-    suggested_aliases: List[str] = Field(
+    suggested_aliases: list[str] = Field(
         default_factory=list,
         description="AI-suggested alias phrases (synonyms, variations).",
     )
-    merged_with: List[str] = Field(
+    merged_with: list[str] = Field(
         default_factory=list,
         description="candidate_ids that were merged into this candidate.",
     )
-    confidence_score: Optional[float] = Field(
+    confidence_score: float | None = Field(
         default=None,
         ge=0.0,
         le=1.0,
         description="AI confidence in the enrichment quality.",
     )
-    reason: Optional[str] = Field(
+    reason: str | None = Field(
         default=None,
         description="Brief explanation for the enrichment suggestions.",
     )
     support_calls: int = Field(default=0, description="Number of unique calls.")
     total_matches: int = Field(default=0, description="Total phrase matches.")
-    sample_call_ids: List[str] = Field(
+    sample_call_ids: list[str] = Field(
         default_factory=list, description="Sample call IDs."
     )
 
@@ -936,7 +936,7 @@ class EnrichedCandidate(BaseModel):
 class KeywordGenerationEnrichResult(BaseModel):
     """Result of an enrichment operation."""
 
-    enriched_candidates: List[EnrichedCandidate] = Field(
+    enriched_candidates: list[EnrichedCandidate] = Field(
         description="Enriched candidates ready for /publish.",
     )
     original_count: int = Field(description="Number of input candidates.")
@@ -944,7 +944,7 @@ class KeywordGenerationEnrichResult(BaseModel):
         description="Number of output candidates (after merges)."
     )
     merged_count: int = Field(description="Number of candidates merged into others.")
-    ai_model: Optional[str] = Field(
+    ai_model: str | None = Field(
         default=None, description="AI model used for enrichment."
     )
 
@@ -983,11 +983,11 @@ class KeywordAliasExpandRequest(BaseModel):
         le=20,
         description="Maximum number of alias suggestions.",
     )
-    date_from: Optional[date] = Field(
+    date_from: date | None = Field(
         default=None,
         description="Optional start date for evidence window.",
     )
-    date_to: Optional[date] = Field(
+    date_to: date | None = Field(
         default=None,
         description="Optional end date for evidence window.",
     )
@@ -997,21 +997,21 @@ class AliasSuggestion(BaseModel):
     """Single alias suggestion from AI."""
 
     phrase: str = Field(description="Suggested alias phrase.")
-    confidence_score: Optional[float] = Field(
+    confidence_score: float | None = Field(
         default=None, ge=0.0, le=1.0, description="AI confidence."
     )
-    reason: Optional[str] = Field(default=None, description="Brief explanation.")
+    reason: str | None = Field(default=None, description="Brief explanation.")
 
 
 class KeywordAliasExpandResult(BaseModel):
     """Result of an alias expansion operation."""
 
     keyword_id: str = Field(description="Keyword that was expanded.")
-    current_terms: List[str] = Field(description="Current terms for this keyword.")
-    suggested_aliases: List[AliasSuggestion] = Field(
+    current_terms: list[str] = Field(description="Current terms for this keyword.")
+    suggested_aliases: list[AliasSuggestion] = Field(
         description="AI-suggested new aliases."
     )
-    suggestion_id: Optional[str] = Field(
+    suggestion_id: str | None = Field(
         default=None, description="ID for tracking the suggestion in DB."
     )
 
@@ -1021,9 +1021,9 @@ class AliasSuggestionEntry(BaseModel):
 
     suggestion_id: str = Field(description="UUID of the suggestion.")
     keyword_id: str = Field(description="Keyword ID.")
-    suggested_aliases: List[dict] = Field(description="Original suggestion data.")
-    source_evidence: Optional[dict] = Field(default=None, description="Evidence used.")
-    ai_model: Optional[str] = Field(default=None, description="AI model used.")
+    suggested_aliases: list[dict] = Field(description="Original suggestion data.")
+    source_evidence: dict | None = Field(default=None, description="Evidence used.")
+    ai_model: str | None = Field(default=None, description="AI model used.")
     status: str = Field(description="pending, approved, or rejected.")
     created_at: str = Field(description="ISO 8601 timestamp.")
 
@@ -1049,20 +1049,18 @@ class SeverityLevel(str, Enum):
 class DeepInsightRequest(BaseModel):
     """Request to generate deep business insights from analyses."""
 
-    insight_types: List[InsightType] = Field(
+    insight_types: list[InsightType] = Field(
         min_length=1,
         description="Types of insights to generate.",
     )
-    date_from: Optional[date] = Field(
+    date_from: date | None = Field(
         default=None, description="Optional start date for analysis window."
     )
-    date_to: Optional[date] = Field(
+    date_to: date | None = Field(
         default=None, description="Optional end date for analysis window."
     )
-    manager_id: Optional[str] = Field(
-        default=None, description="Optional manager filter."
-    )
-    role: Optional[str] = Field(default=None, description="Optional role filter.")
+    manager_id: str | None = Field(default=None, description="Optional manager filter.")
+    role: str | None = Field(default=None, description="Optional role filter.")
     max_insights: int = Field(
         default=20,
         ge=1,
@@ -1072,7 +1070,7 @@ class DeepInsightRequest(BaseModel):
 
     @field_validator("manager_id", "role", mode="before")
     @classmethod
-    def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
+    def normalize_optional_text(cls, value: str | None) -> str | None:
         if value is None:
             return None
         normalized = value.strip()
@@ -1089,7 +1087,7 @@ class DeepInsightEntry(BaseModel):
     affected_calls_count: int = Field(
         default=0, description="Number of calls this insight affects."
     )
-    evidence_summary: Optional[str] = Field(
+    evidence_summary: str | None = Field(
         default=None, description="Summary of supporting evidence."
     )
 
@@ -1098,16 +1096,16 @@ class DeepInsightResult(BaseModel):
     """Result of a deep insights generation run."""
 
     run_id: str = Field(description="UUID of the insights run.")
-    insight_counts: Dict[str, int] = Field(description="Number of insights per type.")
-    insights: List[DeepInsightEntry] = Field(description="All generated insights.")
-    ai_model: Optional[str] = Field(default=None, description="AI model used.")
+    insight_counts: dict[str, int] = Field(description="Number of insights per type.")
+    insights: list[DeepInsightEntry] = Field(description="All generated insights.")
+    ai_model: str | None = Field(default=None, description="AI model used.")
 
 
 class DeepInsightRunEntry(BaseModel):
     """Summary of a deep insights run."""
 
     run_id: str = Field(description="UUID of the run.")
-    ai_model: Optional[str] = Field(default=None)
-    insight_types: List[str] = Field(description="Types requested.")
+    ai_model: str | None = Field(default=None)
+    insight_types: list[str] = Field(description="Types requested.")
     total_insights: int = Field(description="Total insights generated.")
     created_at: str = Field(description="ISO 8601 timestamp.")

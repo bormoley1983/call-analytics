@@ -6,6 +6,7 @@ x-base: &base
     - ./:/work
     - ./_hf_cache:/root/.cache/huggingface
     - ./config:/work/config:ro
+    - ./logs:/var/log/call-analytics
   extra_hosts:
     - "host.docker.internal:host-gateway"
   env_file:

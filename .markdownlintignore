@@ -1,0 +1,8 @@
+.venv/
+.venv/**
+_hf_cache/
+_hf_cache/**
+calls_raw/
+calls_raw/**
+DEVPLAN_DONE/
+DEVPLAN_DONE/**

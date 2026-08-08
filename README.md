@@ -268,6 +268,42 @@ Optional variables for `POST /jobs/sync` and `POST /jobs/sync-and-process`:
 - `PBX_KNOWN_HOSTS_PATH`
 - `PBX_REMOTE_DIR`
 
+### Logging
+
+The application ships with a production-ready logging system that writes to multiple targets simultaneously.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `LOG_LEVEL` | `INFO` | Minimum level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+| `LOG_FORMAT` | `text` | Console format: `text` (human-readable) or `json` (structured) |
+| `LOG_FILE` | `logs/app.json` | Rotating JSON log file (always enabled as failsafe) |
+| `LOG_MAX_BYTES` | `10485760` | Max bytes per file before rotation (10 MiB) |
+| `LOG_BACKUP_COUNT` | `5` | Rotated files to keep |
+| `LOG_ES_URL` | *(none)* | Elasticsearch URL for remote error logging |
+| `LOG_ES_INDEX` | `call-analytics` | Index prefix; dates appended automatically |
+| `LOG_ES_LEVEL` | `ERROR` | Minimum level sent to Elasticsearch |
+
+**Console handler** always outputs to stdout (captured by Docker logs). Use `LOG_FORMAT=json` for structured output in production.
+
+**File handler** writes structured JSON to `LOG_FILE` with automatic rotation. This is the failsafe — it's always enabled even if Elasticsearch is misconfigured or unreachable.
+
+**Elasticsearch handler** sends ERROR-level and above to a remote cluster asynchronously. Set `LOG_ES_URL` to enable. Errors are dropped (not blocked) if ES is unreachable, so the application never hangs on logging failures.
+
+Every HTTP request gets a correlation ID (`X-Correlation-Id` header) that propagates through all logs, making it easy to trace a single request across console, file, and Elasticsearch outputs.
+
+```bash
+# Production example: JSON console + file rotation + Elasticsearch errors
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+LOG_FILE=/var/log/call-analytics/app.json
+LOG_ES_URL=https://es-cluster:9200
+LOG_ES_LEVEL=ERROR
+
+# Development example: human-readable console with debug detail
+LOG_LEVEL=DEBUG
+LOG_FORMAT=text
+```
+
 The API expects recordings in FreePBX-style paths:
 
 ```text

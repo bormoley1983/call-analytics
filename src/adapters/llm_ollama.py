@@ -244,6 +244,9 @@ def _extract_json_object(raw: str) -> dict[str, Any]:
     Uses a state machine that tracks brace depth while respecting string
     literals (so braces inside quoted strings don't affect the count)
     and backslash escapes.
+
+    If the response appears truncated (e.g., unterminated string), attempts
+    to repair by closing open strings and braces before parsing.
     """
     start = raw.find("{")
     if start == -1:
@@ -276,9 +279,84 @@ def _extract_json_object(raw: str) -> dict[str, Any]:
                 end = i + 1
                 break
 
-    if end == -1:
-        raise ValueError("No valid JSON object found in response")
-    return json.loads(raw[start:end])
+    if end != -1:
+        # Found a complete object, try to parse the substring.
+        candidate = raw[start:end]
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback: the response may be truncated (e.g., unterminated string).
+    # Try to repair by closing any open strings and braces.
+    repaired = _repair_truncated_json(raw[start:])
+    if repaired is not None:
+        return repaired
+
+    raise ValueError("No valid JSON object found in response")
+
+
+def _repair_truncated_json(fragment: str) -> dict[str, Any] | None:
+    """Attempt to repair a truncated JSON fragment by closing open strings/braces.
+
+    Returns parsed dict if successful, None if repair is not possible.
+
+    Tracks a stack of opened structures (objects vs arrays) so that closing
+    characters are appended in the correct reverse-nesting order.
+    """
+    # Walk through tracking state, then append closing chars at the end.
+    in_string = False
+    escaped = False
+    stack: list[str] = []  # tracks "{" or "[" in nesting order
+
+    for ch in fragment:
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            if in_string:
+                escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            stack.append("{")
+        elif ch == "}":
+            # Pop matching open brace if available.
+            for j in range(len(stack) - 1, -1, -1):
+                if stack[j] == "{":
+                    stack.pop(j)
+                    break
+        elif ch == "[":
+            stack.append("[")
+        elif ch == "]":
+            for j in range(len(stack) - 1, -1, -1):
+                if stack[j] == "[":
+                    stack.pop(j)
+                    break
+
+    repaired = fragment
+    if in_string:
+        repaired = repaired.rstrip()
+        if repaired.endswith("\\"):
+            repaired += '\\"'
+        else:
+            repaired += '"'
+
+    # Close remaining structures in reverse nesting order.
+    for opener in reversed(stack):
+        if opener == "{":
+            repaired += "}"
+        elif opener == "[":
+            repaired += "]"
+
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        return None
 
 
 def translate_segments_to_uk(

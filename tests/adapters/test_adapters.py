@@ -675,6 +675,59 @@ def test_postgres_storage_ddl_contains_stt_promotion_columns():
 
 
 # ---------------------------------------------------------------------------
+# llm_ollama - _repair_truncated_json & _extract_json_object
+# ---------------------------------------------------------------------------
+
+
+def test_repair_truncated_json_closes_unterminated_string():
+    """An unterminated string like {"key": "val should be repaired."""
+    fragment = '{"enriched_candidates": [{"candidate_id": "1", "phrase": "deliv'
+    result = llm_ollama._repair_truncated_json(fragment)
+    assert result is not None
+    assert result["enriched_candidates"][0]["phrase"] == "deliv"
+
+
+def test_repair_truncated_json_closes_open_braces():
+    fragment = '{"enriched_candidates": ['
+    result = llm_ollama._repair_truncated_json(fragment)
+    assert result is not None
+    assert result["enriched_candidates"] == []
+
+
+def test_repair_truncated_json_handles_nested_braces():
+    fragment = '{"outer": {"inner": true'
+    result = llm_ollama._repair_truncated_json(fragment)
+    assert result is not None
+    assert result["outer"]["inner"] is True
+
+
+def test_repair_truncated_json_returns_none_for_garbage():
+    fragment = 'not json at all ### $$$'
+    result = llm_ollama._repair_truncated_json(fragment)
+    assert result is None
+
+
+def test_repair_truncated_json_handles_escaped_backslash_before_eof():
+    fragment = '{"key": "value with backslash\\'
+    result = llm_ollama._repair_truncated_json(fragment)
+    assert result is not None
+    assert "backslash" in result["key"]
+
+
+def test_extract_json_object_falls_back_to_repair_on_truncated():
+    """When the state machine finds no matching }, repair should kick in."""
+    raw = 'Here is some text\n{"enriched_candidates": [{"candidate_id": "a1"}'
+    result = llm_ollama._extract_json_object(raw)
+    assert result["enriched_candidates"][0]["candidate_id"] == "a1"
+
+
+def test_extract_json_object_raises_on_no_brace():
+    raw = 'just plain text with no json here'
+    with pytest.raises(ValueError, match="No JSON object found"):
+        llm_ollama._extract_json_object(raw)
+
+
+# ---------------------------------------------------------------------------
 # reporting_postgres - _normalize_phone_sql
 # ---------------------------------------------------------------------------
 

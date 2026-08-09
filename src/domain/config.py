@@ -106,12 +106,12 @@ KEYWORDS_CONFIG = CONFIG_DIR / "keywords.yaml"
 # ----------------------------
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:27b")
-OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "16384"))
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "32768"))
 OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "0s").strip() or "0s"
 OLLAMA_THINK = os.getenv("OLLAMA_THINK", "0") == "1"
 OLLAMA_GENERATION_TIMEOUT = int(os.getenv("OLLAMA_GENERATION_TIMEOUT", "600"))
 OLLAMA_RETRY_ATTEMPTS = int(os.getenv("OLLAMA_RETRY_ATTEMPTS", "4"))
-OLLAMA_TOKEN_OVERHEAD = int(os.getenv("OLLAMA_TOKEN_OVERHEAD", "1800"))
+OLLAMA_TOKEN_OVERHEAD = int(os.getenv("OLLAMA_TOKEN_OVERHEAD", "3000"))
 
 ANALYSIS_WORKERS = int(os.getenv("ANALYSIS_WORKERS", "1"))
 SPAM_PROBABILITY_THRESHOLD = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))

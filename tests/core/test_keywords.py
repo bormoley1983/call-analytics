@@ -925,7 +925,7 @@ def test_keyword_drilldown_route_requires_materialized_matches(monkeypatch):
 def _make_record(**kwargs):
     from domain.reporting import ReportCallRecord
 
-    defaults = dict(
+    defaults: dict[str, object] = dict(
         call_id="call-1",
         manager_id="sales_001",
         manager_name="Manager 1",
@@ -944,11 +944,11 @@ def _make_record(**kwargs):
         objections=["Delivery is too expensive"],
     )
     defaults.update(kwargs)
-    return ReportCallRecord(**defaults)
+    return ReportCallRecord(**defaults)  # type: ignore[arg-type]
 
 
 def _make_keyword(**kwargs):
-    defaults = dict(
+    defaults: dict[str, object] = dict(
         keyword_id="delivery",
         label="Delivery",
         category="logistics",
@@ -957,7 +957,7 @@ def _make_keyword(**kwargs):
         is_active=True,
     )
     defaults.update(kwargs)
-    return KeywordDefinition(**defaults)
+    return KeywordDefinition(**defaults)  # type: ignore[arg-type]
 
 
 def test_normalize_case_folds_and_strips():
@@ -1154,6 +1154,9 @@ def test_build_keywords_report_dispatches_to_sql_path():
                     "top_outcomes": [("продаж", 3)],
                 }
             ]
+
+        def iter_call_records(self, filters):
+            return []
 
         def close(self):
             pass

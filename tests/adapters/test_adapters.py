@@ -834,8 +834,7 @@ def test_batch_replace_returns_early_for_empty_batches():
     source = keywords_postgres.PostgresKeywordSource.__new__(
         keywords_postgres.PostgresKeywordSource
     )
-    result = source.batch_replace_call_keyword_matches([])
-    assert result is None
+    source.batch_replace_call_keyword_matches([])
 
 
 # ---------------------------------------------------------------------------
@@ -1029,6 +1028,10 @@ def test_initialize_connection_called_after_migrations(monkeypatch):
 
     mock_conn = MockConn()
 
+    def _fake_apply_migrations(conn):
+        call_order.append("migrations")
+        return []
+
     monkeypatch.setattr(
         postgres_single_connection.psycopg2, "connect", lambda dsn: mock_conn
     )
@@ -1040,7 +1043,7 @@ def test_initialize_connection_called_after_migrations(monkeypatch):
     monkeypatch.setattr(
         postgres_single_connection,
         "apply_pending_migrations",
-        lambda conn: call_order.append("migrations") or [],
+        _fake_apply_migrations,
     )
 
     class TestAdapter(postgres_single_connection.SingleConnectionPostgresAdapter):

@@ -4,14 +4,11 @@ import uuid
 from typing import Any
 
 from adapters.postgres_single_connection import SingleConnectionPostgresAdapter
-from adapters.storage_postgres import DDL, _jsonb
+from adapters.storage_postgres import _jsonb
 
 
 class PostgresKeywordAiAnalysisStore(SingleConnectionPostgresAdapter):
-    def _initialize_connection(self, conn: Any) -> None:
-        with conn.cursor() as cur:
-            cur.execute(DDL)
-        conn.commit()
+    # Schema migrations are handled centrally by the base class.
 
     def _load_existing_history(self, analysis_id: str) -> dict[str, Any] | None:
         detail = self.get_analysis(analysis_id)

@@ -8,7 +8,6 @@ from typing import Any
 from psycopg2.extras import Json
 
 from adapters.postgres_single_connection import SingleConnectionPostgresAdapter
-from adapters.stt_runs_schema import STT_RUNS_DDL
 from domain.stt_runs import SttRunManifest, SttRunResultRecord
 from ports.stt_runs import SttRunStorePort
 
@@ -26,10 +25,7 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 
 class PostgresSttRunStore(SingleConnectionPostgresAdapter, SttRunStorePort):
-    def _initialize_connection(self, conn: Any) -> None:
-        with conn.cursor() as cur:
-            cur.execute(STT_RUNS_DDL)
-        conn.commit()
+    # Schema migrations are handled centrally by the base class.
 
     def ensure_ready(self) -> None:
         self._getconn()

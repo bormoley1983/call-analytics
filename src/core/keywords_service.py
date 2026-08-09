@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -7,6 +8,8 @@ from domain.keywords import KeywordDefinition
 from domain.reporting import ReportCallRecord, ReportFilters
 from ports.keywords import KeywordSource
 from ports.reporting import ReportingSource
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
@@ -102,6 +105,38 @@ def build_keywords_report(
         for keyword in keyword_source.list_keywords()
         if keyword.is_active and keyword.terms
     ]
+
+    if hasattr(reporting_source, "build_keywords_report_data"):
+        return _build_keywords_report_sql(
+            reporting_source=reporting_source,
+            keyword_source=keyword_source,
+            keywords=keywords,
+            filters=filters,
+            spam_threshold=spam_threshold,
+            sort_by=sort_by,
+            order=order,
+        )
+
+    return _build_keywords_report_iterative(
+        reporting_source=reporting_source,
+        keyword_source=keyword_source,
+        keywords=keywords,
+        filters=filters,
+        spam_threshold=spam_threshold,
+        sort_by=sort_by,
+        order=order,
+    )
+
+
+def _build_keywords_report_iterative(
+    reporting_source: ReportingSource,
+    keyword_source: KeywordSource,
+    keywords: list,
+    filters: ReportFilters,
+    spam_threshold: float,
+    sort_by: str,
+    order: str,
+) -> dict[str, Any]:
     buckets: dict[str, dict[str, Any]] = {
         keyword.keyword_id: {
             "keyword_id": keyword.keyword_id,
@@ -118,7 +153,14 @@ def build_keywords_report(
         for keyword in keywords
     }
 
+    logger.info("Starting keywords report (iterative): records from %s keywords=%d", reporting_source.source_name, len(keywords))
+    records_processed = 0
+    last_log_at = 0
     for record in reporting_source.iter_call_records(filters):
+        records_processed += 1
+        if records_processed - last_log_at >= 5000:
+            logger.info("Keywords report progress: records_processed=%d", records_processed)
+            last_log_at = records_processed
         if not _include_record(record, filters, spam_threshold):
             continue
         for keyword in keywords:
@@ -136,6 +178,81 @@ def build_keywords_report(
                 bucket["outcomes"].get(record.outcome, 0) + 1
             )
 
+    logger.info(
+        "Finished keywords report iteration: records_processed=%d",
+        records_processed,
+    )
+
+    return _finalize_keywords_report(
+        buckets=buckets,
+        reporting_source=reporting_source,
+        keyword_source=keyword_source,
+        filters=filters,
+        sort_by=sort_by,
+        order=order,
+    )
+
+
+def _build_keywords_report_sql(
+    reporting_source: ReportingSource,
+    keyword_source: KeywordSource,
+    keywords: list,
+    filters: ReportFilters,
+    spam_threshold: float,
+    sort_by: str,
+    order: str,
+) -> dict[str, Any]:
+    logger.info("Starting keywords report (SQL): source=%s keywords=%d", reporting_source.source_name, len(keywords))
+    raw_data = reporting_source.build_keywords_report_data(  # type: ignore[attr-defined]
+        keywords=keywords,
+        filters=filters,
+        spam_threshold=spam_threshold,
+    )
+
+    buckets: dict[str, dict[str, Any]] = {}
+    for keyword in keywords:
+        buckets[keyword.keyword_id] = {
+            "keyword_id": keyword.keyword_id,
+            "label": keyword.label,
+            "category": keyword.category,
+            "terms": keyword.terms,
+            "match_fields": keyword.match_fields,
+            "matched_calls": 0,
+            "total_matches": 0,
+            "matched_managers": set(),
+            "intents": {},
+            "outcomes": {},
+        }
+
+    for row in raw_data:
+        kid = row["keyword_id"]
+        bucket = buckets.get(kid)
+        if bucket is None:
+            continue
+        bucket["matched_calls"] = int(row.get("matched_calls", 0))
+        bucket["total_matches"] = int(row.get("total_matches", 0))
+        bucket["matched_managers"] = {m for m in row.get("top_managers", [])}
+        bucket["intents"] = {kv[0]: kv[1] for kv in row.get("top_intents", [])}
+        bucket["outcomes"] = {kv[0]: kv[1] for kv in row.get("top_outcomes", [])}
+
+    return _finalize_keywords_report(
+        buckets=buckets,
+        reporting_source=reporting_source,
+        keyword_source=keyword_source,
+        filters=filters,
+        sort_by=sort_by,
+        order=order,
+    )
+
+
+def _finalize_keywords_report(
+    buckets: dict[str, dict[str, Any]],
+    reporting_source: ReportingSource,
+    keyword_source: KeywordSource,
+    filters: ReportFilters,
+    sort_by: str,
+    order: str,
+) -> dict[str, Any]:
     result_keywords = []
     for bucket in buckets.values():
         result_keywords.append(

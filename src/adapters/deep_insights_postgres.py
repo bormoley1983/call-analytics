@@ -5,7 +5,7 @@ import uuid
 from typing import Any
 
 from adapters.postgres_single_connection import SingleConnectionPostgresAdapter
-from adapters.storage_postgres import DDL, _jsonb
+from adapters.storage_postgres import _jsonb
 
 logger = logging.getLogger(__name__)
 
@@ -13,10 +13,7 @@ logger = logging.getLogger(__name__)
 class PostgresDeepInsightsStore(SingleConnectionPostgresAdapter):
     """Store for deep AI insights runs and individual insights."""
 
-    def _initialize_connection(self, conn: Any) -> None:
-        with conn.cursor() as cur:
-            cur.execute(DDL)
-        conn.commit()
+    # Schema migrations are handled centrally by the base class.
 
     def create_run(
         self,

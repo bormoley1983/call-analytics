@@ -21,12 +21,12 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
             raise ValueError(f"Unexpected phone column: {column!r}")
         digits = f"regexp_replace(COALESCE({column}, ''), '[^0-9]', '', 'g')"
         trimmed = (
-            f"CASE WHEN {digits} LIKE '00%' THEN substr({digits}, 3) ELSE {digits} END"
+            f"CASE WHEN {digits} LIKE '00%%' THEN substr({digits}, 3) ELSE {digits} END"
         )
         return (
             "CASE "
             f"WHEN {trimmed} = '' THEN '' "
-            f"WHEN length({trimmed}) = 10 AND {trimmed} LIKE '0%' THEN '38' || {trimmed} "
+            f"WHEN length({trimmed}) = 10 AND {trimmed} LIKE '0%%' THEN '38' || {trimmed} "
             f"ELSE {trimmed} "
             "END"
         )
@@ -448,8 +448,8 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                         SUM(CASE WHEN spam_probability >= %s THEN 1 ELSE 0 END)::bigint AS spam_calls,
                         SUM(CASE WHEN effective_call THEN 1 ELSE 0 END)::bigint AS effective_calls,
                         COALESCE(SUM(audio_seconds), 0.0)::double precision AS total_duration_seconds,
-                        MIN(NULLIF(call_datetime::date, ''))::text AS first_call_date,
-                        MAX(NULLIF(call_datetime::date, ''))::text AS last_call_date,
+                        MIN(NULLIF(call_date, ''))::text AS first_call_date,
+                        MAX(NULLIF(call_date, ''))::text AS last_call_date,
                         MAX(display_phone) AS display_phone
                     FROM enriched
                     GROUP BY customer_phone
@@ -622,6 +622,157 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
 
         return self._run_read(_fetch)
 
+    def build_keywords_report_data(
+        self,
+        *,
+        keywords: list,
+        filters: ReportFilters,
+        spam_threshold: float,
+    ) -> list[dict[str, object]]:
+        where_clause, params = self._build_where_clauses(
+            filters,
+            spam_threshold=spam_threshold,
+            include_runtime_flags=True,
+        )
+
+        keyword_rows: list[tuple[str, list[str], list[str]]] = []
+        for kw in keywords:
+            kid = getattr(kw, "keyword_id", None) or kw.get("keyword_id")  # type: ignore[union-attr]
+            terms = getattr(kw, "terms", []) or kw.get("terms", [])  # type: ignore[union-attr]
+            match_fields = getattr(kw, "match_fields", ["summary", "key_questions", "objections"]) or kw.get("match_fields", ["summary", "key_questions", "objections"])  # type: ignore[union-attr]
+            if not terms:
+                continue
+            keyword_rows.append((kid, list(terms), list(match_fields)))
+
+        if not keyword_rows:
+            return []
+
+        def _fetch(conn) -> list[dict[str, object]]:
+            results_by_id: dict[str, dict[str, object]] = {
+                kid: {
+                    "keyword_id": kid,
+                    "matched_calls": 0,
+                    "total_matches": 0,
+                    "top_managers": [],
+                    "top_intents": [],
+                    "top_outcomes": [],
+                }
+                for kid, _, _ in keyword_rows
+            }
+
+            # Build a single CTE that tags each call with which keywords matched.
+            # For each keyword we generate a column: kw_<index> = boolean match flag + match count.
+            # Then we aggregate once per keyword.
+            with conn.cursor() as cur:
+                for idx, (kid, terms, match_fields) in enumerate(keyword_rows):
+                    text_checks: list[str] = []
+                    term_params: list[str] = []
+                    for term in terms:
+                        for mf in match_fields:
+                            if mf == "summary":
+                                text_checks.append(f"LOWER(summary) LIKE %s")
+                                term_params.append(f"%{term.lower()}%")
+                            elif mf in ("key_questions", "objections"):
+                                text_checks.append(
+                                    f"EXISTS (SELECT 1 FROM jsonb_array_elements_text({mf}) AS elem WHERE LOWER(elem) LIKE %s)"
+                                )
+                                term_params.append(f"%{term.lower()}%")
+
+                    if not text_checks:
+                        continue
+
+                    match_expr = " OR ".join(text_checks)
+
+                    # WHERE clause params: filter params + LIKE params for match_expr
+                    where_params = [*params, *term_params]
+
+                    # COUNT/SUM query also has %s placeholders from _match_count_sql
+                    # (same ordering as term_params: for term in terms for mf in match_fields)
+                    count_params = [*where_params, *term_params]
+
+                    # Single query per keyword: counts + top_intents + top_outcomes + top_managers
+                    cur.execute(
+                        f"""
+                        SELECT
+                            COUNT(*)::bigint AS matched_calls,
+                            COALESCE(SUM(
+                                {" + ".join(self._match_count_sql(mf, term) for term in terms for mf in match_fields)}
+                            ), 0)::bigint AS total_matches
+                        FROM analyses
+                        WHERE {where_clause}
+                          AND ({match_expr})
+                        """,
+                        count_params,
+                    )
+                    row = cur.fetchone()
+                    matched_calls = int(row[0] or 0)
+                    total_matches = int(row[1] or 0)
+                    results_by_id[kid]["matched_calls"] = matched_calls
+                    results_by_id[kid]["total_matches"] = total_matches
+
+                    if matched_calls == 0:
+                        continue
+
+                    cur.execute(
+                        f"""
+                        SELECT COALESCE(manager_id, 'manager_unknown') AS mid, COUNT(*)::bigint AS cnt
+                        FROM analyses
+                        WHERE {where_clause}
+                          AND ({match_expr})
+                        GROUP BY mid
+                        ORDER BY cnt DESC, mid ASC
+                        LIMIT 10
+                        """,
+                        where_params,
+                    )
+                    results_by_id[kid]["top_managers"] = [
+                        (str(r[0]), int(r[1])) for r in cur.fetchall()
+                    ]
+
+                    cur.execute(
+                        f"""
+                        SELECT COALESCE(intent, 'інше') AS intent, COUNT(*)::bigint AS cnt
+                        FROM analyses
+                        WHERE {where_clause}
+                          AND ({match_expr})
+                        GROUP BY intent
+                        ORDER BY cnt DESC, intent ASC
+                        LIMIT 10
+                        """,
+                        where_params,
+                    )
+                    results_by_id[kid]["top_intents"] = [
+                        (str(r[0]), int(r[1])) for r in cur.fetchall()
+                    ]
+
+                    cur.execute(
+                        f"""
+                        SELECT COALESCE(outcome, 'невідомо') AS outcome, COUNT(*)::bigint AS cnt
+                        FROM analyses
+                        WHERE {where_clause}
+                          AND ({match_expr})
+                        GROUP BY outcome
+                        ORDER BY cnt DESC, outcome ASC
+                        LIMIT 5
+                        """,
+                        where_params,
+                    )
+                    results_by_id[kid]["top_outcomes"] = [
+                        (str(r[0]), int(r[1])) for r in cur.fetchall()
+                    ]
+
+            return list(results_by_id.values())
+
+        return self._run_read(_fetch)
+
+    @staticmethod
+    def _match_count_sql(match_field: str, term: str) -> str:
+        if match_field == "summary":
+            return f"CASE WHEN LOWER(summary) LIKE %s THEN 1 ELSE 0 END"
+        elif match_field in ("key_questions", "objections"):
+            return f"(SELECT COUNT(*) FROM jsonb_array_elements_text({match_field}) AS elem WHERE LOWER(elem) LIKE %s)"
+        return "0"
+
     def iter_call_records(self, filters: ReportFilters) -> Iterable[ReportCallRecord]:
         where_clause, params = self._build_where_clauses(
             filters,
@@ -642,7 +793,7 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
                 outcome,
                 summary,
                 audio_seconds,
-                call_datetime::date,
+                call_datetime,
                 src_number,
                 dst_number,
                 key_questions,

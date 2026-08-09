@@ -915,3 +915,508 @@ def test_keyword_drilldown_route_requires_materialized_matches(monkeypatch):
         )
 
     assert exc.value.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# keywords_service - _normalize, _record_texts, _match_keyword, _include_record
+# ---------------------------------------------------------------------------
+
+
+def _make_record(**kwargs):
+    from domain.reporting import ReportCallRecord
+
+    defaults = dict(
+        call_id="call-1",
+        manager_id="sales_001",
+        manager_name="Manager 1",
+        role="sales",
+        direction="incoming",
+        spam_probability=0.1,
+        effective_call=True,
+        intent="консультація",
+        outcome="продаж",
+        summary="Client asked about delivery options.",
+        audio_seconds=120.0,
+        call_datetime=datetime(2026, 7, 25, tzinfo=timezone.utc),
+        src_number="+380501234567",
+        dst_number="+380441234567",
+        key_questions=["Where is my order?"],
+        objections=["Delivery is too expensive"],
+    )
+    defaults.update(kwargs)
+    return ReportCallRecord(**defaults)
+
+
+def _make_keyword(**kwargs):
+    defaults = dict(
+        keyword_id="delivery",
+        label="Delivery",
+        category="logistics",
+        terms=["delivery", "order"],
+        match_fields=["summary", "key_questions", "objections"],
+        is_active=True,
+    )
+    defaults.update(kwargs)
+    return KeywordDefinition(**defaults)
+
+
+def test_normalize_case_folds_and_strips():
+    from core.keywords_service import _normalize
+
+    assert _normalize("  Hello World  ") == "hello world"
+    assert _normalize("") == ""
+    assert _normalize("Привіт") == "привіт"
+
+
+def test_record_texts_selects_fields():
+    from core.keywords_service import _record_texts
+
+    record = _make_record(summary="test summary", key_questions=["Q1?"])
+
+    result = _record_texts(record, ["summary"])
+    assert result["summary"] == ["test summary"]
+
+    result_kq = _record_texts(record, ["key_questions"])
+    assert result_kq["key_questions"] == ["Q1?"]
+
+
+def test_record_texts_filters_empty_strings():
+    from core.keywords_service import _record_texts
+
+    record = _make_record(key_questions=["Q1?", "", "Q3?"])
+    result = _record_texts(record, ["key_questions"])
+    assert result["key_questions"] == ["Q1?", "Q3?"]
+
+
+def test_match_keyword_in_summary():
+    from core.keywords_service import _match_keyword
+
+    record = _make_record(summary="delivery issue")
+    keyword = _make_keyword(terms=["delivery"], match_fields=["summary"])
+    matches = _match_keyword(record, keyword)
+    assert len(matches) == 1
+    assert matches[0]["field"] == "summary"
+
+
+def test_match_keyword_case_insensitive():
+    from core.keywords_service import _match_keyword
+
+    record = _make_record(summary="DELIVERY is great")
+    keyword = _make_keyword(terms=["delivery"], match_fields=["summary"])
+    assert len(_match_keyword(record, keyword)) == 1
+
+
+def test_match_keyword_no_match_when_absent():
+    from core.keywords_service import _match_keyword
+
+    record = _make_record(summary="completely unrelated text")
+    keyword = _make_keyword(terms=["refund"], match_fields=["summary"])
+    assert _match_keyword(record, keyword) == []
+
+
+def test_match_keyword_multiple_terms_same_field():
+    from core.keywords_service import _match_keyword
+
+    record = _make_record(summary="delivery and order update")
+    keyword = _make_keyword(terms=["delivery", "order"], match_fields=["summary"])
+    assert len(_match_keyword(record, keyword)) == 2
+
+
+def test_match_keyword_across_fields():
+    from core.keywords_service import _match_keyword
+
+    record = _make_record(
+        summary="delivery issue", key_questions=["Order status?"]
+    )
+    keyword = _make_keyword(
+        terms=["delivery", "order"], match_fields=["summary", "key_questions"]
+    )
+    assert len(_match_keyword(record, keyword)) == 2
+
+
+def test_include_record_effective_only_filter():
+    from core.keywords_service import _include_record
+
+    record_on = _make_record(effective_call=True)
+    record_off = _make_record(effective_call=False)
+    filters = ReportFilters(effective_only=True)
+
+    assert _include_record(record_on, filters, 0.7) is True
+    assert _include_record(record_off, filters, 0.7) is False
+
+
+def test_include_record_spam_only_filter():
+    from core.keywords_service import _include_record
+
+    spam_record = _make_record(spam_probability=0.9)
+    clean_record = _make_record(spam_probability=0.2)
+    filters = ReportFilters(spam_only=True)
+
+    assert _include_record(spam_record, filters, 0.7) is True
+    assert _include_record(clean_record, filters, 0.7) is False
+
+
+# ---------------------------------------------------------------------------
+# keywords_service - _finalize_keywords_report & dispatch logic
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_keywords_report_structure():
+    from core.keywords_service import _finalize_keywords_report
+
+    buckets = {
+        "delivery": {
+            "keyword_id": "delivery",
+            "label": "Delivery",
+            "category": "logistics",
+            "terms": ["delivery"],
+            "match_fields": ["summary"],
+            "matched_calls": 5,
+            "total_matches": 10,
+            "matched_managers": {"sales_001", "sales_002"},
+            "intents": {"консультація": 3},
+            "outcomes": {"продаж": 5},
+        }
+    }
+
+    result = _finalize_keywords_report(
+        buckets=buckets,
+        reporting_source=type("R", (), {"source_name": "fake"})(),
+        keyword_source=type("K", (), {"source_name": "fake"})(),
+        filters=ReportFilters(),
+        sort_by="matched_calls",
+        order="desc",
+    )
+
+    assert result["total_keywords"] == 1
+    kw = result["keywords"][0]
+    assert kw["keyword_id"] == "delivery"
+    assert kw["matched_managers"] == 2
+
+
+def test_finalize_sorts_by_matched_calls_descending():
+    from core.keywords_service import _finalize_keywords_report
+
+    buckets = {
+        "a": {
+            "keyword_id": "a",
+            "label": "A",
+            "category": "cat",
+            "terms": ["a"],
+            "match_fields": ["summary"],
+            "matched_calls": 10,
+            "total_matches": 10,
+            "matched_managers": set(),
+            "intents": {},
+            "outcomes": {},
+        },
+        "b": {
+            "keyword_id": "b",
+            "label": "B",
+            "category": "cat",
+            "terms": ["b"],
+            "match_fields": ["summary"],
+            "matched_calls": 20,
+            "total_matches": 20,
+            "matched_managers": set(),
+            "intents": {},
+            "outcomes": {},
+        },
+    }
+
+    result = _finalize_keywords_report(
+        buckets=buckets,
+        reporting_source=type("R", (), {"source_name": "fake"})(),
+        keyword_source=type("K", (), {"source_name": "fake"})(),
+        filters=ReportFilters(),
+        sort_by="matched_calls",
+        order="desc",
+    )
+
+    assert result["keywords"][0]["keyword_id"] == "b"
+    assert result["keywords"][1]["keyword_id"] == "a"
+
+
+def test_build_keywords_report_dispatches_to_sql_path():
+    """When reporting_source has build_keywords_report_data, use SQL path."""
+
+    class SqlReportingSource:
+        source_name = "sql_fake"
+
+        def build_keywords_report_data(self, **kwargs):
+            return [
+                {
+                    "keyword_id": "delivery",
+                    "matched_calls": 3,
+                    "total_matches": 5,
+                    "top_managers": [("sales_001", 2)],
+                    "top_intents": [("консультація", 3)],
+                    "top_outcomes": [("продаж", 3)],
+                }
+            ]
+
+        def close(self):
+            pass
+
+    class FakeKeywordSource:
+        source_name = "fake"
+
+        def list_keywords(self):
+            return [_make_keyword()]
+
+        def close(self):
+            pass
+
+    result = build_keywords_report(
+        reporting_source=SqlReportingSource(),
+        keyword_source=FakeKeywordSource(),
+        filters=ReportFilters(),
+        spam_threshold=0.7,
+    )
+
+    assert result["total_keywords"] == 1
+    assert result["keywords"][0]["matched_calls"] == 3
+
+
+def test_build_keywords_report_dispatches_to_iterative_path():
+    """When reporting_source lacks build_keywords_report_data, use iterative path."""
+
+    class IterReportingSource:
+        source_name = "iter_fake"
+
+        def iter_call_records(self, filters):
+            return [_make_record(summary="delivery issue")]
+
+        def close(self):
+            pass
+
+    class FakeKeywordSource:
+        source_name = "fake"
+
+        def list_keywords(self):
+            return [_make_keyword(terms=["delivery"])]
+
+        def close(self):
+            pass
+
+    result = build_keywords_report(
+        reporting_source=IterReportingSource(),
+        keyword_source=FakeKeywordSource(),
+        filters=ReportFilters(),
+        spam_threshold=0.7,
+    )
+
+    assert result["total_keywords"] == 1
+    assert result["keywords"][0]["matched_calls"] == 1
+
+
+# ---------------------------------------------------------------------------
+# keywords_materialize - batching with batch_replace_call_keyword_matches
+# ---------------------------------------------------------------------------
+
+
+class FakeBatchKeywordStore:
+    """Keyword store with batch_replace_call_keyword_matches."""
+
+    def __init__(self):
+        self.batch_calls: list[list[tuple[str, list[dict]]]] = []
+        self.individual_calls: list[tuple[str, list[dict]]] = []
+        self.materialization_state: dict | None = None
+
+    def batch_replace_call_keyword_matches(
+        self, batches: list[tuple[str, list[dict]]]
+    ):
+        self.batch_calls.append(list(batches))
+
+    def replace_call_keyword_matches(self, call_id: str, rows: list[dict]):
+        self.individual_calls.append((call_id, rows))
+
+    def is_materialized(self):
+        return self.materialization_state is not None
+
+    def mark_materialization_completed(
+        self, processed_calls: int, matched_calls: int, stored_rows: int
+    ):
+        self.materialization_state = {
+            "processed_calls": processed_calls,
+            "matched_calls": matched_calls,
+            "stored_rows": stored_rows,
+        }
+
+    def close(self):
+        pass
+
+
+class FakeNoBatchKeywordStore:
+    """Keyword store WITHOUT batch_replace_call_keyword_matches."""
+
+    def __init__(self):
+        self.individual_calls: list[tuple[str, list[dict]]] = []
+        self.materialization_state: dict | None = None
+
+    def replace_call_keyword_matches(self, call_id: str, rows: list[dict]):
+        self.individual_calls.append((call_id, rows))
+
+    def is_materialized(self):
+        return self.materialization_state is not None
+
+    def mark_materialization_completed(
+        self, processed_calls: int, matched_calls: int, stored_rows: int
+    ):
+        self.materialization_state = {
+            "processed_calls": processed_calls,
+            "matched_calls": matched_calls,
+            "stored_rows": stored_rows,
+        }
+
+    def close(self):
+        pass
+
+
+class FakeReportingSourceForMaterialize:
+    def __init__(self, records):
+        self.records = records
+
+    def iter_call_records(self, filters):
+        return iter(self.records)
+
+    def close(self):
+        pass
+
+
+class FakeKeywordSourceForMaterialize:
+    def __init__(self, keywords=None):
+        self.keywords = keywords or []
+
+    def list_keywords(self):
+        return list(self.keywords)
+
+    def close(self):
+        pass
+
+
+def test_materialize_uses_batch_method_when_available():
+    records = [
+        _make_record(call_id="call-1", summary="delivery issue"),
+        _make_record(call_id="call-2", summary="another delivery problem"),
+        _make_record(call_id="call-3", summary="no match here"),
+    ]
+    store = FakeBatchKeywordStore()
+
+    result = materialize_call_keywords(
+        reporting_source=FakeReportingSourceForMaterialize(records),  # type: ignore[arg-type]
+        keyword_source=FakeKeywordSourceForMaterialize([_make_keyword()]),  # type: ignore[arg-type]
+        keyword_store=store,
+        state_store=store,
+    )
+
+    assert result["processed_calls"] == 3
+    assert len(store.batch_calls) >= 1
+    assert len(store.individual_calls) == 0
+
+
+def test_materialize_falls_back_to_individual_when_no_batch():
+    records = [
+        _make_record(call_id="call-1", summary="delivery issue"),
+        _make_record(call_id="call-2", summary="another delivery problem"),
+    ]
+    store = FakeNoBatchKeywordStore()
+
+    result = materialize_call_keywords(
+        reporting_source=FakeReportingSourceForMaterialize(records),  # type: ignore[arg-type]
+        keyword_source=FakeKeywordSourceForMaterialize([_make_keyword()]),  # type: ignore[arg-type]
+        keyword_store=store,
+        state_store=store,
+    )
+
+    assert result["processed_calls"] == 2
+    assert len(store.individual_calls) == 2
+
+
+def test_materialize_flushes_remaining_batch_at_end():
+    records = [_make_record(call_id=f"call-{i}", summary="delivery") for i in range(3)]
+    store = FakeBatchKeywordStore()
+
+    materialize_call_keywords(
+        reporting_source=FakeReportingSourceForMaterialize(records),  # type: ignore[arg-type]
+        keyword_source=FakeKeywordSourceForMaterialize([_make_keyword()]),  # type: ignore[arg-type]
+        keyword_store=store,
+        state_store=store,
+    )
+
+    assert len(store.batch_calls) == 1
+    total_in_batch = sum(len(b) for b in store.batch_calls)
+    assert total_in_batch == 3
+
+
+def test_materialize_batches_at_batch_size_boundary():
+    records = [
+        _make_record(call_id=f"call-{i:04d}", summary="delivery issue") for i in range(600)
+    ]
+    store = FakeBatchKeywordStore()
+
+    materialize_call_keywords(
+        reporting_source=FakeReportingSourceForMaterialize(records),  # type: ignore[arg-type]
+        keyword_source=FakeKeywordSourceForMaterialize([_make_keyword()]),  # type: ignore[arg-type]
+        keyword_store=store,
+        state_store=store,
+    )
+
+    assert len(store.batch_calls) == 2
+    assert len(store.batch_calls[0]) == 500
+    assert len(store.batch_calls[1]) == 100
+
+
+def test_materialize_counts_matched_vs_unmatched():
+    records = [
+        _make_record(call_id="call-1", summary="delivery issue"),
+        _make_record(
+            call_id="call-2",
+            summary="completely unrelated topic",
+            key_questions=[],
+            objections=[],
+        ),
+        _make_record(call_id="call-3", summary="another delivery"),
+    ]
+    store = FakeBatchKeywordStore()
+
+    result = materialize_call_keywords(
+        reporting_source=FakeReportingSourceForMaterialize(records),  # type: ignore[arg-type]
+        keyword_source=FakeKeywordSourceForMaterialize([_make_keyword()]),  # type: ignore[arg-type]
+        keyword_store=store,
+        state_store=store,
+    )
+
+    assert result["processed_calls"] == 3
+    assert result["matched_calls"] == 2
+
+
+def test_materialize_skips_inactive_keywords():
+    records = [_make_record(call_id="call-1", summary="delivery issue")]
+    store = FakeBatchKeywordStore()
+
+    result = materialize_call_keywords(
+        reporting_source=FakeReportingSourceForMaterialize(records),  # type: ignore[arg-type]
+        keyword_source=FakeKeywordSourceForMaterialize(
+            [_make_keyword(is_active=False)]
+        ),  # type: ignore[arg-type]
+        keyword_store=store,
+        state_store=store,
+    )
+
+    assert result["active_keywords"] == 0
+    assert result["matched_calls"] == 0
+
+
+def test_materialize_empty_records_produces_no_batches():
+    store = FakeBatchKeywordStore()
+
+    result = materialize_call_keywords(
+        reporting_source=FakeReportingSourceForMaterialize([]),  # type: ignore[arg-type]
+        keyword_source=FakeKeywordSourceForMaterialize([_make_keyword()]),  # type: ignore[arg-type]
+        keyword_store=store,
+        state_store=store,
+    )
+
+    assert result["processed_calls"] == 0
+    assert len(store.batch_calls) == 0

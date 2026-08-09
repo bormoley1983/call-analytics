@@ -6,6 +6,7 @@ from typing import Any, TypeVar
 
 import psycopg2
 
+from adapters.migrations import apply_pending_migrations
 from adapters.storage_postgres import _ensure_utf8_client_encoding
 
 RETRYABLE_CONNECTION_ERRORS = (psycopg2.InterfaceError, psycopg2.OperationalError)
@@ -56,6 +57,26 @@ class SingleConnectionPostgresAdapter:
         conn = _ensure_utf8_client_encoding(
             psycopg2.connect(_dsn_with_connect_timeout(self.dsn))
         )
+        # Set a statement timeout so DDL and long queries can't block forever.
+        # Individual adapters can override this per-query if needed.
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET statement_timeout = '300000'")  # 5 minutes
+            conn.commit()
+        except psycopg2.Error:
+            pass
+
+        # Apply any pending schema migrations (versioned, only runs unapplied ones)
+        try:
+            apply_pending_migrations(conn)
+        except psycopg2.Error:
+            try:
+                if not conn.closed:
+                    conn.close()
+            finally:
+                raise
+
+        # Run adapter-specific initialization (for legacy compatibility)
         try:
             self._initialize_connection(conn)
         except psycopg2.Error:

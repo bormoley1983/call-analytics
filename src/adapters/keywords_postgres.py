@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 
 from adapters.postgres_single_connection import SingleConnectionPostgresAdapter
-from adapters.storage_postgres import DDL, _jsonb
+from adapters.storage_postgres import _jsonb
 from domain.keywords import DEFAULT_MATCH_FIELDS, KeywordDefinition
 from domain.reporting import ReportFilters
 
@@ -17,10 +17,8 @@ def _utc_now_iso() -> str:
 class PostgresKeywordSource(SingleConnectionPostgresAdapter):
     source_name = "postgres"
 
-    def _initialize_connection(self, conn) -> None:
-        with conn.cursor() as cur:
-            cur.execute(DDL)
-        conn.commit()
+    # Schema migrations are handled centrally by the base class.
+    # No need to run DDL here anymore.
 
     def list_keywords(self) -> Iterable[KeywordDefinition]:
         query = """
@@ -31,15 +29,12 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
                 k.match_fields,
                 k.is_active,
                 COALESCE(
-                    ARRAY(
-                        SELECT ka.phrase
-                        FROM keyword_aliases ka
-                        WHERE ka.keyword_id = k.keyword_id
-                        ORDER BY ka.phrase
-                    ),
+                    ARRAY_AGG(ka.phrase ORDER BY ka.phrase),
                     ARRAY[]::TEXT[]
                 ) AS terms
             FROM keywords k
+            LEFT JOIN keyword_aliases ka ON ka.keyword_id = k.keyword_id
+            GROUP BY k.keyword_id, k.label, k.category, k.match_fields, k.is_active
             ORDER BY k.category, k.label, k.keyword_id
         """
 
@@ -71,16 +66,13 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
                 k.match_fields,
                 k.is_active,
                 COALESCE(
-                    ARRAY(
-                        SELECT ka.phrase
-                        FROM keyword_aliases ka
-                        WHERE ka.keyword_id = k.keyword_id
-                        ORDER BY ka.phrase
-                    ),
+                    ARRAY_AGG(ka.phrase ORDER BY ka.phrase),
                     ARRAY[]::TEXT[]
                 ) AS terms
             FROM keywords k
+            LEFT JOIN keyword_aliases ka ON ka.keyword_id = k.keyword_id
             WHERE k.keyword_id = %s
+            GROUP BY k.keyword_id, k.label, k.category, k.match_fields, k.is_active
         """
 
         def _get(conn):
@@ -176,6 +168,43 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
 
         self._run_retryable_write(_replace)
 
+    def batch_replace_call_keyword_matches(
+        self, batches: list[tuple[str, list[dict]]]
+    ) -> None:
+        """Replace keyword matches for multiple calls in a single transaction.
+
+        batches: list of (call_id, rows) tuples.
+        All replacements are committed together, reducing round-trips from N to 1.
+        """
+        if not batches:
+            return
+
+        def _batch_replace(conn):
+            with conn.cursor() as cur:
+                call_ids = [call_id for call_id, _ in batches]
+                cur.execute(
+                    "DELETE FROM call_keywords WHERE call_id = ANY(%s)",
+                    (call_ids,),
+                )
+                for call_id, rows in batches:
+                    for row in rows:
+                        cur.execute(
+                            """
+                            INSERT INTO call_keywords
+                                (call_id, keyword_id, match_count, matched_fields, matched_terms, updated_at)
+                            VALUES (%s, %s, %s, %s, %s, now())
+                            """,
+                            (
+                                call_id,
+                                row["keyword_id"],
+                                row["match_count"],
+                                _jsonb(row.get("matched_fields") or []),
+                                _jsonb(row.get("matched_terms") or []),
+                            ),
+                        )
+
+        self._run_retryable_write(_batch_replace)
+
     def is_materialized(self) -> bool:
         def _is_materialized(conn):
             with conn.cursor() as cur:
@@ -251,15 +280,7 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
                 k.label,
                 k.category,
                 k.match_fields,
-                COALESCE(
-                    ARRAY(
-                        SELECT ka.phrase
-                        FROM keyword_aliases ka
-                        WHERE ka.keyword_id = k.keyword_id
-                        ORDER BY ka.phrase
-                    ),
-                    ARRAY[]::TEXT[]
-                ) AS terms,
+                COALESCE(agg.terms, ARRAY[]::TEXT[]) AS terms,
                 ck.call_id,
                 ck.match_count,
                 a.manager_id,
@@ -268,6 +289,11 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
             FROM call_keywords ck
             JOIN keywords k ON k.keyword_id = ck.keyword_id
             JOIN analyses a ON a.call_id = ck.call_id
+            LEFT JOIN LATERAL (
+                SELECT ARRAY_AGG(ka.phrase ORDER BY ka.phrase) AS terms
+                FROM keyword_aliases ka
+                WHERE ka.keyword_id = k.keyword_id
+            ) agg ON true
             WHERE {" AND ".join(clauses)}
             ORDER BY k.category, k.label, k.keyword_id, ck.call_id
         """

@@ -177,7 +177,18 @@ def publish_candidates(req: KeywordGenerationPublishRequest):
     description=(
         "Generates keyword candidates from existing Postgres analyses, publishes them into keyword catalog, "
         "optionally materializes keyword matches, and optionally runs AI grouping analysis.\n\n"
-        "Use this endpoint when the keyword table is empty or requires first-time automatic prefill."
+        "Use this endpoint when the keyword table is empty or requires first-time automatic prefill.\n\n"
+        "**All parameters are optional.** Sending an empty body (`{}`) uses sensible defaults:\n\n"
+        "- Scans **all analyses** (no date, manager, role, or direction filters)\n"
+        "- Considers only **effective calls** (`effective_only=true`)\n"
+        "- Extracts from **all three fields**: `summary`, `key_questions`, `objections`\n"
+        "- Phrases must appear in at least **5 calls** with at least **5 total matches**\n"
+        "- Generates up to **100 candidates** (2-gram phrases, min 4 characters)\n"
+        "- Excludes phrases already present in the keyword catalog\n"
+        "- Publishes with category `generated`, all match fields, and `is_active=true`\n"
+        "- **Materializes** matches immediately after publish\n"
+        "- **Runs AI analysis** after publish for grouping and recommendations\n\n"
+        "Example minimal call: `POST /keywords/generation/bootstrap` with body `{}`"
     ),
     responses={
         405: {

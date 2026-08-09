@@ -24,6 +24,13 @@ def prepare_keyword_catalog_analysis_input(
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
     requested_ids = set(keyword_ids or [])
+    reporting_source_name = None if reporting_source is None else reporting_source.source_name
+    logger.info(
+        "Loading keyword catalog for AI analysis: source=%s reporting_source=%s include_match_stats=%s",
+        getattr(keyword_source, "source_name", "unknown"),
+        reporting_source_name,
+        include_match_stats,
+    )
     catalog = list_keywords(keyword_source)
     logger.info(
         "Loaded keyword catalog for AI analysis: total_keywords=%d source=%s",
@@ -32,7 +39,6 @@ def prepare_keyword_catalog_analysis_input(
     )
     stats_by_id: dict[str, dict[str, Any]] = {}
     customer_context: list[dict[str, Any]] = []
-    reporting_source_name = None if reporting_source is None else reporting_source.source_name
 
     if include_match_stats and reporting_source is not None:
         stats_started_at = time.perf_counter()

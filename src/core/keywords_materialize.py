@@ -135,6 +135,22 @@ def materialize_call_keywords(
     matched_calls = 0
     stored_rows = 0
 
+    # Use batch writes when available (Postgres) to reduce round-trips from N to ~1.
+    # Each batch commits a chunk of calls in a single transaction.
+    _batch_fn = getattr(keyword_store, "batch_replace_call_keyword_matches", None)
+    _batch: list[tuple[str, list[dict]]] = []
+    _batch_size = 500
+
+    def _flush_batch():
+        if not _batch:
+            return
+        if _batch_fn is not None:
+            _batch_fn(_batch)
+        else:
+            for call_id, rows in _batch:
+                keyword_store.replace_call_keyword_matches(call_id, rows)
+        _batch.clear()
+
     for record in reporting_source.iter_call_records(ReportFilters()):
         processed_calls += 1
         materialized_rows = _match_record(record, index)
@@ -143,7 +159,11 @@ def materialize_call_keywords(
             matched_calls += 1
             stored_rows += len(materialized_rows)
 
-        keyword_store.replace_call_keyword_matches(record.call_id, materialized_rows)
+        _batch.append((record.call_id, materialized_rows))
+        if len(_batch) >= _batch_size:
+            _flush_batch()
+
+    _flush_batch()
 
     if state_store is not None:
         state_store.mark_materialization_completed(

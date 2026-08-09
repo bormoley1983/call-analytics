@@ -350,8 +350,8 @@ class ElasticsearchHandler(logging.Handler):
                 host=parsed.hostname or "localhost",
                 port=parsed.port or 443,
                 headers=auth_headers if auth_headers else {},
-                ssl_assert_fingerprint=None,
-                ssl_context=None if ssl_verify else False,
+                verify_certs=ssl_verify,
+                ssl_show_warn=False,
             )
 
             self.client = _TransportClass(node_configs=[node_config])

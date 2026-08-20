@@ -18,7 +18,7 @@ from domain.stt import SttRequest
 from ports.audio import AudioPort
 from ports.llm import LlmPort
 from ports.pbx import PbxPort
-from ports.storage import StoragePort
+from ports.storage import PostgresSyncStorage, StoragePort
 from ports.stt import SttProcessorPort
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ class Pipeline:
         llm: LlmPort,
         pbx: PbxPort,
         stt: SttProcessorPort | None = None,
-        secondary_storage: StoragePort | None = None,
+        secondary_storage: PostgresSyncStorage | None = None,
     ):
         self.config = config
         self.storage = storage

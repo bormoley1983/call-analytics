@@ -35,6 +35,8 @@ from domain.keywords import KeywordDefinition
 class FakeKeywordSource:
     """In-memory keyword source for testing mutation execution."""
 
+    source_name = "fake"
+
     def __init__(self, items: list[KeywordDefinition]):
         self._store: dict[str, KeywordDefinition] = {
             kw.keyword_id: copy.deepcopy(kw) for kw in items
@@ -57,6 +59,12 @@ class FakeKeywordSource:
             return True
         return False
 
+    def replace_call_keyword_matches(self, call_id: str, rows: list[dict[str, Any]]) -> None:
+        pass
+
+    def mark_materialization_completed(self, processed_calls: int, matched_calls: int, stored_rows: int) -> None:
+        pass
+
     def close(self) -> None:
         pass
 
@@ -77,11 +85,11 @@ class FakeApplyStore:
         analysis_id: str,
         applied_by: str | None,
         dry_run: bool,
-        actions_applied: list[dict],
-        actions_skipped: list[dict],
-        mutations: list[dict],
-        keyword_refreshed: bool,
-        follow_up_ran: bool,
+        actions_applied: list[dict[str, Any]],
+        actions_skipped: list[dict[str, Any]],
+        mutations: list[dict[str, Any]],
+        keyword_refreshed: bool = False,
+        follow_up_ran: bool = False,
         error: str | None = None,
     ) -> str:
         import uuid

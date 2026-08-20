@@ -35,5 +35,7 @@ class MaterializationStateStore(Protocol):
     def mark_materialization_completed(self, processed_calls: int, matched_calls: int, stored_rows: int) -> None: ...
 
 
-class RefreshableKeywordStore(KeywordSource, KeywordCatalogStore, KeywordMatchStore, MaterializationStateStore, Protocol):
+class RefreshableKeywordStore(KeywordLookupSource, KeywordCatalogStore, KeywordMatchStore, MaterializationStateStore, Protocol):
+    """Full keyword store: lookup + catalog CRUD + match materialization."""
+
     pass

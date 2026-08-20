@@ -1,4 +1,5 @@
 import logging
+from typing import cast
 
 from fastapi import APIRouter, HTTPException, Path, Query, status
 
@@ -26,6 +27,7 @@ from core.keywords_ai import run_keyword_catalog_analysis
 from core.keywords_alias_expand import expand_keyword_aliases
 from domain.ai_apply import AIApplyAction as DomainAIApplyAction
 from domain.config import get_spam_probability_threshold, load_app_config
+from ports.keywords import KeywordLookupSource, RefreshableKeywordStore
 
 router = APIRouter(prefix="/keywords/catalog", tags=["keywords-ai"])
 logger = logging.getLogger(__name__)
@@ -232,7 +234,7 @@ def apply_analysis_actions(
                 )
                 for a in request.actions
             ],
-            keyword_source=keyword_source,
+            keyword_source=cast(RefreshableKeywordStore, keyword_source),
             apply_store=apply_store,
             dry_run=request.dry_run,
             refresh_after=request.refresh_after,
@@ -320,7 +322,7 @@ def expand_aliases(
     try:
         result = expand_keyword_aliases(
             keyword_id=keyword_id,
-            keyword_source=keyword_source,
+            keyword_source=cast(KeywordLookupSource, keyword_source),
             reporting_source=reporting_source,
             llm=llm,  # type: ignore[arg-type]
             max_aliases=req.max_aliases,

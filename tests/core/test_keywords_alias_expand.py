@@ -6,6 +6,8 @@ from core.keywords_alias_expand import expand_keyword_aliases
 
 
 class FakeKeywordSource:
+    source_name = "fake"
+
     def __init__(self, keyword):
         self.keyword = keyword
 
@@ -13,6 +15,9 @@ class FakeKeywordSource:
         if self.keyword and self.keyword.keyword_id == keyword_id:
             return self.keyword
         raise KeyError(keyword_id)
+
+    def list_keywords(self):
+        return [self.keyword] if self.keyword else []
 
     def close(self):
         pass

@@ -28,6 +28,7 @@ from domain.ai_apply import AIApplyAction, AIMutation, AISkippedAction
 from domain.keywords import KeywordDefinition
 from ports.ai_apply import AiApplyStorePort
 from ports.keywords import RefreshableKeywordStore
+from ports.reporting import ReportingSource
 
 logger = logging.getLogger(__name__)
 

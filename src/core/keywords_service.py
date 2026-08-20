@@ -46,16 +46,6 @@ def _match_keyword(
     return matches
 
 
-def _include_record(
-    record: ReportCallRecord, filters: ReportFilters, spam_threshold: float
-) -> bool:
-    if not filters.matches_record(record):
-        return False
-    if filters.spam_only and record.spam_probability < spam_threshold:
-        return False
-    return not (filters.effective_only and not record.effective_call)
-
-
 def list_keywords(keyword_source: KeywordSource) -> dict[str, Any]:
     keywords = [
         {
@@ -213,7 +203,8 @@ def _build_keywords_report_sql(
             "outcomes": {},
         }
 
-    for row in raw_data:
+    for raw_row in raw_data:
+        row = cast(dict[str, Any], raw_row)
         kid = row["keyword_id"]
         bucket = buckets.get(kid)
         if bucket is None:

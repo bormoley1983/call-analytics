@@ -282,6 +282,9 @@ def test_runtime_keyword_ai_analysis_skips_empty_catalog(monkeypatch):
     class FakeReportingSource:
         source_name = "postgres"
 
+        def iter_call_records(self, filters):
+            return iter([])
+
         def close(self):
             return None
 
@@ -379,7 +382,7 @@ def test_keyword_ai_analysis_persistence_does_not_mutate_reporting_records(monke
         request_data={"trigger": "process"},
         keyword_source=keyword_source,
         reporting_source=ReportingFromAnalyses(analyses),
-        llm=FakeLlm(),
+        llm=FakeLlm(),  # type: ignore[arg-type]
         analysis_store=analysis_store,
         include_inactive=False,
         include_match_stats=True,

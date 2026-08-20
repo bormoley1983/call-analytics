@@ -600,7 +600,7 @@ def test_keywords_source_retries_read_after_operational_error(monkeypatch):
 
 def test_ollama_rate_limiter_rechecks_after_wait(monkeypatch):
     limiter = llm_ollama._RateLimiter(
-        SimpleNamespace(ollama_rate_limit=1, ollama_rate_interval=0.0)
+        SimpleNamespace(ollama_rate_limit=1, ollama_rate_interval=0.0)  # type: ignore[arg-type]
     )
     limiter._active = 1
     limiter._last_acquire = 0.0

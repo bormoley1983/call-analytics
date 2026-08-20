@@ -32,7 +32,7 @@ from adapters.stt_factory import build_stt_adapter
 from core.snapshot_export import export_snapshot_reports
 from domain.config import ensure_env_loaded, get_calls_raw, get_keywords_config, load_app_config
 from domain.pbx import load_pbx_config
-from ports.storage import StoragePort
+from ports.storage import PostgresSyncStorage, StoragePort
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +304,7 @@ def _run_process_once(req: ProcessRequest) -> dict:
             # When the primary driver is JSON, provide a Postgres secondary so
             # results are synced to the system of record. Capability check via
             # max_connections keeps core/edge free of isinstance on adapters.
-            secondary_storage: StoragePort | None = None
+            secondary_storage: PostgresSyncStorage | None = None
             if getattr(storage, "max_connections", None) is None:
                 dsn = os.getenv("POSTGRES_DSN")
                 if dsn:

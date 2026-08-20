@@ -1,3 +1,10 @@
+"""STT adapter factory (composition-root helper).
+
+Selects the concrete STT adapter based on ``config.stt_engine``. Lives in
+``adapters`` (not ``core``) because it imports concrete adapters — only
+composition roots (``api/runner.py``, ``cli.py``, ``stt_replay.py``) call it.
+"""
+
 from __future__ import annotations
 
 from adapters.stt_canary import CanarySttAdapter

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+import api.deps as api_deps
 from api.routes import keywords_ai as keywords_ai_routes
 from api.schemas import KeywordCatalogAnalysisRequest
 from core import keywords_ai_runtime
@@ -288,24 +289,6 @@ def test_runtime_keyword_ai_analysis_skips_empty_catalog(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setenv("POSTGRES_DSN", "postgresql://example")
-    monkeypatch.setattr(
-        keywords_ai_runtime, "load_app_config", lambda: SimpleNamespace()
-    )
-    monkeypatch.setattr(keywords_ai_runtime, "OllamaLlm", lambda config: object())
-    monkeypatch.setattr(
-        keywords_ai_runtime, "PostgresKeywordSource", lambda dsn: EmptyKeywordSource()
-    )
-    monkeypatch.setattr(
-        keywords_ai_runtime,
-        "PostgresReportingSource",
-        lambda dsn: FakeReportingSource(),
-    )
-    monkeypatch.setattr(
-        keywords_ai_runtime,
-        "PostgresKeywordAiAnalysisStore",
-        lambda dsn: FakeAnalysisStore(),
-    )
     monkeypatch.setattr(
         keywords_ai_runtime,
         "run_keyword_catalog_analysis",
@@ -315,7 +298,14 @@ def test_runtime_keyword_ai_analysis_skips_empty_catalog(monkeypatch):
     )
 
     assert (
-        keywords_ai_runtime.run_keyword_ai_analysis_once("process", skip_if_empty=True)
+        keywords_ai_runtime.run_keyword_ai_analysis_once(
+            "process",
+            keyword_source=EmptyKeywordSource(),
+            reporting_source=FakeReportingSource(),
+            llm=object(),  # type: ignore[arg-type]
+            analysis_store=FakeAnalysisStore(),
+            skip_if_empty=True,
+        )
         is None
     )
 
@@ -325,7 +315,8 @@ def test_keyword_catalog_analysis_fails_loudly_on_invalid_yaml(monkeypatch, tmp_
     keywords_path.write_text("keywords: [", encoding="utf-8")
 
     monkeypatch.delenv("POSTGRES_DSN", raising=False)
-    monkeypatch.setattr(keywords_ai_routes, "KEYWORDS_CONFIG", keywords_path)
+    # Path constants are now getters; patch the getter where it is looked up.
+    monkeypatch.setattr(api_deps, "get_keywords_config", lambda: keywords_path)
 
     with pytest.raises(HTTPException) as exc:
         keywords_ai_routes.analyze_keyword_catalog(

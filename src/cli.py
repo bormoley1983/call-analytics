@@ -23,29 +23,37 @@ from adapters.pbx_ssh import PbxSshDownloader
 from adapters.reporting_json import JsonReportingSource
 from adapters.reporting_postgres import PostgresReportingSource
 from adapters.storage_json import JsonStorage
+from adapters.storage_postgres import PostgresStorage
 from core.pipeline import Pipeline
 from core.snapshot_export import export_snapshot_reports
-from domain.config import CALLS_RAW, load_app_config
+from adapters.stt_factory import build_stt_adapter
+from domain.config import ensure_env_loaded, get_calls_raw, load_app_config
+from domain.pbx import load_pbx_config
 from logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 
 
 def sync() -> None:
-    host = os.getenv("PBX_HOST")
-    if not host:
-        logger.error("PBX_HOST environment variable is not set.")
+    # Explicit PbxConfig with fail-fast on missing PBX_HOST.
+    try:
+        pbx = load_pbx_config()
+    except RuntimeError as exc:
+        logger.error("%s", exc)
         sys.exit(1)
 
     downloader = PbxSshDownloader(
-      host=host,
-      username=os.getenv("PBX_USER", "asterisk"),
-      key_path=os.getenv("PBX_KEY_PATH"),
-      remote_dir=os.getenv("PBX_REMOTE_DIR", "/var/spool/asterisk/monitor"),
+      host=pbx.host,
+      port=pbx.port,
+      username=pbx.username,
+      password=pbx.password,
+      key_path=pbx.key_path,
+      known_hosts_path=pbx.known_hosts_path,
+      remote_dir=pbx.remote_dir,
     )
     downloader.connect()
     new_files = downloader.download_new(
-        CALLS_RAW,
+        get_calls_raw(),
         on_download=lambda f: logger.info("Downloaded: %s", f),
     )
     downloader.close()
@@ -70,15 +78,26 @@ def main() -> None:
     storage = JsonStorage(config.out, config.norm, config.trans, config.analysis)
     storage.ensure_dirs()
 
+    # Provide a Postgres secondary so results are synced to the system of record.
+    secondary_storage: PostgresStorage | None = None
+    dsn = os.getenv("POSTGRES_DSN")
+    if dsn:
+        secondary_storage = PostgresStorage(dsn)
+        secondary_storage.ensure_ready()
+
     pipeline = Pipeline(
       config=config,
       storage=storage,
       audio=FfmpegAudio(),
       llm=OllamaLlm(config),
       pbx=AsteriskPbx(),
+      stt=build_stt_adapter(config),
+      secondary_storage=secondary_storage,
     )
 
-    pipeline.run()
+    # Read the day scope once at entry; core reads it explicitly from here on.
+    days = os.getenv("DAYS") or None
+    pipeline.run(days=days)
 
 
 def export_snapshots() -> None:
@@ -87,10 +106,13 @@ def export_snapshots() -> None:
     dsn = os.getenv("POSTGRES_DSN")
     source = PostgresReportingSource(dsn) if dsn else JsonReportingSource(config.analysis)
     try:
+        from adapters.reports_html import HtmlReportRenderer
+
         result = export_snapshot_reports(
             output_dir=config.out,
             source=source,
             spam_threshold=spam_threshold,
+            renderer=HtmlReportRenderer(),
         )
     finally:
         source.close()
@@ -98,6 +120,8 @@ def export_snapshots() -> None:
 
 
 if __name__ == "__main__":
+    # Load config/.env defaults once at startup (idempotent).
+    ensure_env_loaded()
     setup_logging()
     command = sys.argv[1] if len(sys.argv) > 1 else "run"
     if command == "sync":

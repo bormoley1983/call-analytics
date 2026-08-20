@@ -3,6 +3,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from core.keywords_service import _match_keyword
+from domain.keywords import KeywordDefinition
+from domain.reporting import ReportFilters
+from ports.keywords import KeywordLookupSource
 from ports.llm import LlmPort
 from ports.reporting import ReportingSource
 
@@ -11,12 +15,12 @@ logger = logging.getLogger(__name__)
 
 def expand_keyword_aliases(
     keyword_id: str,
-    keyword_source: Any,  # needs get_keyword() — PostgresKeywordSource
+    keyword_source: KeywordLookupSource,
     reporting_source: ReportingSource,
     llm: LlmPort,
     *,
     max_aliases: int = 5,
-    filters: Any | None = None,
+    filters: ReportFilters | None = None,
 ) -> dict[str, Any]:
     """Suggest conservative aliases for a single keyword.
 
@@ -31,9 +35,10 @@ def expand_keyword_aliases(
     current_terms = list(keyword.terms) if keyword.terms else []
     label = keyword.label
 
-    # Gather evidence: recent matched texts from analyses
+    # Gather evidence only from records that actually match this
+    # keyword (previously the first 50 texts of ANY records were used).
     evidence_texts = _gather_evidence_texts(
-        reporting_source, keyword_id, filters=filters
+        reporting_source, keyword, filters=filters
     )
 
     logger.info(
@@ -79,46 +84,43 @@ def expand_keyword_aliases(
 
 def _gather_evidence_texts(
     reporting_source: ReportingSource,
-    keyword_id: str,
+    keyword: KeywordDefinition,
     *,
-    filters: Any | None = None,
+    filters: ReportFilters | None = None,
 ) -> list[str]:
     """Gather recent matched texts from analyses for evidence.
 
-    Scans analysis records and collects summary/key_questions/objections
-    that match the keyword's terms.
+    Only records that match the keyword (via the shared
+    ``_match_keyword`` helper) contribute evidence texts — previously the
+    first 50 texts of any records were taken regardless of relevance.
     """
-    from domain.reporting import ReportFilters
-
     effective_filters = filters or ReportFilters()
     evidence: list[str] = []
     seen: set[str] = set()
 
-    # We need to get the keyword terms first to check for matches
-    # This is a simplified approach — in practice, we'd query call_keywords
-    # For now, collect texts from recent analyses as context
-    record_count = 0
+    matched_records = 0
+    scanned_records = 0
     for record in reporting_source.iter_call_records(effective_filters):
-        if record.summary and record.summary not in seen:
-            evidence.append(record.summary)
-            seen.add(record.summary)
-        for q in record.key_questions:
-            if q and q not in seen:
-                evidence.append(q)
-                seen.add(q)
-        for o in record.objections:
-            if o and o not in seen:
-                evidence.append(o)
-                seen.add(o)
+        scanned_records += 1
+        matches = _match_keyword(record, keyword)
+        if not matches:
+            continue
+        matched_records += 1
+        # Collect the matched text values (deduplicated).
+        for match in matches:
+            text = match["text"]
+            if text and text not in seen:
+                evidence.append(text)
+                seen.add(text)
 
-        record_count += 1
         if len(evidence) >= 50:
             break
 
     logger.debug(
-        "Gathered %d evidence texts from %d records for keyword %s",
+        "Gathered %d evidence texts from %d/%d matched records for keyword %s",
         len(evidence),
-        record_count,
-        keyword_id,
+        matched_records,
+        scanned_records,
+        keyword.keyword_id,
     )
     return evidence[:50]

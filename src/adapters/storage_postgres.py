@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -10,304 +9,59 @@ from psycopg2 import extensions as pg_extensions
 from psycopg2 import pool as pg_pool
 from psycopg2.extras import Json
 
-from adapters.stt_runs_schema import STT_RUNS_DDL
+from adapters.migrations import apply_pending_migrations
+from domain.call_datetime import parse_call_datetime  # noqa: F401  (re-export)
 
 logger = logging.getLogger(__name__)
 
 
-def parse_call_datetime(date_str: str, time_str: str | None = None) -> datetime | None:
-    """Parse PBX date (YYYYMMDD) and optional time (HHMMSS) into a timezone-aware datetime.
+# Schema DDL lives exclusively in src/adapters/migrations/ (V001, V002).
+# PostgresStorage.ensure_ready() applies pending migrations via
+# apply_pending_migrations(); there is no inline DDL here anymore.
 
-    Uses UTC as the default timezone since PBX systems typically report in UTC.
-    Returns None if date_str is empty or invalid.
-    """
-    if not date_str:
-        return None
-    try:
-        dt = datetime.strptime(date_str, "%Y%m%d").replace(tzinfo=timezone.utc)
-        if time_str:
-            dt = datetime.strptime(f"{date_str}{time_str}", "%Y%m%d%H%M%S").replace(
-                tzinfo=timezone.utc
-            )
-        # PBX systems typically report in UTC; attach UTC timezone for TIMESTAMPTZ
-        return dt
-    except ValueError:
-        return None
-
-
-DDL = r"""
-CREATE TABLE IF NOT EXISTS transcripts (
-    call_id             TEXT PRIMARY KEY,
-    pipeline_stage       TEXT,
-    stt_run_id           UUID,
-    stt_config_hash      TEXT,
-    source_text_sha256   TEXT,
-    data                JSONB NOT NULL,
-    created_at          TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS analyses (
-    call_id         TEXT PRIMARY KEY,
-    direction       TEXT,
-    manager_id      TEXT,
-    manager_name    TEXT,
-    role            TEXT,
-    spam_probability FLOAT,
-    effective_call  BOOLEAN,
-    intent          TEXT,
-    outcome         TEXT,
-    summary         TEXT,
-    audio_seconds   FLOAT,
-    call_datetime   TIMESTAMPTZ,
-    src_number       TEXT,
-    dst_number       TEXT,
-    key_questions    JSONB,
-    objections       JSONB,
-    analysis_error   TEXT,
-    data            JSONB NOT NULL,
-    created_at      TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS calls (
-    call_id         TEXT PRIMARY KEY,
-    source_file     TEXT,
-    source_path     TEXT,
-    call_datetime   TIMESTAMPTZ,
-    status          TEXT NOT NULL DEFAULT 'discovered',
-    error_message   TEXT,
-    discovered_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    transcribed_at  TIMESTAMPTZ,
-    translated_at   TIMESTAMPTZ,
-    analyzed_at     TIMESTAMPTZ,
-    synced_at       TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS keywords (
-    keyword_id    TEXT PRIMARY KEY,
-    label         TEXT NOT NULL,
-    category      TEXT NOT NULL DEFAULT 'general',
-    match_fields  JSONB NOT NULL DEFAULT '["summary","key_questions","objections"]'::jsonb,
-    is_active     BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at    TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS keyword_aliases (
-    keyword_id    TEXT NOT NULL REFERENCES keywords(keyword_id) ON DELETE CASCADE,
-    phrase        TEXT NOT NULL,
-    created_at    TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (keyword_id, phrase)
-);
-
-CREATE TABLE IF NOT EXISTS call_keywords (
-    call_id          TEXT NOT NULL REFERENCES analyses(call_id) ON DELETE CASCADE,
-    keyword_id       TEXT NOT NULL REFERENCES keywords(keyword_id) ON DELETE CASCADE,
-    match_count      INTEGER NOT NULL DEFAULT 0,
-    matched_fields   JSONB NOT NULL DEFAULT '[]'::jsonb,
-    matched_terms    JSONB NOT NULL DEFAULT '[]'::jsonb,
-    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (call_id, keyword_id)
-);
-
-CREATE TABLE IF NOT EXISTS keyword_materialization_state (
-    state_key            TEXT PRIMARY KEY,
-    last_materialized_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    processed_calls      INTEGER NOT NULL DEFAULT 0,
-    matched_calls        INTEGER NOT NULL DEFAULT 0,
-    stored_rows          INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS keyword_ai_analyses (
-    analysis_id                     TEXT PRIMARY KEY,
-    keyword_source                  TEXT NOT NULL,
-    reporting_source                TEXT,
-    ai_model                        TEXT,
-    ai_summary                      TEXT NOT NULL DEFAULT '',
-    analyzed_keywords               INTEGER NOT NULL DEFAULT 0,
-    total_candidates_before_limit   INTEGER NOT NULL DEFAULT 0,
-    truncated                       BOOLEAN NOT NULL DEFAULT FALSE,
-    request_data                    JSONB NOT NULL DEFAULT '{}'::jsonb,
-    analysis_input                  JSONB NOT NULL DEFAULT '{}'::jsonb,
-    ai_analysis                     JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS keyword_ai_analysis_items (
-    analysis_id  TEXT NOT NULL REFERENCES keyword_ai_analyses(analysis_id) ON DELETE CASCADE,
-    item_type    TEXT NOT NULL,
-    item_key     TEXT NOT NULL,
-    data         JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (analysis_id, item_type, item_key)
-);
-
-ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS pipeline_stage TEXT;
-ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS stt_run_id UUID;
-ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS stt_config_hash TEXT;
-ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS source_text_sha256 TEXT;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS direction TEXT;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS manager_id TEXT;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS manager_name TEXT;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS role TEXT;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS spam_probability FLOAT;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS effective_call BOOLEAN;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS intent TEXT;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS outcome TEXT;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS summary TEXT;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS audio_seconds FLOAT;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS src_number TEXT;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS dst_number TEXT;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS key_questions JSONB;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS objections JSONB;
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS analysis_error TEXT;
-ALTER TABLE calls ADD COLUMN IF NOT EXISTS source_file TEXT;
-ALTER TABLE calls ADD COLUMN IF NOT EXISTS source_path TEXT;
-ALTER TABLE calls ADD COLUMN IF NOT EXISTS status TEXT;
-ALTER TABLE calls ADD COLUMN IF NOT EXISTS error_message TEXT;
-ALTER TABLE calls ADD COLUMN IF NOT EXISTS discovered_at TIMESTAMPTZ;
-ALTER TABLE calls ADD COLUMN IF NOT EXISTS transcribed_at TIMESTAMPTZ;
-ALTER TABLE calls ADD COLUMN IF NOT EXISTS translated_at TIMESTAMPTZ;
-ALTER TABLE calls ADD COLUMN IF NOT EXISTS analyzed_at TIMESTAMPTZ;
-ALTER TABLE calls ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ;
-ALTER TABLE calls ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;
-ALTER TABLE calls ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
-ALTER TABLE keywords ADD COLUMN IF NOT EXISTS category TEXT;
-ALTER TABLE keywords ADD COLUMN IF NOT EXISTS match_fields JSONB;
-ALTER TABLE keywords ADD COLUMN IF NOT EXISTS is_active BOOLEAN;
-ALTER TABLE call_keywords ADD COLUMN IF NOT EXISTS match_count INTEGER;
-ALTER TABLE call_keywords ADD COLUMN IF NOT EXISTS matched_fields JSONB;
-ALTER TABLE call_keywords ADD COLUMN IF NOT EXISTS matched_terms JSONB;
-ALTER TABLE call_keywords ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
-ALTER TABLE keyword_materialization_state ADD COLUMN IF NOT EXISTS last_materialized_at TIMESTAMPTZ;
-ALTER TABLE keyword_materialization_state ADD COLUMN IF NOT EXISTS processed_calls INTEGER;
-ALTER TABLE keyword_materialization_state ADD COLUMN IF NOT EXISTS matched_calls INTEGER;
-ALTER TABLE keyword_materialization_state ADD COLUMN IF NOT EXISTS stored_rows INTEGER;
-ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS keyword_source TEXT;
-ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS reporting_source TEXT;
-ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS ai_model TEXT;
-ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS ai_summary TEXT;
-ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS analyzed_keywords INTEGER;
-ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS total_candidates_before_limit INTEGER;
-ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS truncated BOOLEAN;
-ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS request_data JSONB;
-ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS analysis_input JSONB;
-ALTER TABLE keyword_ai_analyses ADD COLUMN IF NOT EXISTS ai_analysis JSONB;
-ALTER TABLE keyword_ai_analysis_items ADD COLUMN IF NOT EXISTS data JSONB;
-ALTER TABLE keyword_ai_analysis_items ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;
-
--- Migration: add call_datetime TIMESTAMPTZ, backfill from call_date (YYYYMMDD) if it exists, then drop call_date
-ALTER TABLE analyses ADD COLUMN IF NOT EXISTS call_datetime TIMESTAMPTZ;
-ALTER TABLE calls ADD COLUMN IF NOT EXISTS call_datetime TIMESTAMPTZ;
-
--- Safe backfill: only run if call_date column still exists
-DO $$
-BEGIN
-  -- Backfill analyses
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='analyses' AND column_name='call_date') THEN
-    UPDATE analyses SET call_datetime = to_timestamp(call_date, 'YYYYMMDD') AT TIME ZONE 'UTC'
-    WHERE call_datetime IS NULL AND call_date ~ '^\d{8}$';
-  END IF;
-  -- Backfill calls
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='calls' AND column_name='call_date') THEN
-    UPDATE calls SET call_datetime = to_timestamp(call_date, 'YYYYMMDD') AT TIME ZONE 'UTC'
-    WHERE call_datetime IS NULL AND call_date ~ '^\d{8}$';
-  END IF;
-END $$;
-
-ALTER TABLE analyses DROP COLUMN IF EXISTS call_date;
-ALTER TABLE calls DROP COLUMN IF EXISTS call_date;
-
-CREATE INDEX IF NOT EXISTS idx_analyses_manager_id ON analyses(manager_id);
-CREATE INDEX IF NOT EXISTS idx_analyses_role ON analyses(role);
-CREATE INDEX IF NOT EXISTS idx_analyses_intent ON analyses(intent);
-CREATE INDEX IF NOT EXISTS idx_analyses_outcome ON analyses(outcome);
-CREATE INDEX IF NOT EXISTS idx_analyses_direction ON analyses(direction);
-CREATE INDEX IF NOT EXISTS idx_analyses_filter_path ON analyses(call_datetime, manager_id, role, direction);
-CREATE INDEX IF NOT EXISTS idx_analyses_effective_filter ON analyses(call_datetime, manager_id) WHERE effective_call IS TRUE;
-CREATE INDEX IF NOT EXISTS idx_analyses_spam_filter ON analyses(spam_probability, call_datetime) WHERE spam_probability IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
-CREATE INDEX IF NOT EXISTS idx_calls_updated_at ON calls(updated_at DESC);
--- New indexes on call_datetime for efficient temporal queries
-CREATE INDEX IF NOT EXISTS idx_analyses_call_datetime ON analyses(call_datetime);
-CREATE INDEX IF NOT EXISTS idx_calls_call_datetime ON calls(call_datetime);
-CREATE INDEX IF NOT EXISTS idx_call_keywords_keyword_id ON call_keywords(keyword_id);
-CREATE INDEX IF NOT EXISTS idx_call_keywords_call_id ON call_keywords(call_id);
-CREATE INDEX IF NOT EXISTS idx_call_keywords_keyword_call ON call_keywords(keyword_id, call_id);
-CREATE INDEX IF NOT EXISTS idx_call_keywords_keyword_match_sort ON call_keywords(keyword_id, match_count DESC, call_id DESC);
-CREATE INDEX IF NOT EXISTS idx_keyword_ai_analyses_created_at ON keyword_ai_analyses(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_keyword_ai_analysis_items_analysis_id ON keyword_ai_analysis_items(analysis_id);
-
--- AI Apply table: track applied actions from catalog analyses with audit metadata
-CREATE TABLE IF NOT EXISTS ai_apply (
-    apply_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    analysis_id       TEXT NOT NULL REFERENCES keyword_ai_analyses(analysis_id) ON DELETE CASCADE,
-    applied_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    applied_by        TEXT DEFAULT current_user,
-    dry_run           BOOLEAN NOT NULL DEFAULT false,
-    actions_applied   JSONB NOT NULL DEFAULT '[]'::jsonb,
-    actions_skipped   JSONB NOT NULL DEFAULT '[]'::jsonb,
-    mutations         JSONB NOT NULL DEFAULT '[]'::jsonb,
-    keyword_refreshed BOOLEAN NOT NULL DEFAULT false,
-    follow_up_ran     BOOLEAN NOT NULL DEFAULT false,
-    error             TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_ai_apply_analysis_id ON ai_apply(analysis_id);
-CREATE INDEX IF NOT EXISTS idx_ai_apply_applied_at ON ai_apply(applied_at);
-
--- AI Alias Suggestions: track AI-suggested aliases with provenance
-CREATE TABLE IF NOT EXISTS ai_alias_suggestions (
-    suggestion_id     UUID PRIMARY KEY,
-    keyword_id        TEXT NOT NULL REFERENCES keywords(keyword_id) ON DELETE CASCADE,
-    suggested_aliases JSONB NOT NULL DEFAULT '[]'::jsonb,
-    source_evidence   JSONB,
-    ai_model          TEXT,
-    status            TEXT NOT NULL DEFAULT 'pending',
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_ai_alias_suggestions_keyword_status
-    ON ai_alias_suggestions(keyword_id, status);
-
--- Deep Insights Runs: track deep insights generation runs
-CREATE TABLE IF NOT EXISTS ai_deep_insights_runs (
-    run_id        UUID PRIMARY KEY,
-    ai_model      TEXT,
-    insight_types JSONB NOT NULL DEFAULT '[]'::jsonb,
-    request_data  JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_ai_deep_insights_runs_created_at
-    ON ai_deep_insights_runs(created_at DESC);
-
--- Deep Insights: individual insights from a run
-CREATE TABLE IF NOT EXISTS ai_deep_insights (
-    insight_id            UUID PRIMARY KEY,
-    run_id                UUID NOT NULL REFERENCES ai_deep_insights_runs(run_id) ON DELETE CASCADE,
-    insight_type          TEXT NOT NULL,
-    title                 TEXT NOT NULL DEFAULT '',
-    description           TEXT NOT NULL DEFAULT '',
-    severity              TEXT NOT NULL DEFAULT 'low',
-    affected_calls_count  INTEGER NOT NULL DEFAULT 0,
-    evidence_summary      TEXT,
-    metadata              JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_ai_deep_insights_run_id ON ai_deep_insights(run_id);
-CREATE INDEX IF NOT EXISTS idx_ai_deep_insights_type_severity
-    ON ai_deep_insights(insight_type, severity);
-CREATE INDEX IF NOT EXISTS idx_ai_deep_insights_created_at
-    ON ai_deep_insights(created_at DESC);
-"""
-
-DDL += "\n" + STT_RUNS_DDL
 
 
 def _jsonb(value: Any) -> Json:
     return Json(value, dumps=lambda obj: json.dumps(obj, ensure_ascii=False))
+
+
+# Single source of truth for the analyses upsert (19 columns).
+_ANALYSES_UPSERT_COLUMNS = (
+    "call_id",
+    "direction",
+    "manager_id",
+    "manager_name",
+    "role",
+    "spam_probability",
+    "effective_call",
+    "intent",
+    "outcome",
+    "summary",
+    "audio_seconds",
+    "call_datetime",
+    "src_number",
+    "dst_number",
+    "key_questions",
+    "objections",
+    "analysis_error",
+    "input_text_sha256",
+    "data",
+)
+
+_ANALYSES_UPSERT_SQL = (
+    "INSERT INTO analyses ({cols}) VALUES ({ph})\n"
+    "ON CONFLICT (call_id) DO UPDATE SET\n"
+    + ",\n".join(
+        f"{col} = EXCLUDED.{col}" for col in _ANALYSES_UPSERT_COLUMNS if col != "call_id"
+    )
+).format(
+    cols=", ".join(_ANALYSES_UPSERT_COLUMNS),
+    ph=",".join(["%s"] * len(_ANALYSES_UPSERT_COLUMNS)),
+)
+
+
+def _analysis_upsert_params(row: dict[str, Any]) -> tuple[Any, ...]:
+    return tuple(row[col] for col in _ANALYSES_UPSERT_COLUMNS)
 
 
 def _ensure_utf8_client_encoding(conn: Any) -> Any:
@@ -373,26 +127,14 @@ def _analysis_row(call_id: str, data: dict[str, Any]) -> dict[str, Any]:
         ),
         "src_number": call_meta.get("src_number"),
         "dst_number": call_meta.get("dst_number"),
+        "source_file": call_meta.get("source_file"),
+        "source_path": call_meta.get("source_path"),
         "key_questions": _jsonb(data.get("key_questions") or []),
         "objections": _jsonb(data.get("objections") or []),
         "analysis_error": data.get("analysis_error"),
         "input_text_sha256": data.get("input_text_sha256"),
         "data": _jsonb(data),
     }
-
-
-def _parse_int_env(key: str, default: int) -> int:
-    """Parse an environment variable as an integer, falling back to a default."""
-    raw = os.environ.get(key)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        logger.warning(
-            "Invalid %s=%r (not an integer), using default %d", key, raw, default
-        )
-        return default
 
 
 class PostgresStorage:
@@ -412,16 +154,14 @@ class PostgresStorage:
         min_connections: int | None = None,
         max_connections: int | None = None,
     ):
+        from domain.config import get_pg_pool_max, get_pg_pool_min
+
         self.dsn = dsn
         self.min_connections = (
-            min_connections
-            if min_connections is not None
-            else _parse_int_env("PG_POOL_MIN", 1)
+            min_connections if min_connections is not None else get_pg_pool_min()
         )
         self.max_connections = (
-            max_connections
-            if max_connections is not None
-            else _parse_int_env("PG_POOL_MAX", 10)
+            max_connections if max_connections is not None else get_pg_pool_max()
         )
         self._pool: pg_pool.ThreadedConnectionPool | None = None
 
@@ -454,9 +194,7 @@ class PostgresStorage:
         )
         conn = self._getconn()
         try:
-            with conn.cursor() as cur:
-                cur.execute(DDL)
-            conn.commit()
+            apply_pending_migrations(conn)
         finally:
             self._putconn(conn)
 
@@ -562,54 +300,7 @@ class PostgresStorage:
                 )
 
                 # 2. Upsert analysis
-                cur.execute(
-                    """INSERT INTO analyses
-                         (call_id, direction, manager_id, manager_name, role,
-                          spam_probability, effective_call, intent, outcome,
-                          summary, audio_seconds, call_datetime, src_number,
-                                  dst_number, key_questions, objections, analysis_error, input_text_sha256, data)
-                              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT (call_id) DO UPDATE SET
-                         direction        = EXCLUDED.direction,
-                         manager_id       = EXCLUDED.manager_id,
-                         manager_name     = EXCLUDED.manager_name,
-                         role             = EXCLUDED.role,
-                         spam_probability = EXCLUDED.spam_probability,
-                         effective_call   = EXCLUDED.effective_call,
-                         intent           = EXCLUDED.intent,
-                         outcome          = EXCLUDED.outcome,
-                         summary          = EXCLUDED.summary,
-                         audio_seconds    = EXCLUDED.audio_seconds,
-                         call_datetime    = EXCLUDED.call_datetime,
-                         src_number       = EXCLUDED.src_number,
-                         dst_number       = EXCLUDED.dst_number,
-                         key_questions    = EXCLUDED.key_questions,
-                         objections       = EXCLUDED.objections,
-                         analysis_error   = EXCLUDED.analysis_error,
-                         input_text_sha256 = EXCLUDED.input_text_sha256,
-                         data             = EXCLUDED.data""",
-                    (
-                        a_row["call_id"],
-                        a_row["direction"],
-                        a_row["manager_id"],
-                        a_row["manager_name"],
-                        a_row["role"],
-                        a_row["spam_probability"],
-                        a_row["effective_call"],
-                        a_row["intent"],
-                        a_row["outcome"],
-                        a_row["summary"],
-                        a_row["audio_seconds"],
-                        a_row["call_datetime"],
-                        a_row["src_number"],
-                        a_row["dst_number"],
-                        a_row["key_questions"],
-                        a_row["objections"],
-                        a_row["analysis_error"],
-                        a_row["input_text_sha256"],
-                        a_row["data"],
-                    ),
-                )
+                cur.execute(_ANALYSES_UPSERT_SQL, _analysis_upsert_params(a_row))
 
                 # 3. Upsert calls metadata
                 call_meta = call_metadata or analysis.get("call_meta") or {}
@@ -780,54 +471,7 @@ class PostgresStorage:
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """INSERT INTO analyses
-                         (call_id, direction, manager_id, manager_name, role,
-                          spam_probability, effective_call, intent, outcome,
-                          summary, audio_seconds, call_datetime, src_number,
-                                  dst_number, key_questions, objections, analysis_error, input_text_sha256, data)
-                              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT (call_id) DO UPDATE SET
-                         direction        = EXCLUDED.direction,
-                         manager_id       = EXCLUDED.manager_id,
-                         manager_name     = EXCLUDED.manager_name,
-                         role             = EXCLUDED.role,
-                         spam_probability = EXCLUDED.spam_probability,
-                         effective_call   = EXCLUDED.effective_call,
-                         intent           = EXCLUDED.intent,
-                         outcome          = EXCLUDED.outcome,
-                         summary          = EXCLUDED.summary,
-                         audio_seconds    = EXCLUDED.audio_seconds,
-                         call_datetime    = EXCLUDED.call_datetime,
-                         src_number       = EXCLUDED.src_number,
-                         dst_number       = EXCLUDED.dst_number,
-                         key_questions    = EXCLUDED.key_questions,
-                         objections       = EXCLUDED.objections,
-                         analysis_error   = EXCLUDED.analysis_error,
-                         input_text_sha256 = EXCLUDED.input_text_sha256,
-                         data             = EXCLUDED.data""",
-                    (
-                        row["call_id"],
-                        row["direction"],
-                        row["manager_id"],
-                        row["manager_name"],
-                        row["role"],
-                        row["spam_probability"],
-                        row["effective_call"],
-                        row["intent"],
-                        row["outcome"],
-                        row["summary"],
-                        row["audio_seconds"],
-                        row["call_datetime"],
-                        row["src_number"],
-                        row["dst_number"],
-                        row["key_questions"],
-                        row["objections"],
-                        row["analysis_error"],
-                        row["input_text_sha256"],
-                        row["data"],
-                    ),
-                )
+                cur.execute(_ANALYSES_UPSERT_SQL, _analysis_upsert_params(row))
                 cur.execute(
                     """
                     INSERT INTO calls

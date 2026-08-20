@@ -313,7 +313,12 @@ class ElasticsearchHandler(logging.Handler):
         self.client: Any = None
         try:
             if _TransportClass is None or _NodeConfigClass is None:
-                print("Warning: elastic-transport package not installed", file=sys.stderr)
+                # E6: use the logging module instead of print — this handler is
+                # being constructed during setup_logging(), so route through a
+                # dedicated logger to avoid recursion into the handler itself.
+                logging.getLogger("callanalytics.elasticsearch").warning(
+                    "elastic-transport package not installed"
+                )
                 return
 
             import base64
@@ -356,7 +361,10 @@ class ElasticsearchHandler(logging.Handler):
 
             self.client = _TransportClass(node_configs=[node_config])
         except (ValueError, OSError, TypeError) as e:
-            print(f"Warning: Failed to connect to Elasticsearch: {e}", file=sys.stderr)
+            # E6: log instead of print
+            logging.getLogger("callanalytics.elasticsearch").warning(
+                "Failed to connect to Elasticsearch: %s", e
+            )
             self.client = None
 
     def _worker(self) -> None:
@@ -398,16 +406,22 @@ class ElasticsearchHandler(logging.Handler):
                     # If not JSON, skip (shouldn't happen with our formatter)
                     pass
                 except TimeoutError:
-                    # ES connection timeout - drop the message to prevent queue buildup
-                    pass
-                except (OSError, RuntimeError, ValueError, TypeError):
-                    # Any other error - drop the message
-                    pass
+                    # E6: log ES timeouts so silent drops are diagnosable
+                    logging.getLogger("callanalytics.elasticsearch").warning(
+                        "Elasticsearch request timeout — dropping message"
+                    )
+                except (OSError, RuntimeError, ValueError, TypeError) as exc:
+                    # E6: log worker errors instead of silently dropping
+                    logging.getLogger("callanalytics.elasticsearch").warning(
+                        "Elasticsearch send failed — dropping message: %s", exc
+                    )
                 finally:
                     self._queue.task_done()
-            except (OSError, RuntimeError, ValueError, TypeError):
-                # Unexpected error in worker - continue processing
-                pass
+            except (OSError, RuntimeError, ValueError, TypeError) as exc:
+                # E6: log unexpected worker errors
+                logging.getLogger("callanalytics.elasticsearch").warning(
+                    "Unexpected error in Elasticsearch worker: %s", exc
+                )
 
     def emit(self, record: logging.LogRecord) -> None:
         """Add log record to the queue for background processing."""
@@ -470,8 +484,10 @@ def _create_elasticsearch_handler() -> logging.Handler | None:
         return handler
 
     except (ValueError, OSError, RuntimeError) as e:
-        # Log warning but don't fail if ES handler can't be created
-        print(f"Warning: Failed to create Elasticsearch handler: {e}", file=sys.stderr)
+        # E6: log instead of print — don't fail if ES handler can't be created
+        logging.getLogger("callanalytics.elasticsearch").warning(
+            "Failed to create Elasticsearch handler: %s", e
+        )
         return None
 
 
@@ -541,3 +557,17 @@ def clear_correlation_id() -> None:
     Use this to reset the correlation ID after a request completes.
     """
     _correlation_id.set(None)
+
+
+def reset_correlation_id(token: contextvars.Token[str | None]) -> None:
+    """Reset the correlation ID using a token from :func:`set_correlation_id`.
+
+    E9: public counterpart to the private ``_correlation_id.reset`` that API
+    middleware previously imported directly. Safe no-op if the token was
+    already consumed or belongs to a different context.
+    """
+    try:
+        _correlation_id.reset(token)
+    except ValueError:
+        # Token from a different Context — nothing to reset here.
+        pass

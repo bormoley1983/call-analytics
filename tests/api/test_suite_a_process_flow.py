@@ -1,5 +1,5 @@
 """
-Suite A: Process Flow Integration Tests (DEVPLAN_ONLINE_TESTS_TBD_20_03_2026.md)
+Suite A: Process Flow Integration Tests
 
 Tests the end-to-end process flow via API endpoints:
 1. POST /jobs/process → job lifecycle (pending → running → done/failed)

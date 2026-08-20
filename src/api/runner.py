@@ -1,3 +1,4 @@
+import functools
 import logging
 import os
 import threading
@@ -19,17 +20,18 @@ from adapters.storage_json import JsonStorage
 from adapters.storage_postgres import PostgresStorage
 from api import job_store
 from api.schemas import JobStatus, ProcessRequest, SyncRequest
+from api.deps import keyword_ai_analysis_factory
+from logging_config import _correlation_id, reset_correlation_id, set_correlation_id
 from core.keywords_ai_runtime import (
     auto_keyword_ai_analysis_enabled as _auto_keyword_ai_analysis_enabled_impl,
-)
-from core.keywords_ai_runtime import (
-    run_keyword_ai_analysis_once as _run_keyword_ai_analysis_once_impl,
 )
 from core.keywords_materialize import materialize_call_keywords
 from core.keywords_refresh import refresh_keywords_data
 from core.pipeline import Pipeline
+from adapters.stt_factory import build_stt_adapter
 from core.snapshot_export import export_snapshot_reports
-from domain.config import CALLS_RAW, KEYWORDS_CONFIG, load_app_config
+from domain.config import ensure_env_loaded, get_calls_raw, get_keywords_config, load_app_config
+from domain.pbx import load_pbx_config
 from ports.storage import StoragePort
 
 logger = logging.getLogger(__name__)
@@ -73,24 +75,28 @@ def _parse_days(days: str | None) -> set[str] | None:
 
 
 def _run_sync_once(req: SyncRequest) -> dict:
+    # Explicit PbxConfig with fail-fast on missing PBX_HOST (was a raw
+    # os.environ["PBX_HOST"] KeyError before).
+    pbx = load_pbx_config()
     downloader = PbxSshDownloader(
-        host=os.environ["PBX_HOST"],
-        port=int(os.getenv("PBX_PORT", "22")),
-        username=os.getenv("PBX_USER", "asterisk"),
-        password=os.getenv("PBX_PASSWORD"),
-        key_path=os.getenv("PBX_KEY_PATH"),
-        known_hosts_path=os.getenv("PBX_KNOWN_HOSTS_PATH"),
-        remote_dir=os.getenv("PBX_REMOTE_DIR", "/var/spool/asterisk/monitor"),
+        host=pbx.host,
+        port=pbx.port,
+        username=pbx.username,
+        password=pbx.password,
+        key_path=pbx.key_path,
+        known_hosts_path=pbx.known_hosts_path,
+        remote_dir=pbx.remote_dir,
     )
     allowed_days = _parse_days(req.days)
+    calls_raw = get_calls_raw()
     downloader.connect()
     try:
-        new_files = downloader.download_new(CALLS_RAW, allowed_days=allowed_days)
+        new_files = downloader.download_new(calls_raw, allowed_days=allowed_days)
     finally:
         downloader.close()
 
-    downloaded_days = _extract_downloaded_days(new_files, CALLS_RAW)
-    downloaded_files = [str(p.relative_to(CALLS_RAW)) for p in new_files]
+    downloaded_days = _extract_downloaded_days(new_files, calls_raw)
+    downloaded_files = [str(p.relative_to(calls_raw)) for p in new_files]
     return {
         "downloaded": len(new_files),
         "downloaded_days": downloaded_days,
@@ -103,13 +109,14 @@ def _configure_process_env(req: ProcessRequest) -> dict[str, str | None]:
 
     Returns a mapping of key -> value (or None to temporarily delete).
     The caller applies these in a context that is safe from race conditions.
+
+    E8: DAYS is no longer overridden here — ``pipeline.run(days=req.days)``
+    passes the day scope explicitly and planner.py only falls back to the
+    env var when no explicit scope is given. Only the mutable processing
+    flags (PROCESS_LIMIT / FORCE_*) still need env overrides because
+    AppConfig reads them at load time.
     """
     overrides: dict[str, str | None] = {}
-    if req.days is not None:
-        overrides["DAYS"] = req.days
-    else:
-        overrides["DAYS"] = None
-
     if req.limit is not None:
         overrides["PROCESS_LIMIT"] = str(req.limit)
     else:
@@ -134,10 +141,13 @@ def _run_export_snapshots_once() -> dict[str, Any]:
     spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
     source = _build_reporting_source()
     try:
+        from adapters.reports_html import HtmlReportRenderer
+
         return export_snapshot_reports(
             output_dir=config.out,
             source=source,
             spam_threshold=spam_threshold,
+            renderer=HtmlReportRenderer(),
         )
     finally:
         source.close()
@@ -162,7 +172,7 @@ def _run_keyword_refresh_once(prune_missing: bool = False) -> dict | None:
 
     logger.info("Refreshing keywords after processing")
     keyword_source = PostgresKeywordSource(dsn)
-    yaml_source = YamlKeywordSource(KEYWORDS_CONFIG, strict=True)
+    yaml_source = YamlKeywordSource(get_keywords_config(), strict=True)
     reporting_source = PostgresReportingSource(dsn)
     try:
         return refresh_keywords_data(
@@ -177,8 +187,11 @@ def _run_keyword_refresh_once(prune_missing: bool = False) -> dict | None:
         keyword_source.close()
 
 
+_run_keyword_ai_analysis_factory = keyword_ai_analysis_factory()
+
+
 def _run_keyword_ai_analysis_once(trigger: str) -> dict | None:
-    return _run_keyword_ai_analysis_once_impl(trigger, skip_if_empty=True)
+    return _run_keyword_ai_analysis_factory(trigger, skip_if_empty=True)
 
 
 def _run_keyword_materialization_once() -> dict | None:
@@ -206,8 +219,59 @@ def _run_keyword_materialization_once() -> dict | None:
         keyword_source.close()
 
 
+def _run_post_process_steps(result: dict[str, Any]) -> None:
+    """E8: run post-pipeline steps with uniform error capture.
+
+    Each step (keyword refresh → materialize fallback → AI analysis) is
+    independent; a failure in one never blocks the others and is recorded
+    on ``result`` under a per-step ``*_error`` key.
+    """
+    keywords_refresh: dict[str, Any] | None = None
+    try:
+        keywords_refresh = _run_keyword_refresh_once()
+    except FileNotFoundError as exc:
+        logger.warning(
+            "Skipping keyword refresh after processing because keyword config is missing: %s",
+            exc,
+        )
+        try:
+            materialize_result = _run_keyword_materialization_once()
+        except Exception as fallback_exc:
+            logger.exception(
+                "Keyword materialization fallback failed after missing keyword config"
+            )
+            result["keywords_refresh_error"] = str(fallback_exc)
+        else:
+            if materialize_result is not None:
+                keywords_refresh = {
+                    "sync": {
+                        "skipped": True,
+                        "reason": "keyword_config_missing",
+                        "detail": str(exc),
+                    },
+                    "materialize": materialize_result,
+                }
+    except Exception as exc:
+        logger.exception("Keyword refresh failed after processing")
+        result["keywords_refresh_error"] = str(exc)
+    if keywords_refresh is not None:
+        result["keywords_refresh"] = keywords_refresh
+
+    try:
+        keyword_ai_analysis = _run_keyword_ai_analysis_once(trigger="process")
+    except Exception as exc:
+        logger.exception("AI keyword analysis failed after processing")
+        result["keyword_ai_analysis_error"] = str(exc)
+    else:
+        if keyword_ai_analysis is not None:
+            result["keyword_ai_analysis"] = keyword_ai_analysis
+
+
 def _run_process_once(req: ProcessRequest) -> dict:
-    env_keys = ["DAYS", "PROCESS_LIMIT", "FORCE_REANALYZE", "FORCE_RETRANSCRIBE"]
+    # Idempotent .env overlay so job threads see config/.env defaults
+    # even when the API process was started without them.
+    ensure_env_loaded()
+    env_keys = ["PROCESS_LIMIT", "FORCE_REANALYZE", "FORCE_RETRANSCRIBE"]
 
     # Serialize process jobs to prevent cross-job env var contamination.
     # Capture old values and apply overrides under the lock atomically,
@@ -237,53 +301,29 @@ def _run_process_once(req: ProcessRequest) -> dict:
 
         storage.ensure_ready()
         try:
+            # When the primary driver is JSON, provide a Postgres secondary so
+            # results are synced to the system of record. Capability check via
+            # max_connections keeps core/edge free of isinstance on adapters.
+            secondary_storage: StoragePort | None = None
+            if getattr(storage, "max_connections", None) is None:
+                dsn = os.getenv("POSTGRES_DSN")
+                if dsn:
+                    secondary_storage = PostgresStorage(dsn)
+                    secondary_storage.ensure_ready()
             pipeline = Pipeline(
                 config=config,
                 storage=storage,
                 audio=FfmpegAudio(),
                 llm=OllamaLlm(config),
                 pbx=AsteriskPbx(),
+                stt=build_stt_adapter(config),
+                secondary_storage=secondary_storage,
             )
-            pipeline.run()
+            # Pass the explicit day scope from the request (E8: no DAYS env
+            # override needed — planner falls back to env only when omitted).
+            pipeline.run(days=req.days)
             result: dict[str, Any] = {"ok": True}
-            keywords_refresh: dict[str, Any] | None = None
-            try:
-                keywords_refresh = _run_keyword_refresh_once()
-            except FileNotFoundError as exc:
-                logger.warning(
-                    "Skipping keyword refresh after processing because keyword config is missing: %s",
-                    exc,
-                )
-                try:
-                    materialize_result = _run_keyword_materialization_once()
-                except Exception as fallback_exc:
-                    logger.exception(
-                        "Keyword materialization fallback failed after missing keyword config"
-                    )
-                    result["keywords_refresh_error"] = str(fallback_exc)
-                else:
-                    if materialize_result is not None:
-                        keywords_refresh = {
-                            "sync": {
-                                "skipped": True,
-                                "reason": "keyword_config_missing",
-                                "detail": str(exc),
-                            },
-                            "materialize": materialize_result,
-                        }
-            except Exception as exc:
-                logger.exception("Keyword refresh failed after processing")
-                result["keywords_refresh_error"] = str(exc)
-            if keywords_refresh is not None:
-                result["keywords_refresh"] = keywords_refresh
-            try:
-                keyword_ai_analysis = _run_keyword_ai_analysis_once(trigger="process")
-            except Exception as exc:
-                logger.exception("AI keyword analysis failed after processing")
-                result["keyword_ai_analysis_error"] = str(exc)
-            else:
-                if keyword_ai_analysis is not None:
-                    result["keyword_ai_analysis"] = keyword_ai_analysis
+            _run_post_process_steps(result)
             return result
         finally:
             storage.close()
@@ -297,6 +337,27 @@ def _run_process_once(req: ProcessRequest) -> dict:
                 os.environ[k] = v
 
 
+def _with_correlation_id(fn):
+    """E9: propagate the request's correlation id into background job threads.
+
+    FastAPI BackgroundTasks run in a different context, so the middleware's
+    correlation id is lost. Capture it at scheduling time (current context)
+    and re-apply it inside the worker thread for log tracing.
+    """
+    captured = _correlation_id.get()
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        token = set_correlation_id(captured)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            reset_correlation_id(token)
+
+    return wrapper
+
+
+@_with_correlation_id
 def run_sync(job_id: str, req: SyncRequest) -> None:
     job_store.update_job(
         job_id, status=JobStatus.running, started_at=datetime.now(timezone.utc)
@@ -319,6 +380,7 @@ def run_sync(job_id: str, req: SyncRequest) -> None:
         )
 
 
+@_with_correlation_id
 def run_process(job_id: str, req: ProcessRequest) -> None:
     job_store.update_job(
         job_id, status=JobStatus.running, started_at=datetime.now(timezone.utc)
@@ -341,6 +403,7 @@ def run_process(job_id: str, req: ProcessRequest) -> None:
         )
 
 
+@_with_correlation_id
 def run_sync_and_process(job_id: str, req: ProcessRequest) -> None:
     job_store.update_job(
         job_id, status=JobStatus.running, started_at=datetime.now(timezone.utc)
@@ -370,6 +433,7 @@ def run_sync_and_process(job_id: str, req: ProcessRequest) -> None:
         )
 
 
+@_with_correlation_id
 def run_export_snapshots(job_id: str) -> None:
     job_store.update_job(
         job_id, status=JobStatus.running, started_at=datetime.now(timezone.utc)

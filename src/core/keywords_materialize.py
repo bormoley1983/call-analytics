@@ -2,18 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.report_filters import normalize_text as _normalize  # re-export
+from core.report_filters import record_texts as _record_texts  # re-export
 from domain.keywords import KeywordDefinition
 from domain.reporting import ReportCallRecord, ReportFilters
 from ports.keywords import KeywordMatchStore, KeywordSource, MaterializationStateStore
 from ports.reporting import ReportingSource
 
 
-def _normalize(text: str) -> str:
-    return text.casefold().strip()
-
-
 class _TermIndex:
-    """Pre-computed reverse index: normalized_term → (keyword_id, field_name, original_term).
+    """Pre-computed reverse index: field → normalized_term → (keyword_id, original_term).
 
     Replaces the O(n*m) per-call keyword scan with a single pass over each call's
     text fields. Instead of iterating keywords × terms for every call, we iterate
@@ -21,45 +19,79 @@ class _TermIndex:
 
     This reduces redundant normalizations and leverages Python's fast 'in' operator
     on the (typically longer) text rather than the (shorter) terms.
+
+    E2: terms are bucketed by field up front, so matching a record no longer
+    scans every indexed term with a `field != field_name` skip — each field is
+    checked against only its own bucket.
     """
 
     def __init__(self, keywords: list[KeywordDefinition]):
-        # Maps (field_name, normalized_term) → list of (keyword_id, original_term)
-        self._index: dict[tuple[str, str], list[tuple[str, str]]] = {}
+        # Maps field_name → normalized_term → list of (keyword_id, original_term)
+        self._by_field: dict[str, dict[str, list[tuple[str, str]]]] = {}
         self._fields: set[str] = set()
 
         for kw in keywords:
             for field in kw.match_fields:
                 self._fields.add(field)
+                bucket = self._by_field.setdefault(field, {})
                 for term in kw.terms:
                     norm = _normalize(term)
                     if not norm:
                         continue
-                    key = (field, norm)
-                    self._index.setdefault(key, []).append((kw.keyword_id, term))
+                    bucket.setdefault(norm, []).append((kw.keyword_id, term))
 
     @property
     def fields(self) -> set[str]:
         return self._fields
 
+    def matches(self, texts: dict[str, list[str]]) -> list[dict[str, Any]]:
+        """Match pre-extracted record texts against the index.
 
-def _record_texts(
-    record: ReportCallRecord, match_fields: set[str]
-) -> dict[str, list[str]]:
-    selected = match_fields
-    return {
-        "summary": [record.summary] if "summary" in selected and record.summary else [],
-        "key_questions": (
-            [item for item in record.key_questions if item]
-            if "key_questions" in selected
-            else []
-        ),
-        "objections": (
-            [item for item in record.objections if item]
-            if "objections" in selected
-            else []
-        ),
-    }
+        `texts` maps field_name → list of raw text values (see `_record_texts`).
+        Returns materialized rows grouped by keyword_id with deterministic
+        ordering. Public so callers/tests can reuse the matching logic without
+        reaching into private state.
+        """
+        # Accumulate matches per keyword: kw_id → {fields, terms, count}
+        kw_matches: dict[str, dict[str, Any]] = {}
+
+        for field_name, values in texts.items():
+            bucket = self._by_field.get(field_name)
+            if not bucket:
+                continue
+            for value in values:
+                normalized_value = _normalize(value)
+                if not normalized_value:
+                    continue
+                for norm_term, kw_list in bucket.items():
+                    if norm_term in normalized_value:
+                        for kw_id, orig_term in kw_list:
+                            entry = kw_matches.setdefault(
+                                kw_id,
+                                {
+                                    "keyword_id": kw_id,
+                                    "match_count": 0,
+                                    "_fields": set(),
+                                    "_terms": set(),
+                                },
+                            )
+                            entry["match_count"] += 1
+                            entry["_fields"].add(field_name)
+                            entry["_terms"].add(orig_term)
+
+        # Convert sets to sorted lists for deterministic output
+        result: list[dict[str, Any]] = []
+        for entry in kw_matches.values():
+            result.append(
+                {
+                    "keyword_id": entry["keyword_id"],
+                    "match_count": entry["match_count"],
+                    "matched_fields": sorted(entry["_fields"]),
+                    "matched_terms": sorted(entry["_terms"]),
+                }
+            )
+
+        return result
 
 
 def _match_record(
@@ -73,47 +105,7 @@ def _match_record(
     texts = _record_texts(record, index.fields)
     if not texts:
         return []
-
-    # Accumulate matches per keyword: kw_id → {fields, terms, count}
-    kw_matches: dict[str, dict[str, Any]] = {}
-
-    for field_name, values in texts.items():
-        for value in values:
-            normalized_value = _normalize(value)
-            if not normalized_value:
-                continue
-            # Check all terms for this field against the text
-            for (field, norm_term), kw_list in index._index.items():
-                if field != field_name:
-                    continue
-                if norm_term in normalized_value:
-                    for kw_id, orig_term in kw_list:
-                        entry = kw_matches.setdefault(
-                            kw_id,
-                            {
-                                "keyword_id": kw_id,
-                                "match_count": 0,
-                                "_fields": set(),
-                                "_terms": set(),
-                            },
-                        )
-                        entry["match_count"] += 1
-                        entry["_fields"].add(field_name)
-                        entry["_terms"].add(orig_term)
-
-    # Convert sets to sorted lists for deterministic output
-    result: list[dict[str, Any]] = []
-    for entry in kw_matches.values():
-        result.append(
-            {
-                "keyword_id": entry["keyword_id"],
-                "match_count": entry["match_count"],
-                "matched_fields": sorted(entry["_fields"]),
-                "matched_terms": sorted(entry["_terms"]),
-            }
-        )
-
-    return result
+    return index.matches(texts)
 
 
 def materialize_call_keywords(

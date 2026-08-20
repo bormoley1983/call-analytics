@@ -12,7 +12,8 @@ from api.routes import (
     managers,
     reports,
 )
-from logging_config import set_correlation_id, setup_logging
+from domain.config import ensure_env_loaded
+from logging_config import reset_correlation_id, set_correlation_id, setup_logging
 
 description = """
 Internal API for Call Analytics.
@@ -84,6 +85,9 @@ tags_metadata = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Load config/.env defaults once at startup (idempotent) so that
+    # getters and load_app_config() see them without import-time side effects.
+    ensure_env_loaded()
     setup_logging()
     yield
 
@@ -112,10 +116,8 @@ async def add_correlation_id(request: Request, call_next):
         response.headers["X-Correlation-Id"] = correlation_id
         return response
     finally:
-        # Reset correlation ID after request completes
-        from logging_config import _correlation_id
-
-        _correlation_id.reset(token)
+        # E9: reset via the public helper (no private import).
+        reset_correlation_id(token)
 
 
 app.include_router(health.router)

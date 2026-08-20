@@ -1,13 +1,13 @@
-from functools import lru_cache
-
 from fastapi import APIRouter
 
 from domain.config import load_app_config
 
 router = APIRouter(prefix="/managers", tags=["managers"])
 
-@lru_cache(maxsize=1)
+
 def _get_mapper():
+    # No lru_cache — the mapper is cheap to build and caching it here would
+    # hide config reloads (e.g. after managers.yaml changes or env overrides).
     return load_app_config().manager_mapper
 
 @router.get(

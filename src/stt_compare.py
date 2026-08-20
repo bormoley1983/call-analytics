@@ -7,7 +7,7 @@ from pathlib import Path
 from adapters.stt_runs_json import JsonSttRunStore
 from adapters.stt_runs_postgres import PostgresSttRunStore
 from core.stt_compare_service import SttCompareService, compare_summary_json
-from domain.config import load_app_config
+from domain.config import ensure_env_loaded, load_app_config
 from ports.stt_runs import SttRunStorePort
 
 
@@ -30,6 +30,8 @@ def main() -> int:
     parser.add_argument("--top", type=int, default=20)
     args = parser.parse_args()
 
+    # Load config/.env defaults once at startup (idempotent).
+    ensure_env_loaded()
     config = load_app_config()
     run_store = _build_run_store(config)
     try:

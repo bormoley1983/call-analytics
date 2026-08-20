@@ -1,5 +1,5 @@
 """
-Suite B: Keyword & AI Analysis Integration Tests (DEVPLAN_ONLINE_TESTS_TBD_20_03_2026.md)
+Suite B: Keyword & AI Analysis Integration Tests
 
 Tests keyword materialization and AI analysis flow:
 1. Keyword upsert → call matching → `call_keywords` rows created

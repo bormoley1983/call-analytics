@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from adapters.keywords_postgres import PostgresKeywordSource
 from adapters.keywords_yaml import YamlKeywordSource
 from adapters.reporting_json import JsonReportingSource
+import api.deps as api_deps
 from api.routes import keywords as keyword_routes
 from api.routes import keywords_generation as keyword_generation_routes
 from api.routes import reports as report_routes
@@ -29,6 +30,7 @@ from api.schemas import (
 from core.keywords_materialize import materialize_call_keywords
 from core.keywords_service import build_keywords_report, list_keywords
 from core.keywords_sync import sync_keywords_to_postgres
+from domain import config as domain_config
 from domain.keywords import KeywordDefinition
 from domain.reporting import ReportFilters
 
@@ -159,7 +161,8 @@ def test_keywords_catalog_fails_loudly_on_invalid_yaml(monkeypatch, tmp_path):
     _write_invalid_keywords(keywords_path)
 
     monkeypatch.delenv("POSTGRES_DSN", raising=False)
-    monkeypatch.setattr(keyword_routes, "KEYWORDS_CONFIG", keywords_path)
+    # Path constants are now getters; patch the getter where it is looked up.
+    monkeypatch.setattr(api_deps, "get_keywords_config", lambda: keywords_path)
 
     with pytest.raises(HTTPException) as exc:
         keyword_routes.keywords_catalog()
@@ -176,7 +179,8 @@ def test_keywords_report_fails_loudly_on_invalid_yaml(monkeypatch, tmp_path):
     _write_invalid_keywords(keywords_path)
 
     monkeypatch.delenv("POSTGRES_DSN", raising=False)
-    monkeypatch.setattr(report_routes, "KEYWORDS_CONFIG", keywords_path)
+    # Path constants are now getters; patch the getter where it is looked up.
+    monkeypatch.setattr(api_deps, "get_keywords_config", lambda: keywords_path)
     monkeypatch.setattr(
         report_routes,
         "_get_reporting_source",
@@ -290,7 +294,7 @@ def test_keywords_bootstrap_generates_publishes_and_materializes(monkeypatch):
     )
     monkeypatch.setattr(
         keyword_generation_routes,
-        "run_keyword_ai_analysis_once",
+        "_run_keyword_ai_analysis_once",
         lambda trigger, skip_if_empty=False: {"trigger": trigger},
     )
 
@@ -359,7 +363,7 @@ def test_keywords_bootstrap_skips_materialize_and_ai_without_changes(monkeypatch
     )
     monkeypatch.setattr(
         keyword_generation_routes,
-        "run_keyword_ai_analysis_once",
+        "_run_keyword_ai_analysis_once",
         lambda trigger, skip_if_empty=False: {"trigger": trigger},
     )
 
@@ -1142,6 +1146,19 @@ def test_build_keywords_report_dispatches_to_sql_path():
 
     class SqlReportingSource:
         source_name = "sql_fake"
+
+        def build_overall_report_data(self, filters, spam_threshold):
+            return {}
+
+        def build_managers_report_data(
+            self, filters, spam_threshold, sort_by="total_calls", order="desc"
+        ):
+            return {}
+
+        def build_customers_report_data(
+            self, filters, spam_threshold, sort_by="total_calls", order="desc"
+        ):
+            return {}
 
         def build_keywords_report_data(self, **kwargs):
             return [

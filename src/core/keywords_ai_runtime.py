@@ -1,92 +1,80 @@
+"""Runtime orchestration for keyword AI analysis.
+
+Driver selection (Postgres vs JSON/YAML) is owned by the edge layer
+(``api/deps.py``); this module only receives already-constructed sources and
+delegates to :func:`core.keywords_ai.run_keyword_catalog_analysis`.
+"""
+
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
-from adapters.keyword_ai_analysis_postgres import PostgresKeywordAiAnalysisStore
-from adapters.keywords_postgres import PostgresKeywordSource
-from adapters.keywords_yaml import YamlKeywordSource
-from adapters.llm_ollama import OllamaLlm
-from adapters.reporting_json import JsonReportingSource
-from adapters.reporting_postgres import PostgresReportingSource
 from core.keywords_ai import run_keyword_catalog_analysis
-from domain.config import ANALYSIS, KEYWORDS_CONFIG, load_app_config
 from ports.keywords import KeywordSource
+from ports.llm import LlmPort
 from ports.reporting import ReportingSource
 
 logger = logging.getLogger(__name__)
 
 
 def auto_keyword_ai_analysis_enabled() -> bool:
-    return os.getenv("AUTO_RUN_AI_KEYWORD_ANALYSIS", "1") != "0"
+    from domain.config import get_auto_run_ai_keyword_analysis
+
+    return get_auto_run_ai_keyword_analysis()
 
 
 def _has_keywords_for_analysis(keyword_source: KeywordSource) -> bool:
-    return any(keyword.is_active and bool(keyword.terms) for keyword in keyword_source.list_keywords())
+    return any(
+        keyword.is_active and bool(keyword.terms)
+        for keyword in keyword_source.list_keywords()
+    )
 
 
 def run_keyword_ai_analysis_once(
     trigger: str,
     *,
+    keyword_source: KeywordSource,
+    reporting_source: ReportingSource,
+    llm: LlmPort,
+    analysis_store: Any | None = None,
     skip_if_empty: bool = False,
+    spam_threshold: float = 0.7,
+    ai_model: str | None = None,
 ) -> dict[str, Any] | None:
+    """Run one keyword catalog AI analysis using the provided sources.
+
+    Callers are responsible for closing the sources after the call (the edge
+    factory in ``api/deps.py`` does this).
+    """
     if not auto_keyword_ai_analysis_enabled():
         logger.info("Skipping AI keyword analysis because AUTO_RUN_AI_KEYWORD_ANALYSIS=0")
         return None
 
-    dsn = os.getenv("POSTGRES_DSN")
-    config = load_app_config()
-    llm = OllamaLlm(config)
-    keyword_source: KeywordSource
-    reporting_source: ReportingSource
-    analysis_store: PostgresKeywordAiAnalysisStore | None
-    if dsn:
-        logger.info("Running AI keyword analysis after %s using Postgres sources", trigger)
-        keyword_source = PostgresKeywordSource(dsn)
-        reporting_source = PostgresReportingSource(dsn)
-        analysis_store = PostgresKeywordAiAnalysisStore(dsn)
-    else:
-        logger.info("Running AI keyword analysis after %s using JSON/YAML sources", trigger)
-        keyword_source = YamlKeywordSource(KEYWORDS_CONFIG, strict=True)
-        reporting_source = JsonReportingSource(ANALYSIS)
-        analysis_store = None
-
-    try:
-        if skip_if_empty and not _has_keywords_for_analysis(keyword_source):
-            logger.info(
-                "Skipping AI keyword analysis after %s because the keyword catalog has no active keywords",
-                trigger,
-            )
-            return None
-        return run_keyword_catalog_analysis(
-            request_data={
-                "trigger": trigger,
-                "include_inactive": False,
-                "include_match_stats": True,
-                "keyword_ids": None,
-                "max_keywords": 100,
-                "max_groups": 20,
-            },
-            keyword_source=keyword_source,
-            reporting_source=reporting_source,
-            llm=llm,
-            analysis_store=analysis_store,
-            include_inactive=False,
-            include_match_stats=True,
-            max_keywords=100,
-            max_groups=20,
-            spam_threshold=float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7")),
-            ai_model=getattr(config, "ollama_model", None),
+    if skip_if_empty and not _has_keywords_for_analysis(keyword_source):
+        logger.info(
+            "Skipping AI keyword analysis after %s because the keyword catalog has no active keywords",
+            trigger,
         )
-    finally:
-        for _source in (reporting_source, keyword_source):
-            try:
-                _source.close()
-            except Exception:
-                logger.exception("Error closing source during AI keyword analysis cleanup")
-        if analysis_store is not None:
-            try:
-                analysis_store.close()
-            except Exception:
-                logger.exception("Error closing analysis store during AI keyword analysis cleanup")
+        return None
+
+    return run_keyword_catalog_analysis(
+        request_data={
+            "trigger": trigger,
+            "include_inactive": False,
+            "include_match_stats": True,
+            "keyword_ids": None,
+            "max_keywords": 100,
+            "max_groups": 20,
+        },
+        keyword_source=keyword_source,
+        reporting_source=reporting_source,
+        llm=llm,
+        analysis_store=analysis_store,
+        include_inactive=False,
+        include_match_stats=True,
+        max_keywords=100,
+        max_groups=20,
+        spam_threshold=spam_threshold,
+        ai_model=ai_model,
+    )

@@ -11,6 +11,18 @@ import paramiko
 logger = logging.getLogger(__name__)
 
 
+def _ssh_insecure_autoload_enabled() -> bool:
+    """E5: opt-in escape hatch for first-time connections without known_hosts.
+
+    Fail-closed by default (RejectPolicy). Set PBX_SSH_INSECURE_AUTOADD=1 to
+    allow AutoAddPolicy when no host keys are available — useful only for
+    initial provisioning, never for production.
+    """
+    from domain.config import get_pbx_ssh_insecure_autoload_enabled
+
+    return get_pbx_ssh_insecure_autoload_enabled()
+
+
 class PbxSshDownloader:
     """
     Downloads new call recordings from PBX via SFTP.
@@ -60,10 +72,10 @@ class PbxSshDownloader:
             except OSError:
                 pass  # No system host keys available
 
-        if not host_keys_loaded:
+        if not host_keys_loaded and _ssh_insecure_autoload_enabled():
             logger.warning(
                 "No SSH host keys found for %s:%d (known_hosts_path=%s, system_keys=empty). "
-                "Using AutoAddPolicy for first-time connection. "
+                "PBX_SSH_INSECURE_AUTOADD is set — using AutoAddPolicy for first-time connection. "
                 "For production, provide a known_hosts file via PBX_KNOWN_HOSTS_PATH.",
                 self.host,
                 self.port,
@@ -71,6 +83,17 @@ class PbxSshDownloader:
             )
             self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         else:
+            # E5: fail-closed default — unknown host keys are rejected unless the
+            # explicit PBX_SSH_INSECURE_AUTOADD opt-in is set.
+            if not host_keys_loaded:
+                logger.warning(
+                    "No SSH host keys found for %s:%d (known_hosts_path=%s, system_keys=empty). "
+                    "Connection will be rejected unless a known_hosts file is provided via "
+                    "PBX_KNOWN_HOSTS_PATH, or PBX_SSH_INSECURE_AUTOADD=1 is set for first-time provisioning.",
+                    self.host,
+                    self.port,
+                    self.known_hosts_path,
+                )
             self._client.set_missing_host_key_policy(paramiko.RejectPolicy())
 
         if self.key_path:

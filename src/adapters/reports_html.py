@@ -81,6 +81,17 @@ def render_manager_report(report: dict[str, Any], out_path: Path) -> None:
     _write_html(out_path, "Manager Report", body)
 
 
+class HtmlReportRenderer:
+    """Concrete ReportRendererPort implementation (function-based module
+    renderers wrapped in a class so the composition root can inject it)."""
+
+    def render_overall_report(self, report: dict[str, Any], out_path: Path) -> None:
+        render_overall_report(report, out_path)
+
+    def render_manager_report(self, report: dict[str, Any], out_path: Path) -> None:
+        render_manager_report(report, out_path)
+
+
 def _write_html(path: Path, title: str, body: str) -> None:
     css = """
     body { font-family: sans-serif; margin: 2em; }

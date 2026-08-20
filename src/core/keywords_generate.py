@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from domain.keywords import DEFAULT_MATCH_FIELDS, KeywordDefinition
-from domain.reporting import ReportFilters
-from ports.keywords import KeywordSource
+from domain.reporting import ReportCallRecord, ReportFilters
+from ports.keywords import KeywordCatalogStore, KeywordSource
 from ports.reporting import ReportingSource
 
 _TOKEN_RE = re.compile(r"[0-9A-Za-zА-Яа-яІіЇїЄєҐґ][0-9A-Za-zА-Яа-яІіЇїЄєҐґ'\-]*")
@@ -138,7 +138,7 @@ def _iter_phrases(tokens: list[str], max_ngram_words: int) -> list[str]:
 
 
 def _iter_record_texts(
-    record: Any,
+    record: ReportCallRecord,
     include_summary: bool,
     include_key_questions: bool,
     include_objections: bool,
@@ -257,7 +257,7 @@ def generate_keyword_candidates(
 
 
 def publish_generated_keywords(
-    keyword_source: Any,
+    keyword_source: KeywordCatalogStore,
     candidates: list[dict[str, Any]],
     *,
     default_category: str,

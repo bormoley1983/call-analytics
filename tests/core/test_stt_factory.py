@@ -4,7 +4,7 @@ import pytest
 
 from adapters.stt_canary import CanarySttAdapter
 from adapters.stt_faster_whisper import FasterWhisperSttAdapter
-from core.stt_factory import build_stt_adapter
+from adapters.stt_factory import build_stt_adapter
 
 
 def _base_config():

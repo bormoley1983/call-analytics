@@ -104,7 +104,10 @@ def truncate_text_for_analysis(text: str, config: AppConfig) -> str:
         last_space = truncated.rfind(" ")
         cut_point = last_space if last_space > 0 else int(max_chars * 0.9)
 
-    if cut_point > max_chars * 0.9 or cut_point >= 0:
+    # The previous condition (`cut_point > max_chars * 0.9 or cut_point >= 0`)
+    # was always true, so this branch never skipped. Only truncate when the cut
+    # point is actually inside the window and not at position -1 (no boundary).
+    if 0 <= cut_point < max_chars:
         truncated = truncated[: cut_point + 1]
 
     return truncated + TRUNCATION_MESSAGE_UK

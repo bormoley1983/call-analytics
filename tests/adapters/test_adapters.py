@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import cast
@@ -165,7 +166,16 @@ def test_postgres_storage_forces_utf8_client_encoding():
 
 
 def test_postgres_storage_ddl_includes_calls_metadata_table_and_indexes():
-    ddl = storage_postgres.DDL
+    """Schema DDL now lives in migrations/V001__core_schema.sql."""
+    import os
+
+    ddl = open(
+        os.path.join(
+            os.path.dirname(storage_postgres.__file__),
+            "migrations",
+            "V001__core_schema.sql",
+        )
+    ).read()
 
     assert "CREATE TABLE IF NOT EXISTS calls" in ddl
     assert "source_file" in ddl
@@ -588,6 +598,29 @@ def test_keywords_source_retries_read_after_operational_error(monkeypatch):
     assert len(connections) <= 1
 
 
+def test_ollama_rate_limiter_rechecks_after_wait(monkeypatch):
+    limiter = llm_ollama._RateLimiter(
+        SimpleNamespace(ollama_rate_limit=1, ollama_rate_interval=0.0)
+    )
+    limiter._active = 1
+    limiter._last_acquire = 0.0
+    wait_calls = {"count": 0}
+
+    def fake_wait(timeout=None):
+        wait_calls["count"] += 1
+        if wait_calls["count"] == 1:
+            limiter._active = 1
+        else:
+            limiter._active = 0
+
+    monkeypatch.setattr(limiter._condition, "wait", fake_wait)
+
+    limiter.acquire()
+
+    assert limiter._active == 1
+    assert wait_calls["count"] == 2
+
+
 def test_ollama_generate_sends_runtime_limits(monkeypatch):
     captured = {}
 
@@ -614,6 +647,9 @@ def test_ollama_generate_sends_runtime_limits(monkeypatch):
         ollama_think=False,
         ollama_timeout=123,
         ollama_retries=1,
+        # Rate limiter is now built from AppConfig fields.
+        ollama_rate_limit=0,  # disable rate limiting in this test
+        ollama_rate_interval=0.0,
     )
 
     result = llm_ollama._ollama_generate(
@@ -668,10 +704,19 @@ def test_qdrant_storage_upsert_is_deterministic(monkeypatch):
 
 
 def test_postgres_storage_ddl_contains_stt_promotion_columns():
-    ddl = storage_postgres.DDL
-    assert "stt_run_id UUID" in ddl
-    assert "stt_config_hash TEXT" in ddl
-    assert "source_text_sha256 TEXT" in ddl
+    """STT promotion columns live in migrations/V001__core_schema.sql."""
+    import os
+
+    ddl = open(
+        os.path.join(
+            os.path.dirname(storage_postgres.__file__),
+            "migrations",
+            "V001__core_schema.sql",
+        )
+    ).read()
+    assert re.search(r"stt_run_id\s+UUID", ddl)
+    assert re.search(r"stt_config_hash\s+TEXT", ddl)
+    assert re.search(r"source_text_sha256\s+TEXT", ddl)
 
 
 # ---------------------------------------------------------------------------

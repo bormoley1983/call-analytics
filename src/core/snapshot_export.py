@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from adapters.reports_html import render_manager_report, render_overall_report
 from core.reporting_service import build_managers_report, build_overall_report
 from domain.reporting import ReportFilters
+from ports.report_rendering import ReportRendererPort
 from ports.reporting import ReportingSource
 
 
@@ -15,8 +15,13 @@ def export_snapshot_reports(
     output_dir: Path,
     source: ReportingSource,
     spam_threshold: float,
+    renderer: ReportRendererPort,
 ) -> dict[str, Any]:
-    """Build and write report snapshots from persisted reporting source data."""
+    """Build and write report snapshots from persisted reporting source data.
+
+    The HTML renderer is injected (ReportRendererPort) instead of being
+    imported from adapters here.
+    """
     filters = ReportFilters()
     overall = build_overall_report(source, filters, spam_threshold)
     by_manager = build_managers_report(source, filters, spam_threshold)
@@ -35,8 +40,8 @@ def export_snapshot_reports(
         encoding="utf-8",
     )
 
-    render_overall_report(overall, report_html_path)
-    render_manager_report(by_manager, report_by_manager_html_path)
+    renderer.render_overall_report(overall, report_html_path)
+    renderer.render_manager_report(by_manager, report_by_manager_html_path)
 
     return {
         "overall_report": str(report_json_path),

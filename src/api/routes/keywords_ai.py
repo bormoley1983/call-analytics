@@ -1,66 +1,54 @@
 import logging
-import os
+from typing import cast
 
 from fastapi import APIRouter, HTTPException, Path, Query, status
 
+from adapters.ai_alias_suggestions_postgres import PostgresAiAliasSuggestionStore
+from adapters.ai_apply_postgres import PostgresAiApplyStore
+from adapters.deep_insights_postgres import PostgresDeepInsightsStore
 from adapters.keyword_ai_analysis_postgres import PostgresKeywordAiAnalysisStore
-from adapters.keywords_postgres import PostgresKeywordSource
-from adapters.keywords_yaml import YamlKeywordSource
 from adapters.llm_ollama import OllamaLlm
-from adapters.reporting_json import JsonReportingSource
-from adapters.reporting_postgres import PostgresReportingSource
+from api.deps import (
+    get_postgres_dsn,
+    keyword_source_factory,
+    reporting_source_factory,
+    require_postgres_dsn,
+)
 from api.schemas import (
     AIApplyHistoryEntry,
     AIApplyRequest,
     AIApplyResult,
     KeywordCatalogAnalysisRequest,
 )
+from core.ai_apply import apply_approved_actions, get_apply_history
+from core.deep_insights import generate_deep_insights as _generate_deep_insights
+from core.deep_insights import store_deep_insights_run
 from core.keywords_ai import run_keyword_catalog_analysis
-from domain.config import ANALYSIS, KEYWORDS_CONFIG, load_app_config
+from core.keywords_alias_expand import expand_keyword_aliases
+from domain.ai_apply import AIApplyAction as DomainAIApplyAction
+from domain.config import get_spam_probability_threshold, load_app_config
+from ports.keywords import KeywordLookupSource, RefreshableKeywordStore
 
 router = APIRouter(prefix="/keywords/catalog", tags=["keywords-ai"])
 logger = logging.getLogger(__name__)
 _SAFE_ANALYSIS_ID_PATTERN = r"^[0-9a-fA-F\-]{36}$"
 
-
-def _get_keyword_source():
-    dsn = os.getenv("POSTGRES_DSN")
-    if dsn:
-        return PostgresKeywordSource(dsn)
-    source = YamlKeywordSource(KEYWORDS_CONFIG, strict=True)
-    try:
-        list(source.list_keywords())
-    except (FileNotFoundError, ValueError) as exc:
-        source.close()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
-        ) from exc
-    return source
-
-
-def _get_reporting_source():
-    dsn = os.getenv("POSTGRES_DSN")
-    if dsn:
-        return PostgresReportingSource(dsn)
-    return JsonReportingSource(ANALYSIS)
+# Driver selection lives in api/deps.py (single source of truth).
+_get_keyword_source = keyword_source_factory()
+_get_reporting_source = reporting_source_factory()
 
 
 def _get_keyword_ai_analysis_store() -> PostgresKeywordAiAnalysisStore | None:
-    dsn = os.getenv("POSTGRES_DSN")
+    dsn = get_postgres_dsn()
     if not dsn:
         return None
     return PostgresKeywordAiAnalysisStore(dsn)
 
 
 def _get_required_keyword_ai_analysis_store() -> PostgresKeywordAiAnalysisStore:
-    store = _get_keyword_ai_analysis_store()
-    if store is None:
-        raise HTTPException(
-            status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
-            detail="Keyword AI analysis history requires POSTGRES_DSN",
-        )
-    return store
+    # Shared DSN check in api/deps.py
+    dsn = require_postgres_dsn(detail="Keyword AI analysis history requires POSTGRES_DSN")
+    return PostgresKeywordAiAnalysisStore(dsn)
 
 
 def _execute_keyword_catalog_analysis(req: KeywordCatalogAnalysisRequest):
@@ -81,7 +69,7 @@ def _execute_keyword_catalog_analysis(req: KeywordCatalogAnalysisRequest):
             keyword_ids=req.keyword_ids,
             max_keywords=req.max_keywords,
             max_groups=req.max_groups,
-            spam_threshold=float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7")),
+            spam_threshold=get_spam_probability_threshold(),
             ai_model=getattr(config, "ollama_model", None),
         )
     except HTTPException:
@@ -205,11 +193,8 @@ def get_keyword_analysis(
 
 
 def _get_apply_store():
-    from adapters.ai_apply_postgres import PostgresAiApplyStore
-
-    dsn = os.getenv("POSTGRES_DSN")
-    if not dsn:
-        raise HTTPException(status_code=400, detail="No POSTGRES_DSN configured")
+    # Shared DSN check in api/deps.py
+    dsn = require_postgres_dsn(detail="No POSTGRES_DSN configured")
     return PostgresAiApplyStore(dsn)
 
 
@@ -238,18 +223,23 @@ def apply_analysis_actions(
         if analysis is None:
             raise HTTPException(status_code=404, detail="Analysis not found")
 
-        # Import here to avoid circular imports at module load time
-        from core.ai_apply import apply_approved_actions
-
         result = apply_approved_actions(
             analysis_id=analysis_id,
             analysis=analysis,
-            request_actions=request.actions,
-            keyword_source=keyword_source,
+            request_actions=[
+                DomainAIApplyAction(
+                    group_index=a.group_index,
+                    action_index=a.action_index,
+                    keyword_id=a.keyword_id,
+                )
+                for a in request.actions
+            ],
+            keyword_source=cast(RefreshableKeywordStore, keyword_source),
             apply_store=apply_store,
             dry_run=request.dry_run,
             refresh_after=request.refresh_after,
             applied_by="api",
+            reporting_source_factory=_get_reporting_source,
         )
     finally:
         analysis_store.close()
@@ -270,8 +260,6 @@ def get_analysis_apply_history(
     offset: int = Query(0, ge=0),
 ) -> list[AIApplyHistoryEntry]:
     """Get apply history for a specific analysis."""
-    from core.ai_apply import get_apply_history
-
     apply_store = _get_apply_store()
     try:
         raw_records = get_apply_history(
@@ -325,8 +313,6 @@ def expand_aliases(
     keyword_id: str = Path(..., pattern=_SAFE_ANALYSIS_ID_PATTERN),
     req: KeywordAliasExpandRequest | None = None,
 ):
-    from core.keywords_alias_expand import expand_keyword_aliases
-
     req = req or KeywordAliasExpandRequest()
     config = load_app_config()
     reporting_source = _get_reporting_source()
@@ -336,7 +322,7 @@ def expand_aliases(
     try:
         result = expand_keyword_aliases(
             keyword_id=keyword_id,
-            keyword_source=keyword_source,
+            keyword_source=cast(KeywordLookupSource, keyword_source),
             reporting_source=reporting_source,
             llm=llm,  # type: ignore[arg-type]
             max_aliases=req.max_aliases,
@@ -370,14 +356,8 @@ def list_alias_suggestions(
     limit: int = Query(50, ge=1, le=200),
 ):
     """List alias suggestions, optionally filtered by keyword or status."""
-    from adapters.ai_alias_suggestions_postgres import PostgresAiAliasSuggestionStore
-
-    dsn = os.getenv("POSTGRES_DSN")
-    if not dsn:
-        raise HTTPException(
-            status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
-            detail="Alias suggestions require POSTGRES_DSN",
-        )
+    # Shared DSN check in api/deps.py
+    dsn = require_postgres_dsn(detail="Alias suggestions require POSTGRES_DSN")
 
     store = PostgresAiAliasSuggestionStore(dsn)
     try:
@@ -410,14 +390,8 @@ def list_alias_suggestions(
     summary="Approve alias suggestions (moves to keyword_aliases)",
 )
 def approve_alias_suggestion(suggestion_id: str = Path(...)):
-    from adapters.ai_alias_suggestions_postgres import PostgresAiAliasSuggestionStore
-
-    dsn = os.getenv("POSTGRES_DSN")
-    if not dsn:
-        raise HTTPException(
-            status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
-            detail="Alias suggestions require POSTGRES_DSN",
-        )
+    # Shared DSN check in api/deps.py
+    dsn = require_postgres_dsn(detail="Alias suggestions require POSTGRES_DSN")
 
     store = PostgresAiAliasSuggestionStore(dsn)
     try:
@@ -431,14 +405,8 @@ def approve_alias_suggestion(suggestion_id: str = Path(...)):
     summary="Reject alias suggestions",
 )
 def reject_alias_suggestion(suggestion_id: str = Path(...)):
-    from adapters.ai_alias_suggestions_postgres import PostgresAiAliasSuggestionStore
-
-    dsn = os.getenv("POSTGRES_DSN")
-    if not dsn:
-        raise HTTPException(
-            status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
-            detail="Alias suggestions require POSTGRES_DSN",
-        )
+    # Shared DSN check in api/deps.py
+    dsn = require_postgres_dsn(detail="Alias suggestions require POSTGRES_DSN")
 
     store = PostgresAiAliasSuggestionStore(dsn)
     try:
@@ -461,20 +429,16 @@ def reject_alias_suggestion(suggestion_id: str = Path(...)):
     ),
 )
 def generate_deep_insights(req: DeepInsightRequest):
-    from adapters.deep_insights_postgres import PostgresDeepInsightsStore
-
     config = load_app_config()
     reporting_source = _get_reporting_source()
     llm = OllamaLlm(config)
     store = None
 
-    dsn = os.getenv("POSTGRES_DSN")
+    dsn = get_postgres_dsn()
     if dsn:
         store = PostgresDeepInsightsStore(dsn)
 
     try:
-        from core.deep_insights import generate_deep_insights, store_deep_insights_run
-
         filters_dict = {
             "date_from": req.date_from,
             "date_to": req.date_to,
@@ -482,7 +446,7 @@ def generate_deep_insights(req: DeepInsightRequest):
             "role": req.role,
         }
 
-        result = generate_deep_insights(
+        result = _generate_deep_insights(
             reporting_source=reporting_source,
             llm=llm,  # type: ignore[arg-type]
             insight_types=[t.value for t in req.insight_types],
@@ -521,14 +485,8 @@ def list_deep_insights_runs(
     limit: int = Query(50, ge=1, le=200),
     insight_type_filter: str | None = Query(None),
 ):
-    from adapters.deep_insights_postgres import PostgresDeepInsightsStore
-
-    dsn = os.getenv("POSTGRES_DSN")
-    if not dsn:
-        raise HTTPException(
-            status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
-            detail="Deep insights require POSTGRES_DSN",
-        )
+    # Shared DSN check in api/deps.py
+    dsn = require_postgres_dsn(detail="Deep insights require POSTGRES_DSN")
 
     store = PostgresDeepInsightsStore(dsn)
     try:
@@ -542,14 +500,8 @@ def list_deep_insights_runs(
     summary="Get a specific deep insights run with all insights",
 )
 def get_deep_insights_run(run_id: str = Path(...)):
-    from adapters.deep_insights_postgres import PostgresDeepInsightsStore
-
-    dsn = os.getenv("POSTGRES_DSN")
-    if not dsn:
-        raise HTTPException(
-            status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
-            detail="Deep insights require POSTGRES_DSN",
-        )
+    # Shared DSN check in api/deps.py
+    dsn = require_postgres_dsn(detail="Deep insights require POSTGRES_DSN")
 
     store = PostgresDeepInsightsStore(dsn)
     try:

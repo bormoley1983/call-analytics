@@ -3,7 +3,8 @@ from types import SimpleNamespace
 
 from api import runner
 from api.schemas import ProcessRequest, SyncRequest
-from core import pipeline, reports, rules, transcription
+from core import pipeline, reports
+from domain import rules
 from domain import config
 
 
@@ -17,10 +18,6 @@ def test_aggregate_report_exists():
 
 def test_sha12_exists():
     assert hasattr(rules, "sha12")
-
-
-def test_transcribe_exists():
-    assert hasattr(transcription, "transcribe")
 
 
 def test_appconfig_exists():
@@ -77,7 +74,7 @@ def test_pipeline_run_syncs_even_when_snapshot_reports_disabled(monkeypatch):
     monkeypatch.setattr(
         pipeline,
         "discover_and_filter_files",
-        lambda config, storage: [Path("call.wav")],
+        lambda config, storage, days=None: [Path("call.wav")],
     )
     monkeypatch.setattr(
         pipeline, "categorize_files", lambda all_files, config, storage: ([], [])
@@ -110,7 +107,7 @@ def test_pipeline_run_does_not_generate_snapshots_during_process(monkeypatch):
     monkeypatch.setattr(
         pipeline,
         "discover_and_filter_files",
-        lambda config, storage: [Path("call.wav")],
+        lambda config, storage, days=None: [Path("call.wav")],
     )
     monkeypatch.setattr(
         pipeline, "categorize_files", lambda all_files, config, storage: ([], [])
@@ -143,7 +140,7 @@ def test_run_export_snapshots_once_uses_persisted_reporting_source(monkeypatch):
     monkeypatch.setenv("SPAM_PROBABILITY_THRESHOLD", "0.75")
     monkeypatch.setattr(runner, "_build_reporting_source", lambda: FakeSource())
 
-    def _fake_export_snapshot_reports(*, output_dir, source, spam_threshold):
+    def _fake_export_snapshot_reports(*, output_dir, source, spam_threshold, renderer):
         captured["output_dir"] = output_dir
         captured["source_name"] = source.source_name
         captured["spam_threshold"] = spam_threshold
@@ -207,7 +204,7 @@ def test_run_process_once_includes_keywords_refresh(monkeypatch):
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-        def run(self):
+        def run(self, days=None):
             return None
 
     monkeypatch.setattr(
@@ -219,6 +216,7 @@ def test_run_process_once_includes_keywords_refresh(monkeypatch):
     )
     monkeypatch.setattr(runner, "PostgresStorage", lambda dsn: FakeStorage())
     monkeypatch.setattr(runner, "Pipeline", FakePipeline)
+    monkeypatch.setattr(runner, "build_stt_adapter", lambda config: object())
     monkeypatch.setattr(runner, "OllamaLlm", lambda config: object())
     monkeypatch.setattr(runner, "FfmpegAudio", lambda: object())
     monkeypatch.setattr(runner, "AsteriskPbx", lambda: object())
@@ -259,7 +257,7 @@ def test_run_process_once_keeps_success_when_keywords_refresh_fails(monkeypatch)
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-        def run(self):
+        def run(self, days=None):
             return None
 
     monkeypatch.setattr(
@@ -271,6 +269,7 @@ def test_run_process_once_keeps_success_when_keywords_refresh_fails(monkeypatch)
     )
     monkeypatch.setattr(runner, "PostgresStorage", lambda dsn: FakeStorage())
     monkeypatch.setattr(runner, "Pipeline", FakePipeline)
+    monkeypatch.setattr(runner, "build_stt_adapter", lambda config: object())
     monkeypatch.setattr(runner, "OllamaLlm", lambda config: object())
     monkeypatch.setattr(runner, "FfmpegAudio", lambda: object())
     monkeypatch.setattr(runner, "AsteriskPbx", lambda: object())
@@ -308,7 +307,7 @@ def test_run_process_once_skips_missing_keyword_yaml(monkeypatch):
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-        def run(self):
+        def run(self, days=None):
             return None
 
     monkeypatch.setattr(
@@ -320,6 +319,7 @@ def test_run_process_once_skips_missing_keyword_yaml(monkeypatch):
     )
     monkeypatch.setattr(runner, "PostgresStorage", lambda dsn: FakeStorage())
     monkeypatch.setattr(runner, "Pipeline", FakePipeline)
+    monkeypatch.setattr(runner, "build_stt_adapter", lambda config: object())
     monkeypatch.setattr(runner, "OllamaLlm", lambda config: object())
     monkeypatch.setattr(runner, "FfmpegAudio", lambda: object())
     monkeypatch.setattr(runner, "AsteriskPbx", lambda: object())
@@ -361,7 +361,7 @@ def test_run_process_once_materializes_existing_postgres_keywords_when_yaml_miss
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-        def run(self):
+        def run(self, days=None):
             return None
 
     monkeypatch.setattr(
@@ -373,6 +373,7 @@ def test_run_process_once_materializes_existing_postgres_keywords_when_yaml_miss
     )
     monkeypatch.setattr(runner, "PostgresStorage", lambda dsn: FakeStorage())
     monkeypatch.setattr(runner, "Pipeline", FakePipeline)
+    monkeypatch.setattr(runner, "build_stt_adapter", lambda config: object())
     monkeypatch.setattr(runner, "OllamaLlm", lambda config: object())
     monkeypatch.setattr(runner, "FfmpegAudio", lambda: object())
     monkeypatch.setattr(runner, "AsteriskPbx", lambda: object())
@@ -416,11 +417,13 @@ def test_auto_keyword_ai_analysis_enabled_uses_analysis_env(monkeypatch):
 def test_run_keyword_ai_analysis_once_skips_empty_catalog(monkeypatch):
     captured = {}
 
-    def _fake_impl(trigger, *, skip_if_empty=False):
+    def _fake_factory(trigger, *, skip_if_empty=False):
         captured["trigger"] = trigger
         captured["skip_if_empty"] = skip_if_empty
 
-    monkeypatch.setattr(runner, "_run_keyword_ai_analysis_once_impl", _fake_impl)
+    monkeypatch.setattr(
+        runner, "_run_keyword_ai_analysis_factory", _fake_factory
+    )
 
     assert runner._run_keyword_ai_analysis_once("process") is None
     assert captured == {"trigger": "process", "skip_if_empty": True}

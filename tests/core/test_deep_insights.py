@@ -151,6 +151,9 @@ def test_store_deep_insights_run():
         def add_insights(self, run_id, insights):
             self.insights_list.extend(insights)
 
+        def get_run(self, run_id):
+            return None
+
     store = FakeStore()
     run_data = {
         "run_id": "test-run-1",
@@ -186,6 +189,9 @@ def test_store_deep_insights_run_with_dict_filters():
 
         def add_insights(self, run_id, insights):
             pass
+
+        def get_run(self, run_id):
+            return None
 
     store = FakeStore()
     run_data = {"run_id": "test-run-2", "insights": [], "max_insights": 5}

@@ -1,9 +1,9 @@
 import logging
-import os
 
 from fastapi import APIRouter, HTTPException, status
 
 from adapters.keywords_postgres import PostgresKeywordSource
+from adapters.llm_ollama import OllamaLlm
 from adapters.reporting_postgres import PostgresReportingSource
 from api.schemas import (
     KeywordGenerationBootstrapRequest,
@@ -12,7 +12,8 @@ from api.schemas import (
     KeywordGenerationPublishRequest,
     KeywordGenerationRequest,
 )
-from core.keywords_ai_runtime import run_keyword_ai_analysis_once
+from api.deps import keyword_ai_analysis_factory, require_postgres_dsn
+from domain.config import get_spam_probability_threshold
 from core.keywords_enrich import enrich_keyword_candidates
 from core.keywords_generate import (
     generate_keyword_candidates,
@@ -25,30 +26,18 @@ from domain.reporting import ReportFilters
 router = APIRouter(prefix="/keywords/generation", tags=["keywords-generation"])
 logger = logging.getLogger(__name__)
 
+_run_keyword_ai_analysis_once = keyword_ai_analysis_factory()
+
 
 def _get_postgres_keyword_source() -> PostgresKeywordSource:
-    dsn = os.getenv("POSTGRES_DSN")
-    if not dsn:
-        logger.warning(
-            "Keyword generation endpoint called without POSTGRES_DSN in process environment"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
-            detail="Keyword generation requires POSTGRES_DSN",
-        )
+    # Shared DSN check in api/deps.py
+    dsn = require_postgres_dsn(detail="Keyword generation requires POSTGRES_DSN")
     return PostgresKeywordSource(dsn)
 
 
 def _get_postgres_reporting_source() -> PostgresReportingSource:
-    dsn = os.getenv("POSTGRES_DSN")
-    if not dsn:
-        logger.warning(
-            "Keyword generation endpoint called without POSTGRES_DSN in process environment"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
-            detail="Keyword generation requires POSTGRES_DSN",
-        )
+    # Shared DSN check in api/deps.py
+    dsn = require_postgres_dsn(detail="Keyword generation requires POSTGRES_DSN")
     return PostgresReportingSource(dsn)
 
 
@@ -64,6 +53,101 @@ def _build_filters(req: KeywordGenerationRequest) -> ReportFilters:
         spam_only=req.spam_only,
         effective_only=req.effective_only,
     )
+
+
+def _run_generation_pipeline(
+    req: KeywordGenerationBootstrapRequest,
+    *,
+    reporting_source: PostgresReportingSource,
+    keyword_source: PostgresKeywordSource,
+    ai_trigger: str = "keywords-pipeline",
+) -> dict[str, object]:
+    """Shared generate → (enrich) → publish → (materialize) → (AI analyze) flow.
+
+    Used by both `bootstrap_keywords` and `pipeline_keywords` — previously the
+    whole sequence was copy-pasted between the two handlers.
+    """
+    filters = _build_filters(req)
+    generated = generate_keyword_candidates(
+        reporting_source=reporting_source,
+        keyword_source=keyword_source,
+        filters=filters,
+        include_summary=req.include_summary,
+        include_key_questions=req.include_key_questions,
+        include_objections=req.include_objections,
+        min_token_length=req.min_token_length,
+        max_ngram_words=req.max_ngram_words,
+        min_support_calls=req.min_support_calls,
+        min_total_matches=req.min_total_matches,
+        max_candidates=req.max_candidates,
+        exclude_existing_terms=req.exclude_existing_terms,
+        spam_threshold=get_spam_probability_threshold(),
+    )
+
+    # Optional enrichment step
+    enrichment_result = None
+    if req.enrich_before_publish and generated.get("candidates"):
+        enrichment_result = _run_enrichment(
+            candidates=generated["candidates"],
+            max_aliases_per_candidate=req.max_aliases_per_candidate or 3,
+        )
+        enriched_raw = enrichment_result.get("enriched_candidates", [])
+        publish_payload = [
+            {
+                "phrase": c.get("phrase"),
+                "keyword_id": c.get("suggested_keyword_id"),
+                "label": c.get("suggested_label") or c.get("phrase"),
+                "match_fields": c.get("suggested_match_fields"),
+            }
+            for c in enriched_raw
+        ]
+    else:
+        publish_payload = [
+            {
+                "phrase": item["phrase"],
+                "keyword_id": item.get("suggested_keyword_id"),
+                "label": item.get("suggested_label"),
+                "match_fields": item.get("suggested_match_fields"),
+            }
+            for item in generated.get("candidates", [])
+        ]
+
+    publish_result = publish_generated_keywords(
+        keyword_source=keyword_source,
+        candidates=publish_payload,
+        default_category=req.default_category,
+        default_match_fields=req.default_match_fields,
+        default_is_active=req.default_is_active,
+    )
+
+    response: dict[str, object] = {
+        "filters": filters.as_dict(),
+        "generation": generated,
+        "enrichment": enrichment_result,
+        "publish": publish_result,
+        "materialized": False,
+        "keyword_ai_analysis": None,
+    }
+
+    has_changes = (
+        publish_result.get("created", 0) + publish_result.get("updated", 0)
+    ) > 0
+    if req.materialize_after_publish and has_changes:
+        response["materialize"] = materialize_call_keywords(
+            reporting_source=reporting_source,
+            keyword_source=keyword_source,
+            keyword_store=keyword_source,
+            state_store=keyword_source,
+        )
+        response["materialized"] = True
+
+    if req.run_ai_analysis_after_publish and has_changes:
+        response["keyword_ai_analysis"] = _run_keyword_ai_analysis_once(
+            ai_trigger,
+            skip_if_empty=True,
+        )
+
+    return response
 
 
 @router.post(
@@ -106,7 +190,7 @@ def generate_candidates(req: KeywordGenerationRequest):
             min_total_matches=req.min_total_matches,
             max_candidates=req.max_candidates,
             exclude_existing_terms=req.exclude_existing_terms,
-            spam_threshold=float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7")),
+            spam_threshold=get_spam_probability_threshold(),
         )
         data["filters"] = _build_filters(req).as_dict()
         return data
@@ -204,79 +288,16 @@ def publish_candidates(req: KeywordGenerationPublishRequest):
 def bootstrap_keywords(
     req: KeywordGenerationBootstrapRequest,
 ) -> dict[str, object]:
+    # Shared pipeline implementation (generate → enrich → publish → materialize → AI analyze)
     reporting_source = _get_postgres_reporting_source()
     keyword_source = _get_postgres_keyword_source()
     try:
-        filters = _build_filters(req)
-        generated = generate_keyword_candidates(
+        return _run_generation_pipeline(
+            req,
             reporting_source=reporting_source,
             keyword_source=keyword_source,
-            filters=filters,
-            include_summary=req.include_summary,
-            include_key_questions=req.include_key_questions,
-            include_objections=req.include_objections,
-            min_token_length=req.min_token_length,
-            max_ngram_words=req.max_ngram_words,
-            min_support_calls=req.min_support_calls,
-            min_total_matches=req.min_total_matches,
-            max_candidates=req.max_candidates,
-            exclude_existing_terms=req.exclude_existing_terms,
-            spam_threshold=float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7")),
+            ai_trigger="keywords-bootstrap",
         )
-
-        publish_candidates_payload = [
-            {
-                "phrase": item["phrase"],
-                "keyword_id": item.get("suggested_keyword_id"),
-                "label": item.get("suggested_label"),
-                "match_fields": item.get("suggested_match_fields"),
-            }
-            for item in generated.get("candidates", [])
-        ]
-
-        publish_result = publish_generated_keywords(
-            keyword_source=keyword_source,
-            candidates=publish_candidates_payload,
-            default_category=req.default_category,
-            default_match_fields=req.default_match_fields,
-            default_is_active=req.default_is_active,
-        )
-
-        response: dict[str, object] = {
-            "filters": filters.as_dict(),
-            "generation": generated,
-            "publish": publish_result,
-            "materialized": False,
-            "keyword_ai_analysis": None,
-        }
-
-        has_changes = (
-            publish_result.get("created", 0) + publish_result.get("updated", 0)
-        ) > 0
-        if req.materialize_after_publish and has_changes:
-            response["materialize"] = materialize_call_keywords(
-                reporting_source=reporting_source,
-                keyword_source=keyword_source,
-                keyword_store=keyword_source,
-                state_store=keyword_source,
-            )
-            response["materialized"] = True
-
-        if req.run_ai_analysis_after_publish and has_changes:
-            response["keyword_ai_analysis"] = run_keyword_ai_analysis_once(
-                "keywords-bootstrap",
-                skip_if_empty=True,
-            )
-
-        # Run enrichment if requested
-        if req.enrich_before_publish and generated.get("candidates"):
-            enrich_result = _run_enrichment(
-                candidates=generated["candidates"],
-                max_aliases_per_candidate=req.max_aliases_per_candidate,
-            )
-            response["enrichment"] = enrich_result
-
-        return response
     finally:
         reporting_source.close()
         keyword_source.close()
@@ -290,8 +311,6 @@ def _run_enrichment(
     max_aliases_per_candidate: int | None = None,
 ) -> dict:
     """Run LLM enrichment on candidates."""
-    from adapters.llm_ollama import OllamaLlm
-
     config = load_app_config()
     llm = OllamaLlm(config)
     return enrich_keyword_candidates(
@@ -350,91 +369,15 @@ def enrich_candidates(req: KeywordGenerationEnrichRequest):
     },
 )
 def pipeline_keywords(req: KeywordGenerationPipelineRequest):
+    # Shared pipeline implementation (generate → enrich → publish → materialize → AI analyze)
     reporting_source = _get_postgres_reporting_source()
     keyword_source = _get_postgres_keyword_source()
     try:
-        filters = _build_filters(req)
-        generated = generate_keyword_candidates(
+        return _run_generation_pipeline(
+            req,
             reporting_source=reporting_source,
             keyword_source=keyword_source,
-            filters=filters,
-            include_summary=req.include_summary,
-            include_key_questions=req.include_key_questions,
-            include_objections=req.include_objections,
-            min_token_length=req.min_token_length,
-            max_ngram_words=req.max_ngram_words,
-            min_support_calls=req.min_support_calls,
-            min_total_matches=req.min_total_matches,
-            max_candidates=req.max_candidates,
-            exclude_existing_terms=req.exclude_existing_terms,
-            spam_threshold=float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7")),
         )
-
-        # Optional enrichment step
-        enrichment_result = None
-        if req.enrich_before_publish and generated.get("candidates"):
-            enrichment_result = _run_enrichment(
-                candidates=generated["candidates"],
-                max_aliases_per_candidate=req.max_aliases_per_candidate or 3,
-            )
-            # Use enriched candidates for publishing
-            enriched_raw = enrichment_result.get("enriched_candidates", [])
-            publish_payload = [
-                {
-                    "phrase": c.get("phrase"),
-                    "keyword_id": c.get("suggested_keyword_id"),
-                    "label": c.get("suggested_label") or c.get("phrase"),
-                    "match_fields": c.get("suggested_match_fields"),
-                }
-                for c in enriched_raw
-            ]
-        else:
-            publish_payload = [
-                {
-                    "phrase": item["phrase"],
-                    "keyword_id": item.get("suggested_keyword_id"),
-                    "label": item.get("suggested_label"),
-                    "match_fields": item.get("suggested_match_fields"),
-                }
-                for item in generated.get("candidates", [])
-            ]
-
-        publish_result = publish_generated_keywords(
-            keyword_source=keyword_source,
-            candidates=publish_payload,
-            default_category=req.default_category,
-            default_match_fields=req.default_match_fields,
-            default_is_active=req.default_is_active,
-        )
-
-        response: dict[str, object] = {
-            "filters": filters.as_dict(),
-            "generation": generated,
-            "enrichment": enrichment_result,
-            "publish": publish_result,
-            "materialized": False,
-            "keyword_ai_analysis": None,
-        }
-
-        has_changes = (
-            publish_result.get("created", 0) + publish_result.get("updated", 0)
-        ) > 0
-        if req.materialize_after_publish and has_changes:
-            response["materialize"] = materialize_call_keywords(
-                reporting_source=reporting_source,
-                keyword_source=keyword_source,
-                keyword_store=keyword_source,
-                state_store=keyword_source,
-            )
-            response["materialized"] = True
-
-        if req.run_ai_analysis_after_publish and has_changes:
-            response["keyword_ai_analysis"] = run_keyword_ai_analysis_once(
-                "keywords-pipeline",
-                skip_if_empty=True,
-            )
-
-        return response
     finally:
         reporting_source.close()
         keyword_source.close()

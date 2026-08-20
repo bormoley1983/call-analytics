@@ -1,5 +1,4 @@
 import logging
-import os
 import re
 from typing import Annotated, Any
 
@@ -9,41 +8,38 @@ from adapters.keywords_postgres import PostgresKeywordSource
 from adapters.keywords_yaml import YamlKeywordSource
 from adapters.reporting_postgres import PostgresReportingSource
 from api.schemas import KeywordSyncRequest, KeywordUpsertRequest
-from core.keywords_ai_runtime import run_keyword_ai_analysis_once
+from api.deps import (
+    get_postgres_dsn,
+    keyword_ai_analysis_factory,
+    keyword_source_factory,
+    require_postgres_dsn,
+)
 from core.keywords_materialize import materialize_call_keywords
 from core.keywords_refresh import refresh_keywords_data
 from core.keywords_service import list_keywords
 from core.keywords_sync import sync_keywords_to_postgres
-from domain.config import KEYWORDS_CONFIG
+from domain.config import get_keywords_config
 from domain.keywords import KeywordDefinition
 
 router = APIRouter(prefix="/keywords", tags=["keywords"])
 logger = logging.getLogger(__name__)
 
+_run_keyword_ai_analysis_once = keyword_ai_analysis_factory()
+
 _SAFE_ID = re.compile(r"^[\w\-]+$")
 _SAFE_ID_PATTERN = r"^[\w\-]+$"
 
-
-def _get_keyword_source():
-    dsn = os.getenv("POSTGRES_DSN")
-    if dsn:
-        return PostgresKeywordSource(dsn)
-    source = YamlKeywordSource(KEYWORDS_CONFIG, strict=True)
-    try:
-        list(source.list_keywords())
-    except (FileNotFoundError, ValueError) as exc:
-        source.close()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
-    return source
+# Driver selection lives in api/deps.py (single source of truth).
+_get_keyword_source = keyword_source_factory()
 
 
 def _get_yaml_keyword_source(*, strict: bool = False) -> YamlKeywordSource:
-    return YamlKeywordSource(KEYWORDS_CONFIG, strict=strict)
+    return YamlKeywordSource(get_keywords_config(), strict=strict)
 
 
 def _append_keyword_ai_analysis(result: dict[str, Any], *, trigger: str) -> dict[str, Any]:
     try:
-        keyword_ai_analysis = run_keyword_ai_analysis_once(trigger)
+        keyword_ai_analysis = _run_keyword_ai_analysis_once(trigger)
     except Exception as exc:
         logger.exception("AI keyword analysis failed after %s", trigger)
         result["keyword_ai_analysis_error"] = str(exc)
@@ -54,24 +50,14 @@ def _append_keyword_ai_analysis(result: dict[str, Any], *, trigger: str) -> dict
 
 
 def _get_writable_keyword_source() -> PostgresKeywordSource:
-    dsn = os.getenv("POSTGRES_DSN")
-    if not dsn:
-        logger.warning("Keyword write endpoint called without POSTGRES_DSN in process environment")
-        raise HTTPException(
-            status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
-            detail="Keyword catalog is read-only without POSTGRES_DSN",
-        )
+    # Shared DSN check in api/deps.py
+    dsn = require_postgres_dsn(detail="Keyword catalog is read-only without POSTGRES_DSN")
     return PostgresKeywordSource(dsn)
 
 
 def _get_postgres_reporting_source() -> PostgresReportingSource:
-    dsn = os.getenv("POSTGRES_DSN")
-    if not dsn:
-        logger.warning("Keyword materialization endpoint called without POSTGRES_DSN in process environment")
-        raise HTTPException(
-            status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
-            detail="Keyword materialization requires POSTGRES_DSN",
-        )
+    # Shared DSN check in api/deps.py
+    dsn = require_postgres_dsn(detail="Keyword materialization requires POSTGRES_DSN")
     return PostgresReportingSource(dsn)
 
 

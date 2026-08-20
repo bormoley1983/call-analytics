@@ -8,6 +8,24 @@ _jobs: dict[str, JobResponse] = {}
 _lock = RLock()
 _ACTIVE_JOB_STATUSES = {JobStatus.pending, JobStatus.running}
 
+# E3: cap the in-memory job history so a long-running process does not grow
+# unbounded. Oldest finished jobs are evicted first; active jobs are never
+# evicted while under the cap.
+_MAX_JOBS = 500
+
+
+def _evict_finished_locked() -> None:
+    """Evict oldest finished jobs when over the cap (caller holds _lock)."""
+    if len(_jobs) <= _MAX_JOBS:
+        return
+    finished = sorted(
+        (j for j in _jobs.values() if j.status not in _ACTIVE_JOB_STATUSES),
+        key=lambda j: j.created_at,
+    )
+    overflow = len(_jobs) - _MAX_JOBS
+    for job in finished[:overflow]:
+        _jobs.pop(job.job_id, None)
+
 
 def _create_job_locked(type: str) -> JobResponse:
     job = JobResponse(
@@ -17,6 +35,7 @@ def _create_job_locked(type: str) -> JobResponse:
         created_at=datetime.now(timezone.utc),
     )
     _jobs[job.job_id] = job
+    _evict_finished_locked()
     return job
 
 

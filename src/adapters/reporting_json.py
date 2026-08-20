@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,8 +13,6 @@ def _parse_date(date_str: Any) -> datetime | None:
     """Parse YYYYMMDD string (PBX date format) into a datetime."""
     if not date_str:
         return None
-    from datetime import timezone
-
     try:
         dt = datetime.strptime(str(date_str), "%Y%m%d").replace(tzinfo=timezone.utc)
         return dt

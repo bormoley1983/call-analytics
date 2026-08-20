@@ -14,6 +14,12 @@ class KeywordSource(Protocol):
     def close(self) -> None: ...
 
 
+class KeywordLookupSource(KeywordSource, Protocol):
+    """KeywordSource that also supports single-keyword lookup by ID."""
+
+    def get_keyword(self, keyword_id: str) -> KeywordDefinition | None: ...
+
+
 class KeywordCatalogStore(Protocol):
     def list_keywords(self) -> Iterable[KeywordDefinition]: ...
     def upsert_keyword(self, keyword: KeywordDefinition) -> KeywordDefinition: ...
@@ -29,5 +35,7 @@ class MaterializationStateStore(Protocol):
     def mark_materialization_completed(self, processed_calls: int, matched_calls: int, stored_rows: int) -> None: ...
 
 
-class RefreshableKeywordStore(KeywordSource, KeywordCatalogStore, KeywordMatchStore, MaterializationStateStore, Protocol):
+class RefreshableKeywordStore(KeywordLookupSource, KeywordCatalogStore, KeywordMatchStore, MaterializationStateStore, Protocol):
+    """Full keyword store: lookup + catalog CRUD + match materialization."""
+
     pass

@@ -38,6 +38,12 @@ class FakeKeywordSource:
         self.items[keyword.keyword_id] = keyword
         return keyword
 
+    def delete_keyword(self, keyword_id: str) -> bool:
+        if keyword_id in self.items:
+            del self.items[keyword_id]
+            return True
+        return False
+
     def close(self):
         return None
 

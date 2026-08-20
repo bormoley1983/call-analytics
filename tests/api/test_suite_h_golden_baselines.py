@@ -1,5 +1,5 @@
 """
-Suite H: Golden Baseline Regression Tests (DEVPLAN_ONLINE_TESTS_TBD_20_03_2026.md)
+Suite H: Golden Baseline Regression Tests
 
 Validates that report endpoint responses match stored golden baselines.
 This catches structural regressions in report payloads.

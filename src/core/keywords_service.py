@@ -2,37 +2,21 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
+from core.report_filters import include_record as _include_record  # re-export
+from core.report_filters import normalize_text as _normalize  # re-export
+from core.report_filters import record_texts as _record_texts  # re-export
 from domain.keywords import KeywordDefinition
 from domain.reporting import ReportCallRecord, ReportFilters
 from ports.keywords import KeywordSource
-from ports.reporting import ReportingSource
+from ports.reporting import ReportingSource, SqlReportingSource
 
 logger = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _normalize(text: str) -> str:
-    return text.casefold().strip()
-
-
-def _record_texts(
-    record: ReportCallRecord, match_fields: list[str]
-) -> dict[str, list[str]]:
-    selected = set(match_fields)
-    return {
-        "summary": [record.summary] if "summary" in selected and record.summary else [],
-        "key_questions": [item for item in record.key_questions if item]
-        if "key_questions" in selected
-        else [],
-        "objections": [item for item in record.objections if item]
-        if "objections" in selected
-        else [],
-    }
 
 
 def _match_keyword(
@@ -60,16 +44,6 @@ def _match_keyword(
                         }
                     )
     return matches
-
-
-def _include_record(
-    record: ReportCallRecord, filters: ReportFilters, spam_threshold: float
-) -> bool:
-    if not filters.matches_record(record):
-        return False
-    if filters.spam_only and record.spam_probability < spam_threshold:
-        return False
-    return not (filters.effective_only and not record.effective_call)
 
 
 def list_keywords(keyword_source: KeywordSource) -> dict[str, Any]:
@@ -106,7 +80,7 @@ def build_keywords_report(
         if keyword.is_active and keyword.terms
     ]
 
-    if hasattr(reporting_source, "build_keywords_report_data"):
+    if isinstance(reporting_source, SqlReportingSource):
         return _build_keywords_report_sql(
             reporting_source=reporting_source,
             keyword_source=keyword_source,
@@ -131,7 +105,7 @@ def build_keywords_report(
 def _build_keywords_report_iterative(
     reporting_source: ReportingSource,
     keyword_source: KeywordSource,
-    keywords: list,
+    keywords: list[KeywordDefinition],
     filters: ReportFilters,
     spam_threshold: float,
     sort_by: str,
@@ -196,14 +170,19 @@ def _build_keywords_report_iterative(
 def _build_keywords_report_sql(
     reporting_source: ReportingSource,
     keyword_source: KeywordSource,
-    keywords: list,
+    keywords: list[KeywordDefinition],
     filters: ReportFilters,
     spam_threshold: float,
     sort_by: str,
     order: str,
 ) -> dict[str, Any]:
     logger.info("Starting keywords report (SQL): source=%s keywords=%d", reporting_source.source_name, len(keywords))
-    raw_data = reporting_source.build_keywords_report_data(  # type: ignore[attr-defined]
+    if not isinstance(reporting_source, SqlReportingSource):
+        raise TypeError(
+            "SQL keywords report requires a source implementing "
+            "SqlReportingSource (build_keywords_report_data)"
+        )
+    raw_data = reporting_source.build_keywords_report_data(
         keywords=keywords,
         filters=filters,
         spam_threshold=spam_threshold,
@@ -224,7 +203,8 @@ def _build_keywords_report_sql(
             "outcomes": {},
         }
 
-    for row in raw_data:
+    for raw_row in raw_data:
+        row = cast(dict[str, Any], raw_row)
         kid = row["keyword_id"]
         bucket = buckets.get(kid)
         if bucket is None:

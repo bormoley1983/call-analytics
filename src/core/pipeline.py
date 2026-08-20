@@ -1,5 +1,4 @@
 import logging
-import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -8,26 +7,27 @@ from typing import Any
 
 from tqdm import tqdm
 
-from adapters.storage_postgres import PostgresStorage, parse_call_datetime
 from core.planner import categorize_files, discover_and_filter_files
-from core.rules import ensure_analysis_schema, sha12
-from core.stt_factory import build_stt_adapter
+from domain.rules import ensure_analysis_schema, sha12
 from core.stt_service import SttService
 from core.transcript_fingerprint import transcript_text_sha256
 from core.utils import sha256_file
+from domain.call_datetime import parse_call_datetime
 from domain.config import AppConfig
 from domain.stt import SttRequest
 from ports.audio import AudioPort
 from ports.llm import LlmPort
 from ports.pbx import PbxPort
-from ports.storage import StoragePort
+from ports.storage import PostgresSyncStorage, StoragePort
 from ports.stt import SttProcessorPort
 
 logger = logging.getLogger(__name__)
 
 
 def _progress_enabled() -> bool:
-    return os.getenv("ENABLE_TQDM", "1") == "1" and sys.stderr.isatty()
+    from domain.config import get_enable_tqdm
+
+    return get_enable_tqdm() and sys.stderr.isatty()
 
 
 class Pipeline:
@@ -39,6 +39,7 @@ class Pipeline:
         llm: LlmPort,
         pbx: PbxPort,
         stt: SttProcessorPort | None = None,
+        secondary_storage: PostgresSyncStorage | None = None,
     ):
         self.config = config
         self.storage = storage
@@ -47,14 +48,24 @@ class Pipeline:
         self.pbx = pbx
         self._stt = stt
         self._stt_service: SttService | None = None
+        # Optional secondary (Postgres) target for syncing results when the
+        # primary storage is a non-Postgres adapter. Constructed by the edge
+        # (runner/CLI) so core never imports concrete adapters.
+        self._secondary_storage = secondary_storage
 
     def _get_stt_service(self) -> SttService:
         if self._stt_service is None:
-            processor = self._stt or build_stt_adapter(self.config)
-            self._stt_service = SttService(processor, self.config)
+            # Layering guardrail: core must not import adapters, so the STT
+            # adapter is always provided by the composition root (cli/runner).
+            if self._stt is None:
+                raise RuntimeError(
+                    "Pipeline requires an SttProcessorPort; pass stt=... "
+                    "(build it with adapters.stt_factory.build_stt_adapter at the edge)"
+                )
+            self._stt_service = SttService(self._stt, self.config)
         return self._stt_service
 
-    def run(self) -> None:
+    def run(self, days: str | None = None) -> None:
         started_at = time.perf_counter()
         logger.info(
             "Pipeline starting: whisper=%s(%s/%s) ollama=%s workers=%d limit=%d",
@@ -65,7 +76,7 @@ class Pipeline:
             self.config.analysis_workers,
             self.config.process_limit,
         )
-        all_files = discover_and_filter_files(self.config, self.storage)
+        all_files = discover_and_filter_files(self.config, self.storage, days=days)
         if not all_files:
             logger.info("No files to process.")
             return
@@ -501,7 +512,7 @@ class Pipeline:
         # Each worker thread needs a connection from the pool; when workers > max_connections
         # threads block waiting for an available connection, which throttles throughput.
         pg_pool_max = getattr(self.storage, "max_connections", None)
-        if isinstance(self.storage, PostgresStorage) and pg_pool_max is not None:
+        if pg_pool_max is not None:
             if workers > pg_pool_max:
                 logger.warning(
                     "analysis_workers (%d) exceeds PG_POOL_MAX (%d) — workers will block "
@@ -556,14 +567,14 @@ class Pipeline:
         return per_call
 
     def sync_to_postgres(self, per_call: list[dict[str, Any]]) -> None:
-        if isinstance(self.storage, PostgresStorage):
+        # If the primary storage already exposes a Postgres pool (capability
+        # check via max_connections), results are already in Postgres.
+        if getattr(self.storage, "max_connections", None) is not None:
             return
-        dsn = os.getenv("POSTGRES_DSN", "")
-        if not dsn:
+        pg = self._secondary_storage
+        if pg is None:
             return
         logger.info("Syncing processed results to Postgres")
-        pg = PostgresStorage(dsn)
-        pg.ensure_ready()
         try:
             synced = 0
             for item in per_call:

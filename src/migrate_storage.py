@@ -10,8 +10,8 @@ from typing import Any, Literal
 
 import psycopg2
 
-from adapters.storage_postgres import DDL, PostgresStorage
-from domain.config import ANALYSIS, OUT, TRANS
+from adapters.storage_postgres import PostgresStorage
+from domain.config import ensure_env_loaded, get_analysis_dir, get_out, get_trans
 from logging_config import setup_logging
 
 Entity = Literal["transcripts", "analyses"]
@@ -72,13 +72,11 @@ class PostgresBackend:
         self._conn: psycopg2.extensions.connection | None = None
 
     def ensure_ready(self) -> None:
+        # PostgresStorage.ensure_ready() applies pending migrations (schema DDL
+        # lives in src/adapters/migrations/).
         self.pg.ensure_ready()
-        # PostgresStorage already opened one connection; keep it for writes.
         # Open a dedicated read connection for iterating source records.
         self._conn = psycopg2.connect(self.dsn)
-        with self._conn.cursor() as cur:
-            cur.execute(DDL)
-        self._conn.commit()
 
     def close(self) -> None:
         if self._conn:
@@ -184,9 +182,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # JSON backend options
-    parser.add_argument("--json-out-dir", default=str(OUT), help="JSON output root directory")
-    parser.add_argument("--json-transcripts-dir", default=str(TRANS), help="JSON transcripts directory")
-    parser.add_argument("--json-analyses-dir", default=str(ANALYSIS), help="JSON analyses directory")
+    parser.add_argument("--json-out-dir", default=str(get_out()), help="JSON output root directory")
+    parser.add_argument("--json-transcripts-dir", default=str(get_trans()), help="JSON transcripts directory")
+    parser.add_argument("--json-analyses-dir", default=str(get_analysis_dir()), help="JSON analyses directory")
 
     # Postgres backend options
     parser.add_argument("--postgres-dsn", default=None, help="Postgres DSN (or set POSTGRES_DSN)")
@@ -194,6 +192,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    # Load config/.env defaults once at startup (idempotent).
+    ensure_env_loaded()
     setup_logging()
     parser = build_parser()
     args = parser.parse_args()

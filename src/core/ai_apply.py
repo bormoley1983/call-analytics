@@ -2,7 +2,7 @@
 
 This module resolves actions from a persisted analysis, validates them against
 the live keyword catalog, performs the mutations (or previews in dry-run mode),
-and persists the apply record via PostgresAiApplyStore.
+and persists the apply record via an AiApplyStorePort.
 
 Action types supported:
 - keep: no-op, just records approval
@@ -20,13 +20,15 @@ Safety rules:
 from __future__ import annotations
 
 import logging
-import os
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from adapters.ai_apply_postgres import PostgresAiApplyStore
-from api.schemas import AIApplyAction, AIMutation, AISkippedAction
+from domain.ai_apply import AIApplyAction, AIMutation, AISkippedAction
 from domain.keywords import KeywordDefinition
+from ports.ai_apply import AiApplyStorePort
+from ports.keywords import RefreshableKeywordStore
+from ports.reporting import ReportingSource
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +264,7 @@ def _validate_and_build_mutations(
 
 def _execute_mutations_on_keyword_source(
     mutations: list[AIMutation],
-    keyword_source: Any,
+    keyword_source: RefreshableKeywordStore,
     dry_run: bool,
 ) -> None:
     """Execute mutations on the keyword source.
@@ -287,7 +289,9 @@ def _execute_mutations_on_keyword_source(
             _do_deactivate(keyword_source, kw_id)
 
 
-def _do_merge(keyword_source: Any, keyword_id: str, detail: dict[str, Any]) -> None:
+def _do_merge(
+    keyword_source: RefreshableKeywordStore, keyword_id: str, detail: dict[str, Any]
+) -> None:
     """Merge source keyword into target: add source terms to target, delete source."""
     target_id = detail["target_keyword_id"]
     suggested_terms = detail.get("suggested_terms", [])
@@ -337,7 +341,9 @@ def _do_merge(keyword_source: Any, keyword_id: str, detail: dict[str, Any]) -> N
     logger.info("Merged keyword %s into %s", keyword_id, target_id)
 
 
-def _do_rename(keyword_source: Any, keyword_id: str, detail: dict[str, Any]) -> None:
+def _do_rename(
+    keyword_source: RefreshableKeywordStore, keyword_id: str, detail: dict[str, Any]
+) -> None:
     """Rename a keyword's label and optionally update terms."""
     kw = keyword_source.get_keyword(keyword_id)
     if kw is None:
@@ -360,7 +366,7 @@ def _do_rename(keyword_source: Any, keyword_id: str, detail: dict[str, Any]) -> 
 
 
 def _do_expand_aliases(
-    keyword_source: Any, keyword_id: str, detail: dict[str, Any]
+    keyword_source: RefreshableKeywordStore, keyword_id: str, detail: dict[str, Any]
 ) -> None:
     """Add new alias terms to an existing keyword."""
     kw = keyword_source.get_keyword(keyword_id)
@@ -393,7 +399,9 @@ def _do_expand_aliases(
     )
 
 
-def _do_deactivate(keyword_source: Any, keyword_id: str) -> None:
+def _do_deactivate(
+    keyword_source: RefreshableKeywordStore, keyword_id: str
+) -> None:
     """Deactivate a keyword (set is_active=False)."""
     kw = keyword_source.get_keyword(keyword_id)
     if kw is None:
@@ -422,11 +430,12 @@ def apply_approved_actions(
     analysis_id: str,
     analysis: dict[str, Any],
     request_actions: list[AIApplyAction],
-    keyword_source: Any,
-    apply_store: PostgresAiApplyStore,
+    keyword_source: RefreshableKeywordStore,
+    apply_store: AiApplyStorePort,
     dry_run: bool = False,
     refresh_after: bool = True,
     applied_by: str | None = None,
+    reporting_source_factory: Callable[[], ReportingSource | None] | None = None,
 ) -> dict[str, Any]:
     """Orchestrate the full apply flow.
 
@@ -466,11 +475,11 @@ def apply_approved_actions(
     keyword_refreshed = False
 
     # Step 4: Refresh materialization (only in live mode)
-    if not dry_run and refresh_after:
+    if not dry_run and refresh_after and reporting_source_factory is not None:
         try:
             from core.keywords_materialize import materialize_call_keywords
 
-            reporting_source = _get_reporting_source_for_refresh()
+            reporting_source = reporting_source_factory()
             if reporting_source is not None:
                 materialize_call_keywords(
                     reporting_source=reporting_source,
@@ -494,18 +503,17 @@ def apply_approved_actions(
         )
 
     actions_skipped_dicts = [
-        {
-            "action": (
-                sa.action.model_dump()  # type: ignore[attr-defined]
-                if hasattr(sa.action, "model_dump")
-                else sa.action
-            ),
-            "reason": sa.reason,
-        }
-        for sa in skipped_actions
+        {"action": sa.action, "reason": sa.reason} for sa in skipped_actions
     ]
 
-    mutations_dicts = [m.model_dump() for m in mutations]
+    mutations_dicts = [
+        {
+            "action_type": m.action_type,
+            "keyword_id": m.keyword_id,
+            "detail": m.detail,
+        }
+        for m in mutations
+    ]
 
     apply_id = apply_store.apply_actions(
         analysis_id=analysis_id,
@@ -531,19 +539,9 @@ def apply_approved_actions(
     }
 
 
-def _get_reporting_source_for_refresh() -> Any | None:
-    """Get reporting source for keyword materialization refresh."""
-    dsn = os.getenv("POSTGRES_DSN")
-    if dsn:
-        from adapters.reporting_postgres import PostgresReportingSource
-
-        return PostgresReportingSource(dsn)
-    return None
-
-
 def get_apply_history(
     analysis_id: str,
-    apply_store: PostgresAiApplyStore,
+    apply_store: AiApplyStorePort,
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]]:

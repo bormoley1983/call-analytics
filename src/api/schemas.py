@@ -32,6 +32,35 @@ def _normalize_days(value: str | None) -> str | None:
     return normalized
 
 
+# Shared validator bodies — previously copy-pasted as classmethods on every
+# schema that needed them (normalize_optional_text ×3, normalize_text_list ×7).
+def _normalize_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _normalize_required_text(value: Any) -> str:
+    normalized = str(value).strip()
+    if not normalized:
+        raise ValueError("Value must not be empty")
+    return normalized
+
+
+def _normalize_text_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise TypeError("Expected a list")
+    result: list[str] = []
+    for item in value:
+        normalized = str(item).strip()
+        if normalized:
+            result.append(normalized)
+    return result
+
+
 class ProcessRequest(BaseModel):
     days: str | None = Field(
         default=None,
@@ -150,10 +179,7 @@ class ReportFiltersQuery(BaseModel):
     )
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = value.strip()
-        return normalized or None
+        return _normalize_optional_text(value)
 
 
 class KeywordUpsertRequest(BaseModel):
@@ -185,25 +211,13 @@ class KeywordUpsertRequest(BaseModel):
 
     @field_validator("keyword_id", "label", "category", mode="before")
     @classmethod
-    def normalize_required_text(cls, value: str) -> str:
-        normalized = str(value).strip()
-        if not normalized:
-            raise ValueError("Value must not be empty")
-        return normalized
+    def normalize_required_text(cls, value: Any) -> str:
+        return _normalize_required_text(value)
 
     @field_validator("terms", "match_fields", mode="before")
     @classmethod
     def normalize_text_list(cls, value: Any) -> list[str]:
-        if value is None:
-            return []
-        if not isinstance(value, list):
-            raise TypeError("Expected a list")
-        result: list[str] = []
-        for item in value:
-            normalized = str(item).strip()
-            if normalized:
-                result.append(normalized)
-        return result
+        return _normalize_text_list(value)
 
 
 class KeywordSyncRequest(BaseModel):
@@ -309,10 +323,7 @@ class KeywordGenerationRequest(BaseModel):
     )
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = value.strip()
-        return normalized or None
+        return _normalize_optional_text(value)
 
     @model_validator(mode="after")
     def ensure_at_least_one_source_field(self) -> KeywordGenerationRequest:
@@ -632,7 +643,11 @@ class CustomersSortQuery(BaseModel):
 
 
 class AIApplyAction(BaseModel):
-    """Single action to apply, referenced by group/action index from analysis."""
+    """Single action to apply, referenced by group/action index from analysis.
+
+    Mirrors :class:`domain.ai_apply.AIApplyAction`; the route converts this
+    Pydantic model into the domain dataclass before calling core.
+    """
 
     group_index: int | None = Field(
         default=None,
@@ -694,6 +709,24 @@ class AIApplyAction(BaseModel):
                 "AIApplyAction requires either (group_index + action_index) or keyword_id"
             )
         return self
+
+    def to_domain(self) -> "DomainAIApplyAction":
+        """Convert to the domain dataclass used by core orchestration."""
+        from domain.ai_apply import AIApplyAction as DomainAIApplyAction
+
+        return DomainAIApplyAction(
+            group_index=self.group_index,
+            action_index=self.action_index,
+            keyword_id=self.keyword_id,
+        )
+
+
+# Re-exported for callers that still import the domain types from schemas.
+from domain.ai_apply import (  # noqa: E402
+    AIApplyAction as DomainAIApplyAction,
+    AIMutation as DomainAIMutation,
+    AISkippedAction as DomainAISkippedAction,
+)
 
 
 class AIApplyRequest(BaseModel):
@@ -1071,10 +1104,7 @@ class DeepInsightRequest(BaseModel):
     @field_validator("manager_id", "role", mode="before")
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = value.strip()
-        return normalized or None
+        return _normalize_optional_text(value)
 
 
 class DeepInsightEntry(BaseModel):

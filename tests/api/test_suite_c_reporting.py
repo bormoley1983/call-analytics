@@ -1,5 +1,5 @@
 """
-Suite C: Reporting Integration Tests (DEVPLAN_ONLINE_TESTS_TBD_20_03_2026.md)
+Suite C: Reporting Integration Tests
 
 Tests report endpoints against seeded Postgres data:
 1. /reports/overall - aggregates match seeded data

@@ -1,4 +1,3 @@
-import os
 import re
 from typing import Annotated, Any
 
@@ -6,9 +5,14 @@ from fastapi import APIRouter, Depends, HTTPException, Path
 
 from adapters.keyword_ai_analysis_postgres import PostgresKeywordAiAnalysisStore
 from adapters.keywords_postgres import PostgresKeywordSource
-from adapters.keywords_yaml import YamlKeywordSource
-from adapters.reporting_json import JsonReportingSource
+from adapters.postgres_single_connection import SingleConnectionPostgresAdapter
 from adapters.reporting_postgres import PostgresReportingSource
+from api.deps import (
+    get_postgres_dsn,
+    keyword_source_factory,
+    reporting_source_factory,
+    require_postgres_dsn,
+)
 from api.schemas import (
     CustomersSortQuery,
     KeywordCallsSortQuery,
@@ -25,7 +29,7 @@ from core.reporting_service import (
     build_managers_report,
     build_overall_report,
 )
-from domain.config import ANALYSIS, KEYWORDS_CONFIG
+from domain.config import get_spam_probability_threshold
 from domain.reporting import ReportFilters
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -53,28 +57,13 @@ def _build_filters(query: ReportFiltersQuery) -> ReportFilters:
     )
 
 
-def _get_reporting_source():
-    dsn = os.getenv("POSTGRES_DSN")
-    if dsn:
-        return PostgresReportingSource(dsn)
-    return JsonReportingSource(ANALYSIS)
-
-
-def _get_keyword_source():
-    dsn = os.getenv("POSTGRES_DSN")
-    if dsn:
-        return PostgresKeywordSource(dsn)
-    source = YamlKeywordSource(KEYWORDS_CONFIG, strict=True)
-    try:
-        list(source.list_keywords())
-    except (FileNotFoundError, ValueError) as exc:
-        source.close()
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return source
+# Driver selection lives in api/deps.py (single source of truth).
+_get_reporting_source = reporting_source_factory()
+_get_keyword_source = keyword_source_factory()
 
 
 def _get_latest_keyword_ai_analysis() -> dict[str, Any] | None:
-    dsn = os.getenv("POSTGRES_DSN")
+    dsn = get_postgres_dsn()
     if not dsn:
         return None
     store = PostgresKeywordAiAnalysisStore(dsn)
@@ -143,10 +132,9 @@ def _attach_keyword_ai_analysis(payload: dict[str, Any], *, keyword_id: str | No
 
 
 def _get_materialized_keyword_source() -> PostgresKeywordSource:
-    source = _get_keyword_source()
-    if not isinstance(source, PostgresKeywordSource):
-        source.close()
-        raise HTTPException(status_code=405, detail="Keyword drill-down requires POSTGRES_DSN")
+    # Shared DSN check in api/deps.py
+    dsn = require_postgres_dsn(detail="Keyword drill-down requires POSTGRES_DSN")
+    source = PostgresKeywordSource(dsn)
     if not source.is_materialized():
         source.close()
         raise HTTPException(status_code=409, detail="Keyword matches are not materialized yet")
@@ -155,92 +143,93 @@ def _get_materialized_keyword_source() -> PostgresKeywordSource:
 
 """Freshness metadata helpers"""
 
+class FreshnessQuery(SingleConnectionPostgresAdapter):
+    """Read-only freshness timestamp queries.
+
+    Module-level adapter instead of a per-call class definition: the class
+    body was re-executed on every report request, and the stale-detection
+    comparison is done here on raw datetimes so callers never round-trip
+    through ISO strings.
+    """
+
+    def _initialize_connection(self, conn):
+        pass  # No DDL needed for reads
+
+    def query_freshness(self) -> dict[str, Any]:
+        def _query(conn):
+            with conn.cursor() as cur:
+                results: dict[str, Any] = {}
+
+                # Latest processed (analyzed) timestamp
+                cur.execute(
+                    "SELECT MAX(analyzed_at) FROM calls WHERE analyzed_at IS NOT NULL"
+                )
+                row = cur.fetchone()
+                processed_dt = row[0] if row and row[0] else None
+                results["latest_processed_at"] = processed_dt.isoformat() if processed_dt else None
+
+                # Latest materialization timestamp
+                cur.execute(
+                    "SELECT last_materialized_at FROM keyword_materialization_state WHERE state_key = 'current' LIMIT 1"
+                )
+                row = cur.fetchone()
+                materialized_dt = row[0] if row and row[0] else None
+                results["latest_materialized_at"] = materialized_dt.isoformat() if materialized_dt else None
+
+                # Latest keyword AI analysis timestamp
+                cur.execute(
+                    "SELECT created_at FROM keyword_ai_analyses ORDER BY created_at DESC LIMIT 1"
+                )
+                row = cur.fetchone()
+                analysis_dt = row[0] if row and row[0] else None
+                results["latest_keyword_ai_analysis_at"] = analysis_dt.isoformat() if analysis_dt else None
+
+                # Keep the raw datetimes for stale detection — comparing
+                # ISO strings (or re-parsing them) is fragile across tz-aware/naive mixes.
+                results["_latest_processed_dt"] = processed_dt
+                results["_latest_materialized_dt"] = materialized_dt
+                results["_latest_keyword_ai_analysis_at"] = analysis_dt
+                return results
+
+        return self._run_read(_query)
+
+
 def _get_freshness_metadata() -> dict[str, Any] | None:
     """Query freshness timestamps from Postgres.
-    
+
     Returns None when POSTGRES_DSN is not configured (JSON mode).
     Otherwise returns a dict with:
     - latest_processed_at: most recent analyzed_at timestamp
-    - latest_materialized_at: most recent materialization timestamp  
+    - latest_materialized_at: most recent materialization timestamp
     - latest_keyword_ai_analysis_at: most recent AI analysis timestamp
     - keyword_ai_analysis_status: 'available' | 'missing' | 'stale'
       - 'available': AI analysis exists and is up-to-date with latest data
       - 'missing': No AI analysis has been run yet
       - 'stale': AI analysis exists but is older than the latest processed/materialized data
     """
-    dsn = os.getenv("POSTGRES_DSN")
+    dsn = get_postgres_dsn()
     if not dsn:
         return None
-
-    from adapters.postgres_single_connection import SingleConnectionPostgresAdapter
-    
-    class FreshnessQuery(SingleConnectionPostgresAdapter):
-        def _initialize_connection(self, conn):
-            pass  # No DDL needed for reads
-        
-        def query_freshness(self) -> dict[str, Any]:
-            def _query(conn):
-                with conn.cursor() as cur:
-                    results = {}
-                    
-                    # Latest processed (analyzed) timestamp
-                    cur.execute(
-                        "SELECT MAX(analyzed_at) FROM calls WHERE analyzed_at IS NOT NULL"
-                    )
-                    row = cur.fetchone()
-                    results["latest_processed_at"] = row[0].isoformat() if row and row[0] else None
-                    
-                    # Latest materialization timestamp
-                    cur.execute(
-                        "SELECT last_materialized_at FROM keyword_materialization_state WHERE state_key = 'current' LIMIT 1"
-                    )
-                    row = cur.fetchone()
-                    results["latest_materialized_at"] = row[0].isoformat() if row and row[0] else None
-                    
-                    # Latest keyword AI analysis timestamp
-                    cur.execute(
-                        "SELECT created_at FROM keyword_ai_analyses ORDER BY created_at DESC LIMIT 1"
-                    )
-                    row = cur.fetchone()
-                    results["latest_keyword_ai_analysis_at"] = row[0].isoformat() if row and row[0] else None
-                    results["_latest_keyword_ai_analysis_at"] = row[0] if row and row[0] else None  # Raw datetime for comparison
-                    
-                    return results
-            
-            return self._run_read(_query)
 
     adapter = FreshnessQuery(dsn)
     try:
         data = adapter.query_freshness()
-        
-        # Determine AI analysis status with stale detection
+
+        # Determine AI analysis status with stale detection (raw datetime compare)
         latest_analysis = data.pop("_latest_keyword_ai_analysis_at")  # Remove internal field
-        
+
         if not latest_analysis:
             # No AI analysis has ever been run
             data["keyword_ai_analysis_status"] = "missing"
         else:
-            # Check if analysis is stale compared to latest processing or materialization
-            latest_processed = data.get("latest_processed_at")
-            latest_materialized = data.get("latest_materialized_at")
-            
-            # Parse ISO strings back to datetime for comparison
-            from datetime import datetime
-            analysis_dt = latest_analysis
-            
             is_stale = False
-            if latest_processed:
-                processed_dt = datetime.fromisoformat(latest_processed)
-                if processed_dt > analysis_dt:
+            for key in ("_latest_processed_dt", "_latest_materialized_dt"):
+                other = data.get(key)
+                if other and other > latest_analysis:
                     is_stale = True
-            
-            if latest_materialized:
-                materialized_dt = datetime.fromisoformat(latest_materialized)
-                if materialized_dt > analysis_dt:
-                    is_stale = True
-            
+
             data["keyword_ai_analysis_status"] = "stale" if is_stale else "available"
-            
+
         return data
     finally:
         adapter.close()
@@ -275,7 +264,7 @@ def _attach_freshness_metadata(payload: dict[str, Any]) -> dict[str, Any]:
 def overall_report(query: Annotated[ReportFiltersQuery, Depends()]):
     filters = _build_filters(query)
     source = _get_reporting_source()
-    spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
+    spam_threshold = get_spam_probability_threshold()
     try:
         data = build_overall_report(source, filters, spam_threshold)
     finally:
@@ -305,7 +294,7 @@ def managers_report(
 ):
     filters = _build_filters(query)
     source = _get_reporting_source()
-    spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
+    spam_threshold = get_spam_probability_threshold()
     try:
         data = build_managers_report(source, filters, spam_threshold, sorting.sort_by.value, sorting.order.value)
     finally:
@@ -335,7 +324,7 @@ def customers_report(
 ):
     filters = _build_filters(query)
     source = _get_reporting_source()
-    spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
+    spam_threshold = get_spam_probability_threshold()
     try:
         data = build_customers_report(source, filters, spam_threshold, sorting.sort_by.value, sorting.order.value)
     finally:
@@ -380,7 +369,7 @@ def customer_report(
 
     filters = _build_filters(query)
     source = _get_reporting_source()
-    spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
+    spam_threshold = get_spam_probability_threshold()
     try:
         data = build_customer_followup_report(source, filters, spam_threshold, normalized_phone)
     finally:
@@ -439,7 +428,7 @@ def manager_report(
         effective_only=filters.effective_only,
     )
     source = _get_reporting_source()
-    spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
+    spam_threshold = get_spam_probability_threshold()
     try:
         data = build_managers_report(source, filters, spam_threshold)
     finally:
@@ -476,7 +465,7 @@ def keywords_report(
     filters = _build_filters(query)
     reporting_source = _get_reporting_source()
     keyword_source = _get_keyword_source()
-    spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
+    spam_threshold = get_spam_probability_threshold()
     try:
         if (
             isinstance(reporting_source, PostgresReportingSource)
@@ -542,7 +531,7 @@ def keyword_detail_report(
     filters = _build_filters(query)
     reporting_source = _get_reporting_source()
     keyword_source = _get_keyword_source()
-    spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
+    spam_threshold = get_spam_probability_threshold()
     try:
         if (
             isinstance(reporting_source, PostgresReportingSource)
@@ -621,7 +610,7 @@ def keyword_calls_report(
     if source.get_keyword(keyword_id) is None:
         source.close()
         raise HTTPException(status_code=404, detail="Keyword report not found")
-    spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
+    spam_threshold = get_spam_probability_threshold()
     try:
         data = source.build_keyword_calls_report(
             keyword_id=keyword_id,
@@ -690,7 +679,7 @@ def keyword_trend_report(
     if source.get_keyword(keyword_id) is None:
         source.close()
         raise HTTPException(status_code=404, detail="Keyword report not found")
-    spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
+    spam_threshold = get_spam_probability_threshold()
     try:
         data = source.build_keyword_trend_report(keyword_id=keyword_id, filters=filters, spam_threshold=spam_threshold)
     finally:
@@ -755,7 +744,7 @@ def keyword_managers_report(
     if source.get_keyword(keyword_id) is None:
         source.close()
         raise HTTPException(status_code=404, detail="Keyword report not found")
-    spam_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
+    spam_threshold = get_spam_probability_threshold()
     try:
         data = source.build_keyword_managers_report(
             keyword_id=keyword_id,

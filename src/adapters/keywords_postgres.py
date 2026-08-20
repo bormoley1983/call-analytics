@@ -4,6 +4,7 @@ import json
 from collections.abc import Iterable
 from datetime import datetime, timezone
 
+from adapters.analysis_filters import build_analysis_filter_clauses
 from adapters.postgres_single_connection import SingleConnectionPostgresAdapter
 from adapters.storage_postgres import _jsonb
 from domain.keywords import DEFAULT_MATCH_FIELDS, KeywordDefinition
@@ -95,6 +96,8 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
     def upsert_keyword(self, keyword: KeywordDefinition) -> KeywordDefinition:
         def _upsert(conn):
             with conn.cursor() as cur:
+                # RETURNING the exact columns we need (no `*`) so the write
+                # round-trip also yields the stored row — no follow-up SELECT.
                 cur.execute(
                     """
                     INSERT INTO keywords (keyword_id, label, category, match_fields, is_active)
@@ -104,6 +107,7 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
                         category = EXCLUDED.category,
                         match_fields = EXCLUDED.match_fields,
                         is_active = EXCLUDED.is_active
+                    RETURNING keyword_id, label, category, match_fields, is_active
                     """,
                     (
                         keyword.keyword_id,
@@ -116,6 +120,7 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
                         keyword.is_active,
                     ),
                 )
+                row = cur.fetchone()
                 # Atomic alias replacement: use DELETE + INSERT within the same
                 # transaction (the cursor's transaction guarantees atomicity).
                 cur.execute(
@@ -132,11 +137,24 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
                             """,
                             (keyword.keyword_id, term),
                         )
+                # Fetch terms back within the same transaction.
+                cur.execute(
+                    "SELECT phrase FROM keyword_aliases WHERE keyword_id = %s ORDER BY phrase",
+                    (keyword.keyword_id,),
+                )
+                terms = [r[0] for r in cur.fetchall()]
 
-        self._run_retryable_write(_upsert)
-        created = self.get_keyword(keyword.keyword_id)
-        assert created is not None
-        return created
+            assert row is not None, "upsert_keyword RETURNING produced no row"
+            return KeywordDefinition(
+                keyword_id=row[0],
+                label=row[1],
+                category=row[2] or "general",
+                match_fields=list(row[3] or DEFAULT_MATCH_FIELDS),
+                is_active=bool(row[4]),
+                terms=terms,
+            )
+
+        return self._run_retryable_write(_upsert)
 
     def delete_keyword(self, keyword_id: str) -> bool:
         def _delete(conn):
@@ -244,35 +262,10 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
         sort_by: str = "matched_calls",
         order: str = "desc",
     ) -> dict:
-        clauses = ["1=1"]
-        params: list[object] = []
-
-        if filters.date_from:
-            clauses.append("a.call_datetime::date >= %s")
-            params.append(filters.date_from)
-        if filters.date_to:
-            clauses.append("a.call_datetime::date <= %s")
-            params.append(filters.date_to)
-        if filters.manager_id:
-            clauses.append("a.manager_id = %s")
-            params.append(filters.manager_id)
-        if filters.role:
-            clauses.append("a.role = %s")
-            params.append(filters.role)
-        if filters.direction:
-            clauses.append("a.direction = %s")
-            params.append(filters.direction)
-        if filters.intent:
-            clauses.append("a.intent = %s")
-            params.append(filters.intent)
-        if filters.outcome:
-            clauses.append("a.outcome = %s")
-            params.append(filters.outcome)
-        if filters.spam_only:
-            clauses.append("COALESCE(a.spam_probability, 0) >= %s")
-            params.append(spam_threshold)
-        if filters.effective_only:
-            clauses.append("COALESCE(a.effective_call, FALSE) = TRUE")
+        # Shared filter builder (aliased join on `a`).
+        clauses, params = build_analysis_filter_clauses(
+            filters, spam_threshold, table_prefix="a."
+        )
 
         query = f"""
             SELECT
@@ -403,36 +396,8 @@ class PostgresKeywordSource(SingleConnectionPostgresAdapter):
     def _analysis_filter_clauses(
         self, filters: ReportFilters, spam_threshold: float
     ) -> tuple[list[str], list[object]]:
-        clauses = ["1=1"]
-        params: list[object] = []
-
-        if filters.date_from:
-            clauses.append("a.call_datetime::date >= %s")
-            params.append(filters.date_from)
-        if filters.date_to:
-            clauses.append("a.call_datetime::date <= %s")
-            params.append(filters.date_to)
-        if filters.manager_id:
-            clauses.append("a.manager_id = %s")
-            params.append(filters.manager_id)
-        if filters.role:
-            clauses.append("a.role = %s")
-            params.append(filters.role)
-        if filters.direction:
-            clauses.append("a.direction = %s")
-            params.append(filters.direction)
-        if filters.intent:
-            clauses.append("a.intent = %s")
-            params.append(filters.intent)
-        if filters.outcome:
-            clauses.append("a.outcome = %s")
-            params.append(filters.outcome)
-        if filters.spam_only:
-            clauses.append("COALESCE(a.spam_probability, 0) >= %s")
-            params.append(spam_threshold)
-        if filters.effective_only:
-            clauses.append("COALESCE(a.effective_call, FALSE) = TRUE")
-        return clauses, params
+        # Delegate to the shared filter builder (aliased join on `a`).
+        return build_analysis_filter_clauses(filters, spam_threshold, table_prefix="a.")
 
     def build_keyword_calls_report(
         self,

@@ -4,22 +4,13 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from core.report_filters import include_record as _include_record  # re-export
 from domain.reporting import ReportCallRecord, ReportFilters
-from ports.reporting import ReportingSource
+from ports.reporting import ReportingSource, SqlReportingSource
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _include_record(
-    record: ReportCallRecord, filters: ReportFilters, spam_threshold: float
-) -> bool:
-    if not filters.matches_record(record):
-        return False
-    if filters.spam_only and record.spam_probability < spam_threshold:
-        return False
-    return not (filters.effective_only and not record.effective_call)
 
 
 def build_overall_report(
@@ -27,8 +18,8 @@ def build_overall_report(
     filters: ReportFilters,
     spam_threshold: float,
 ) -> dict[str, Any]:
-    if hasattr(source, "build_overall_report_data"):
-        data = source.build_overall_report_data(filters, spam_threshold)  # type: ignore[attr-defined]
+    if isinstance(source, SqlReportingSource):
+        data = source.build_overall_report_data(filters, spam_threshold)
         return {
             "generated_at": _utc_now_iso(),
             "data_source": source.source_name,
@@ -126,10 +117,8 @@ def build_managers_report(
     sort_by: str = "total_calls",
     order: str = "desc",
 ) -> dict[str, Any]:
-    if hasattr(source, "build_managers_report_data"):
-        data = source.build_managers_report_data(  # type: ignore[attr-defined]
-            filters, spam_threshold, sort_by, order
-        )
+    if isinstance(source, SqlReportingSource):
+        data = source.build_managers_report_data(filters, spam_threshold, sort_by, order)
         return {
             "generated_at": _utc_now_iso(),
             "data_source": source.source_name,
@@ -344,10 +333,8 @@ def build_customers_report(
     sort_by: str = "total_calls",
     order: str = "desc",
 ) -> dict[str, Any]:
-    if hasattr(source, "build_customers_report_data"):
-        data = source.build_customers_report_data(  # type: ignore[attr-defined]
-            filters, spam_threshold, sort_by, order
-        )
+    if isinstance(source, SqlReportingSource):
+        data = source.build_customers_report_data(filters, spam_threshold, sort_by, order)
         return {
             "generated_at": _utc_now_iso(),
             "data_source": source.source_name,

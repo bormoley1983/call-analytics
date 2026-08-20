@@ -10,10 +10,9 @@ Covers:
 from __future__ import annotations
 
 import copy
-from typing import Any, cast
+from typing import Any
 
-from adapters.ai_apply_postgres import PostgresAiApplyStore
-from api.schemas import AIApplyAction, AIMutation
+from domain.ai_apply import AIApplyAction, AIMutation
 from core.ai_apply import (
     _do_deactivate,
     _do_expand_aliases,
@@ -35,6 +34,8 @@ from domain.keywords import KeywordDefinition
 
 class FakeKeywordSource:
     """In-memory keyword source for testing mutation execution."""
+
+    source_name = "fake"
 
     def __init__(self, items: list[KeywordDefinition]):
         self._store: dict[str, KeywordDefinition] = {
@@ -58,6 +59,12 @@ class FakeKeywordSource:
             return True
         return False
 
+    def replace_call_keyword_matches(self, call_id: str, rows: list[dict[str, Any]]) -> None:
+        pass
+
+    def mark_materialization_completed(self, processed_calls: int, matched_calls: int, stored_rows: int) -> None:
+        pass
+
     def close(self) -> None:
         pass
 
@@ -78,11 +85,11 @@ class FakeApplyStore:
         analysis_id: str,
         applied_by: str | None,
         dry_run: bool,
-        actions_applied: list[dict],
-        actions_skipped: list[dict],
-        mutations: list[dict],
-        keyword_refreshed: bool,
-        follow_up_ran: bool,
+        actions_applied: list[dict[str, Any]],
+        actions_skipped: list[dict[str, Any]],
+        mutations: list[dict[str, Any]],
+        keyword_refreshed: bool = False,
+        follow_up_ran: bool = False,
         error: str | None = None,
     ) -> str:
         import uuid
@@ -612,7 +619,7 @@ def test_apply_dry_run_no_mutations_executed():
         analysis=analysis,
         request_actions=[AIApplyAction(group_index=0, action_index=0)],
         keyword_source=keyword_source,
-        apply_store=cast(PostgresAiApplyStore, apply_store),
+        apply_store=apply_store,
         dry_run=True,
         refresh_after=False,
         applied_by="test_user",
@@ -650,7 +657,7 @@ def test_apply_live_mode_executes_mutations():
         analysis=analysis,
         request_actions=[AIApplyAction(group_index=0, action_index=0)],
         keyword_source=keyword_source,
-        apply_store=cast(PostgresAiApplyStore, apply_store),
+        apply_store=apply_store,
         dry_run=False,
         refresh_after=False,
         applied_by="test_user",
@@ -698,7 +705,7 @@ def test_apply_merge_full_flow():
         analysis=analysis,
         request_actions=[AIApplyAction(group_index=0, action_index=0)],
         keyword_source=keyword_source,
-        apply_store=cast(PostgresAiApplyStore, apply_store),
+        apply_store=apply_store,
         dry_run=False,
         refresh_after=False,
         applied_by="admin",
@@ -730,7 +737,7 @@ def test_apply_keep_action_no_mutation():
         analysis=analysis,
         request_actions=[AIApplyAction(group_index=0, action_index=0)],
         keyword_source=keyword_source,
-        apply_store=cast(PostgresAiApplyStore, apply_store),
+        apply_store=apply_store,
         dry_run=False,
         refresh_after=False,
     )
@@ -755,7 +762,7 @@ def test_apply_skips_missing_keyword():
         analysis=analysis,
         request_actions=[AIApplyAction(group_index=0, action_index=0)],
         keyword_source=keyword_source,
-        apply_store=cast(PostgresAiApplyStore, apply_store),
+        apply_store=apply_store,
         dry_run=False,
         refresh_after=False,
     )
@@ -787,7 +794,7 @@ def test_apply_keyword_id_resolution():
         analysis=analysis,
         request_actions=[AIApplyAction(keyword_id="my_kw")],
         keyword_source=keyword_source,
-        apply_store=cast(PostgresAiApplyStore, apply_store),
+        apply_store=apply_store,
         dry_run=False,
         refresh_after=False,
     )

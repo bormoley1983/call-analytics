@@ -3,7 +3,7 @@ import logging
 import os
 from pathlib import Path
 
-from core.rules import sha12
+from domain.rules import sha12
 from domain.config import AppConfig
 from ports.storage import StoragePort
 
@@ -51,18 +51,23 @@ def discover_all_wav_files(
 
 
 def discover_wav_files_from_specified_dirs(
-    config: AppConfig, stat_cache: dict[Path, os.stat_result]
+    config: AppConfig,
+    stat_cache: dict[Path, os.stat_result],
+    days: str | None = None,
 ) -> list[Path]:
     """
     Discover WAV files from specific date directories.
-    Expects DAYS env var: "2026/01/01,2026/01/02,..."
+    ``days`` is a comma-separated list like "2026/01/01,2026/01/02".
     Returns sorted list of .wav files from those directories.
     """
-    days_env = os.getenv("DAYS", "")
-    if not days_env.strip():
-        logger.debug("DAYS env var not set or empty. Returning empty list.")
+    if days is None:
+        from domain.config import get_days_scope
+
+        days = get_days_scope()
+    if not days.strip():
+        logger.debug("No days specified. Returning empty list.")
         return []
-    day_list = [d.strip().replace("\\", "/") for d in days_env.split(",") if d.strip()]
+    day_list = [d.strip().replace("\\", "/") for d in days.split(",") if d.strip()]
     all_files: list[Path] = []
 
     for d in day_list:
@@ -114,14 +119,27 @@ def filter_unprocessed_files(
     return unprocessed
 
 
-def discover_and_filter_files(config: AppConfig, storage: StoragePort) -> list[Path]:
-    """Discover and filter WAV files based on DAYS env var and processing status."""
-    days_env = os.getenv("DAYS", "").strip()
+def discover_and_filter_files(
+    config: AppConfig,
+    storage: StoragePort,
+    days: str | None = None,
+) -> list[Path]:
+    """Discover and filter WAV files based on the days scope and processing status.
+
+    ``days`` is an explicit comma-separated day scope (e.g. "2026/01/01,2026/01/02").
+    When omitted, falls back to the DAYS environment variable for backward
+    compatibility with direct callers.
+    """
+    if days is None:
+        from domain.config import get_days_scope
+
+        days = get_days_scope()
+    days_scope = (days or "").strip()
     stat_cache: dict[Path, os.stat_result] = {}
 
-    if days_env:
-        logger.info("Using DAYS filter: %s", days_env)
-        all_files = discover_wav_files_from_specified_dirs(config, stat_cache)
+    if days_scope:
+        logger.info("Using DAYS filter: %s", days_scope)
+        all_files = discover_wav_files_from_specified_dirs(config, stat_cache, days_scope)
     else:
         logger.info("No DAYS filter specified, discovering all WAV files recursively")
         all_files = discover_all_wav_files(config, stat_cache)

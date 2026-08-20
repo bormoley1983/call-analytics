@@ -1,5 +1,5 @@
 """
-Suite D: Config and Failure Modes (DEVPLAN_ONLINE_TESTS_TBD_20_03_2026.md)
+Suite D: Config and Failure Modes
 
 Tests failure modes and error handling:
 1. Invalid keyword YAML → admin/reporting endpoints fail loudly

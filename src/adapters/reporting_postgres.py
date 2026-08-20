@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import ClassVar, cast
 
+from adapters.analysis_filters import build_analysis_filter_clauses
 from adapters.postgres_single_connection import (
     RETRYABLE_CONNECTION_ERRORS,
     SingleConnectionPostgresAdapter,
 )
+from domain.keywords import KeywordDefinition
 from domain.reporting import ReportCallRecord, ReportFilters
 
 
@@ -38,36 +40,12 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
         *,
         include_runtime_flags: bool = True,
     ) -> tuple[str, list[object]]:
-        clauses = ["1=1"]
-        params: list[object] = []
-
-        if filters.date_from:
-            clauses.append("call_datetime::date >= %s")
-            params.append(filters.date_from)
-        if filters.date_to:
-            clauses.append("call_datetime::date <= %s")
-            params.append(filters.date_to)
-        if filters.manager_id:
-            clauses.append("manager_id = %s")
-            params.append(filters.manager_id)
-        if filters.role:
-            clauses.append("role = %s")
-            params.append(filters.role)
-        if filters.direction:
-            clauses.append("direction = %s")
-            params.append(filters.direction)
-        if filters.intent:
-            clauses.append("intent = %s")
-            params.append(filters.intent)
-        if filters.outcome:
-            clauses.append("outcome = %s")
-            params.append(filters.outcome)
-        if include_runtime_flags and filters.spam_only:
-            clauses.append("COALESCE(spam_probability, 0.0) >= %s")
-            params.append(spam_threshold)
-        if include_runtime_flags and filters.effective_only:
-            clauses.append("COALESCE(effective_call, false) IS TRUE")
-
+        # Delegate to the shared filter builder (no table prefix here).
+        clauses, params = build_analysis_filter_clauses(
+            filters,
+            spam_threshold,
+            include_runtime_flags=include_runtime_flags,
+        )
         return " AND ".join(clauses), params
 
     def _base_cte_sql(
@@ -625,10 +603,16 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
     def build_keywords_report_data(
         self,
         *,
-        keywords: list,
+        keywords: list[KeywordDefinition],
         filters: ReportFilters,
         spam_threshold: float,
     ) -> list[dict[str, object]]:
+        """Build keyword match stats in SQL.
+
+        Accepts domain ``KeywordDefinition`` objects only — the dual
+        dict/attribute duck-typing (getattr/get fallbacks) was removed;
+        core normalizes at the boundary before calling this.
+        """
         where_clause, params = self._build_where_clauses(
             filters,
             spam_threshold=spam_threshold,
@@ -637,12 +621,10 @@ class PostgresReportingSource(SingleConnectionPostgresAdapter):
 
         keyword_rows: list[tuple[str, list[str], list[str]]] = []
         for kw in keywords:
-            kid = getattr(kw, "keyword_id", None) or kw.get("keyword_id")  # type: ignore[union-attr]
-            terms = getattr(kw, "terms", []) or kw.get("terms", [])  # type: ignore[union-attr]
-            match_fields = getattr(kw, "match_fields", ["summary", "key_questions", "objections"]) or kw.get("match_fields", ["summary", "key_questions", "objections"])  # type: ignore[union-attr]
-            if not terms:
+            if not kw.terms:
                 continue
-            keyword_rows.append((kid, list(terms), list(match_fields)))
+            match_fields = kw.match_fields or ["summary", "key_questions", "objections"]
+            keyword_rows.append((kw.keyword_id, list(kw.terms), list(match_fields)))
 
         if not keyword_rows:
             return []

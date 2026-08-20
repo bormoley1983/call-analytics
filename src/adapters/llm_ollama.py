@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import re
 import threading
 import time
@@ -8,8 +7,8 @@ from typing import Any
 
 import requests
 
-from core.rules import ensure_analysis_schema, truncate_text_for_analysis
 from domain.config import AppConfig
+from domain.rules import ensure_analysis_schema, truncate_text_for_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -21,30 +20,53 @@ class _RateLimiter:
     by limiting concurrent in-flight requests and enforcing a minimum
     interval between requests.
 
-    Configuration (environment variables):
+    Limits are read from the AppConfig passed at construction (which
+    itself reads env vars at load_app_config() time) instead of capturing env
+    vars once at module import time.
+
+    Configuration (environment variables, via AppConfig fields):
         OLLAMA_RATE_LIMIT: maximum concurrent requests (default: 4, 0=disabled)
         OLLAMA_RATE_INTERVAL: minimum seconds between requests (default: 0.5)
     """
 
-    def __init__(self) -> None:
-        self._max_concurrent = _parse_int_env("OLLAMA_RATE_LIMIT", 4)
-        self._interval = float(os.getenv("OLLAMA_RATE_INTERVAL", "0.5"))
+    def __init__(self, config: AppConfig) -> None:
+        # Read limits from the explicit AppConfig object.
+        self._max_concurrent = config.ollama_rate_limit
+        self._interval = config.ollama_rate_interval
         self._active = 0
+        self._last_acquire: float | None = None
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
 
     def acquire(self) -> None:
-        """Block until a slot is available, then acquire it."""
+        """Block until a slot is available, then acquire it.
+
+        The concurrency cap and the minimum interval are evaluated in one loop so
+        that a wake-up cannot race with another thread and let the active count
+        exceed the configured limit.
+        """
         if self._max_concurrent <= 0:
             return  # Rate limiting disabled
 
         with self._condition:
-            while self._active >= self._max_concurrent:
-                self._condition.wait()
+            while True:
+                if self._active >= self._max_concurrent:
+                    self._condition.wait()
+                    continue
+
+                if self._interval > 0 and self._last_acquire is not None:
+                    deficit = self._last_acquire + self._interval - time.monotonic()
+                    if deficit > 0:
+                        self._condition.wait(timeout=deficit)
+                        continue
+
+                break
+
             self._active += 1
+            self._last_acquire = time.monotonic()
 
     def release(self) -> None:
-        """Release a slot and optionally wait before allowing the next request."""
+        """Release a slot (non-blocking — interval is enforced in acquire)."""
         if self._max_concurrent <= 0:
             return
 
@@ -52,26 +74,21 @@ class _RateLimiter:
             self._active -= 1
             self._condition.notify()
 
-        # Enforce minimum interval between requests
-        if self._interval > 0:
-            time.sleep(self._interval)
+
+# One limiter per distinct (rate_limit, rate_interval) pair. Limits
+# come from AppConfig fields, so a config built with different env values
+# gets its own limiter; repeated loads of the same config reuse the cached
+# instance. No import-time or first-use env capture.
+_rate_limiter_cache: dict[tuple[int, float], _RateLimiter] = {}
 
 
-def _parse_int_env(key: str, default: int) -> int:
-    """Parse an environment variable as an integer, falling back to a default."""
-    raw = os.environ.get(key)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        logger.warning(
-            "Invalid %s=%r (not an integer), using default %d", key, raw, default
-        )
-        return default
-
-
-_ollama_rate_limiter = _RateLimiter()
+def _get_rate_limiter(config: AppConfig) -> _RateLimiter:
+    key = (config.ollama_rate_limit, config.ollama_rate_interval)
+    limiter = _rate_limiter_cache.get(key)
+    if limiter is None:
+        limiter = _RateLimiter(config)
+        _rate_limiter_cache[key] = limiter
+    return limiter
 
 # ----------------------------
 # CONSTANTS
@@ -196,8 +213,9 @@ def _ollama_generate(
     if force_json:
         payload["format"] = "json"
 
+    limiter = _get_rate_limiter(config)
     for attempt in range(config.ollama_retries):
-        _ollama_rate_limiter.acquire()
+        limiter.acquire()
         try:
             r = requests.post(
                 f"{config.ollama_url}/api/generate",
@@ -221,7 +239,7 @@ def _ollama_generate(
         except requests.exceptions.RequestException as e:
             last_err = e
         finally:
-            _ollama_rate_limiter.release()
+            limiter.release()
         if attempt < config.ollama_retries - 1:
             wait_time = 2**attempt
             logger.warning(

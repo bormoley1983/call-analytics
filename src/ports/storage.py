@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Protocol
 
 
@@ -13,4 +14,31 @@ class StoragePort(Protocol):
     def mark_analysis_stale_if_text_changed(self, call_id: str, text_sha256: str) -> bool: ...
     def promote_stt_result(self, call_id: str, transcript: dict[str, Any], *, stt_run_id: str, stt_config_hash: str, source_text_sha256: str) -> None: ...
     def ensure_ready(self) -> None: ...
+    def close(self) -> None: ...
+
+
+class PostgresSyncStorage(Protocol):
+    """Structural protocol for storage adapters that support Postgres upserts.
+
+    Used by ``Pipeline.sync_to_postgres`` to narrow the secondary storage
+    target. Only ``PostgresStorage`` implements these methods; JSON/YAML
+    fallback adapters do not.
+    """
+
+    def upsert_call_metadata(
+        self,
+        *,
+        call_id: str,
+        source_file: str | None = None,
+        source_path: str | None = None,
+        call_datetime: datetime | None = None,
+        status: str = "discovered",
+        error_message: str | None = None,
+        mark_synced: bool = False,
+    ) -> None: ...
+
+    def upsert_transcript(self, call_id: str, data: dict[str, Any]) -> None: ...
+
+    def upsert_analysis(self, call_id: str, data: dict[str, Any]) -> None: ...
+
     def close(self) -> None: ...

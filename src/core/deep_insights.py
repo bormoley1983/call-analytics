@@ -5,6 +5,7 @@ import uuid
 from typing import Any
 
 from domain.reporting import ReportFilters
+from ports.deep_insights import DeepInsightsStorePort
 from ports.llm import LlmPort
 from ports.reporting import ReportingSource
 
@@ -192,7 +193,7 @@ def _collect_analysis_records(
 
 
 def store_deep_insights_run(
-    store: Any,
+    store: DeepInsightsStorePort,
     run_data: dict[str, Any],
     *,
     ai_model: str | None = None,

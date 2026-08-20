@@ -83,71 +83,353 @@ def _load_env_defaults() -> None:
         logger.warning("Could not load env defaults from %s: %s", env_path, exc)
 
 
-_load_env_defaults()
+def ensure_env_loaded() -> None:
+    """Idempotent .env overlay; call from entrypoints, never at import.
+
+    Importing ``domain.config`` must have no side effects (no env mutation, no
+    I/O). Entrypoints (``api/app.py`` lifespan, ``cli.py``, ``api/runner.py``,
+    ``migrate_storage.py``, ``stt_compare.py``, ``stt_replay.py``) call this
+    once at startup so that ``config/.env`` defaults are available before the
+    first :func:`load_app_config` / getter call.
+    """
+    global _ENV_LOADED
+    if not _ENV_LOADED:
+        _load_env_defaults()
+        _ENV_LOADED = True
+
+
+_ENV_LOADED = False
+
 
 # ----------------------------
-# Paths
+# Paths (computed at call time, no import-time env capture)
 # ----------------------------
-ROOT = Path(os.getenv("PROJECT_ROOT", Path(__file__).resolve().parents[2]))
-CALLS_RAW = ROOT / "calls_raw"
-OUT = ROOT / "out"
-NORM = OUT / "normalized"
-TRANS = OUT / "transcripts"
-ANALYSIS = OUT / "analysis"
-CONFIG_DIR = ROOT / "config"
-MANAGERS_CONFIG = CONFIG_DIR / "managers.yaml"
-BRANDS_CONFIG = CONFIG_DIR / "brands.yaml"
-ANALYSIS_CONFIG = CONFIG_DIR / "analysis.yaml"
-KEYWORDS_CONFIG = CONFIG_DIR / "keywords.yaml"
+def get_root() -> Path:
+    """Project root. PROJECT_ROOT is process-stable (skipped by the .env
+    overlay), so reading it per call is safe and side-effect free."""
+    return Path(os.getenv("PROJECT_ROOT", Path(__file__).resolve().parents[2]))
+
+
+def get_calls_raw() -> Path:
+    return get_root() / "calls_raw"
+
+
+def get_out() -> Path:
+    return get_root() / "out"
+
+
+def get_norm() -> Path:
+    return get_out() / "normalized"
+
+
+def get_trans() -> Path:
+    return get_out() / "transcripts"
+
+
+def get_analysis_dir() -> Path:
+    return get_out() / "analysis"
+
+
+def get_config_dir() -> Path:
+    return get_root() / "config"
+
+
+def get_managers_config() -> Path:
+    return get_config_dir() / "managers.yaml"
+
+
+def get_brands_config() -> Path:
+    return get_config_dir() / "brands.yaml"
+
+
+def get_analysis_yaml_config() -> Path:
+    return get_config_dir() / "analysis.yaml"
+
+
+def get_keywords_config() -> Path:
+    return get_config_dir() / "keywords.yaml"
 
 
 # ----------------------------
-# Environment Variables
+# Environment Variables (read at call time, not import time)
 # ----------------------------
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:27b")
-OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "32768"))
-OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "0s").strip() or "0s"
-OLLAMA_THINK = os.getenv("OLLAMA_THINK", "0") == "1"
-OLLAMA_GENERATION_TIMEOUT = int(os.getenv("OLLAMA_GENERATION_TIMEOUT", "600"))
-OLLAMA_RETRY_ATTEMPTS = int(os.getenv("OLLAMA_RETRY_ATTEMPTS", "4"))
-OLLAMA_TOKEN_OVERHEAD = int(os.getenv("OLLAMA_TOKEN_OVERHEAD", "3000"))
-
-ANALYSIS_WORKERS = int(os.getenv("ANALYSIS_WORKERS", "1"))
-SPAM_PROBABILITY_THRESHOLD = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
-
-_raw_stt_engine = os.getenv("STT_ENGINE", "faster-whisper").strip().lower()
-_stt_aliases = {
+_STT_ALIASES = {
     "whisper": "faster-whisper",
     "faster_whisper": "faster-whisper",
     "faster-whisper": "faster-whisper",
     "canary": "canary",
 }
-STT_ENGINE = _stt_aliases.get(_raw_stt_engine, _raw_stt_engine)
 
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3-turbo")
-DEVICE = os.getenv("WHISPER_DEVICE", "cuda")
-COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
-WHISPER_BEAM_SIZE = int(os.getenv("WHISPER_BEAM_SIZE", "5"))
-STT_LANGUAGE = os.getenv("STT_LANGUAGE", "auto").strip().lower()
 
-CANARY_MODEL_ID = os.getenv("CANARY_MODEL_ID", "nvidia/canary-1b-v2")
-CANARY_MODEL_REVISION = os.getenv("CANARY_MODEL_REVISION", "unknown")
-CANARY_DEVICE = os.getenv("CANARY_DEVICE", DEVICE)
-CANARY_COMPUTE_TYPE = os.getenv("CANARY_COMPUTE_TYPE", "float16")
-CANARY_BATCH_SIZE = int(os.getenv("CANARY_BATCH_SIZE", "1"))
-CANARY_BEAM_SIZE = int(os.getenv("CANARY_BEAM_SIZE", "1"))
-CANARY_TASK = os.getenv("CANARY_TASK", "asr")
-CANARY_SOURCE_LANG = os.getenv("CANARY_SOURCE_LANG", "auto")
-CANARY_TARGET_LANG = os.getenv("CANARY_TARGET_LANG", "auto")
-CANARY_RETURN_HYPOTHESES = os.getenv("CANARY_RETURN_HYPOTHESES", "1") == "1"
+def _env_str(name: str, default: str) -> str:
+    return os.getenv(name, default)
 
-MIN_BYTES = int(os.getenv("MIN_BYTES", "20000"))
-MIN_SECONDS = float(os.getenv("MIN_SECONDS", "1.0"))
 
-MAX_SEGMENTS_TRANSLATE = int(os.getenv("MAX_SEGMENTS_TRANSLATE", "60"))
-MAX_CHARS_TRANSLATE = int(os.getenv("MAX_CHARS_TRANSLATE", "12000"))
-MAX_CHARS_ANALYZE = int(os.getenv("MAX_CHARS_ANALYZE", "9000"))
+def _env_int(name: str, default: int) -> int:
+    return int(os.getenv(name, str(default)))
+
+
+def _env_float(name: str, default: float) -> float:
+    return float(os.getenv(name, str(default)))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    return os.getenv(name, "1" if default else "0") == "1"
+
+
+def get_ollama_url() -> str:
+    return _env_str("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+
+
+def get_ollama_model() -> str:
+    return _env_str("OLLAMA_MODEL", "qwen3.5:27b")
+
+
+def get_ollama_num_ctx() -> int:
+    return _env_int("OLLAMA_NUM_CTX", 32768)
+
+
+def get_ollama_keep_alive() -> str:
+    return _env_str("OLLAMA_KEEP_ALIVE", "0s").strip() or "0s"
+
+
+def get_ollama_think() -> bool:
+    return os.getenv("OLLAMA_THINK", "0") == "1"
+
+
+def get_ollama_generation_timeout() -> int:
+    return _env_int("OLLAMA_GENERATION_TIMEOUT", 600)
+
+
+def get_ollama_retry_attempts() -> int:
+    return _env_int("OLLAMA_RETRY_ATTEMPTS", 4)
+
+
+def get_ollama_token_overhead() -> int:
+    return _env_int("OLLAMA_TOKEN_OVERHEAD", 3000)
+
+
+def get_analysis_workers() -> int:
+    return _env_int("ANALYSIS_WORKERS", 1)
+
+
+def get_spam_probability_threshold() -> float:
+    return _env_float("SPAM_PROBABILITY_THRESHOLD", 0.7)
+
+
+def get_stt_engine() -> str:
+    raw = os.getenv("STT_ENGINE", "faster-whisper").strip().lower()
+    return _STT_ALIASES.get(raw, raw)
+
+
+def get_whisper_model() -> str:
+    return _env_str("WHISPER_MODEL", "large-v3-turbo")
+
+
+def get_device() -> str:
+    return _env_str("WHISPER_DEVICE", "cuda")
+
+
+def get_compute_type() -> str:
+    return _env_str("WHISPER_COMPUTE_TYPE", "float16")
+
+
+def get_whisper_beam_size() -> int:
+    return _env_int("WHISPER_BEAM_SIZE", 5)
+
+
+def get_stt_language() -> str:
+    return os.getenv("STT_LANGUAGE", "auto").strip().lower()
+
+
+def get_canary_model_id() -> str:
+    return _env_str("CANARY_MODEL_ID", "nvidia/canary-1b-v2")
+
+
+def get_canary_model_revision() -> str:
+    return _env_str("CANARY_MODEL_REVISION", "unknown")
+
+
+def get_canary_device() -> str:
+    return os.getenv("CANARY_DEVICE") or get_device()
+
+
+def get_canary_compute_type() -> str:
+    return _env_str("CANARY_COMPUTE_TYPE", "float16")
+
+
+def get_canary_batch_size() -> int:
+    return _env_int("CANARY_BATCH_SIZE", 1)
+
+
+def get_canary_beam_size() -> int:
+    return _env_int("CANARY_BEAM_SIZE", 1)
+
+
+def get_canary_task() -> str:
+    return _env_str("CANARY_TASK", "asr")
+
+
+def get_canary_source_lang() -> str:
+    return _env_str("CANARY_SOURCE_LANG", "auto")
+
+
+def get_canary_target_lang() -> str:
+    return _env_str("CANARY_TARGET_LANG", "auto")
+
+
+def get_canary_return_hypotheses() -> bool:
+    return os.getenv("CANARY_RETURN_HYPOTHESES", "1") == "1"
+
+
+def get_min_bytes() -> int:
+    return _env_int("MIN_BYTES", 20000)
+
+
+def get_min_seconds() -> float:
+    return _env_float("MIN_SECONDS", 1.0)
+
+
+def get_max_segments_translate() -> int:
+    return _env_int("MAX_SEGMENTS_TRANSLATE", 60)
+
+
+def get_max_chars_translate() -> int:
+    return _env_int("MAX_CHARS_TRANSLATE", 12000)
+
+
+def get_max_chars_analyze() -> int:
+    return _env_int("MAX_CHARS_ANALYZE", 9000)
+
+
+def get_postgres_dsn() -> str | None:
+    """Single sanctioned place that reads POSTGRES_DSN."""
+    return os.getenv("POSTGRES_DSN")
+
+
+def get_days_scope() -> str:
+    """DAYS env var (comma-separated day scope); empty when unset.
+
+    Read lazily so per-run overrides are honored (E8 removed the import-time
+    capture in runner._configure_process_env).
+    """
+    return os.getenv("DAYS", "")
+
+
+def get_enable_tqdm() -> bool:
+    return os.getenv("ENABLE_TQDM", "1") == "1"
+
+
+def get_auto_run_ai_keyword_analysis() -> bool:
+    return os.getenv("AUTO_RUN_AI_KEYWORD_ANALYSIS", "1") != "0"
+
+
+def get_ollama_rate_limit() -> int:
+    """Maximum concurrent Ollama requests (0 disables rate limiting)."""
+    raw = os.environ.get("OLLAMA_RATE_LIMIT")
+    if raw is None:
+        return 4
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid OLLAMA_RATE_LIMIT=%r (not an integer), using default 4", raw
+        )
+        return 4
+
+
+def get_ollama_rate_interval() -> float:
+    """Minimum seconds between Ollama request starts."""
+    return float(os.getenv("OLLAMA_RATE_INTERVAL", "0.5"))
+
+
+def get_pg_pool_min() -> int:
+    raw = os.environ.get("PG_POOL_MIN")
+    if raw is None:
+        return 1
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid PG_POOL_MIN=%r (not an integer), using default 1", raw)
+        return 1
+
+
+def get_pg_pool_max() -> int:
+    raw = os.environ.get("PG_POOL_MAX")
+    if raw is None:
+        return 10
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid PG_POOL_MAX=%r (not an integer), using default 10", raw
+        )
+        return 10
+
+
+def get_postgres_connect_timeout() -> int:
+    """Postgres connect timeout in seconds (minimum 1)."""
+    raw_value = os.getenv("POSTGRES_CONNECT_TIMEOUT", "10").strip()
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        return 10
+
+
+@dataclass(frozen=True)
+class PbxConfig:
+    """Connection settings for the PBX SSH/SFTP downloader.
+
+    Mirrors ``domain.pbx.PbxConfig`` (kept there as the canonical type); this
+    copy lets the sanctioned config layer build it without importing adapters.
+    """
+
+    host: str
+    port: int = 22
+    username: str = "asterisk"
+    password: str | None = None
+    key_path: str | None = None
+    known_hosts_path: str | None = None
+    remote_dir: str = "/var/spool/asterisk/monitor"
+
+
+def get_pbx_ssh_insecure_autoload_enabled() -> bool:
+    """E5: opt-in escape hatch for first-time SSH connections without known_hosts."""
+    return os.getenv("PBX_SSH_INSECURE_AUTOADD", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def get_pbx_config() -> PbxConfig:
+    """Build a :class:`PbxConfig` from environment variables.
+
+    Raises:
+        RuntimeError: if ``PBX_HOST`` is not set (fail fast, clear message).
+    """
+    host = os.getenv("PBX_HOST")
+    if not host:
+        raise RuntimeError(
+            "PBX_HOST environment variable is not set. "
+            "Set it to the PBX server address before running sync."
+        )
+
+    port_raw = os.getenv("PBX_PORT", "22")
+    try:
+        port = int(port_raw)
+    except ValueError:
+        raise RuntimeError(f"Invalid PBX_PORT={port_raw!r} (not an integer)") from None
+
+    return PbxConfig(
+        host=host,
+        port=port,
+        username=os.getenv("PBX_USER", "asterisk"),
+        password=os.getenv("PBX_PASSWORD"),
+        key_path=os.getenv("PBX_KEY_PATH"),
+        known_hosts_path=os.getenv("PBX_KNOWN_HOSTS_PATH"),
+        remote_dir=os.getenv("PBX_REMOTE_DIR", "/var/spool/asterisk/monitor"),
+    )
 
 
 # ----------------------------
@@ -274,6 +556,9 @@ class AppConfig:
     ollama_timeout: int
     ollama_retries: int
     ollama_token_overhead: int
+    # Rate-limiter settings, consumed by adapters.llm_ollama at construction.
+    ollama_rate_limit: int
+    ollama_rate_interval: float
     analysis_workers: int
 
     # Whisper settings
@@ -324,21 +609,23 @@ class AppConfig:
 def load_app_config() -> AppConfig:
     logger.info("Loading configuration")
 
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    get_config_dir().mkdir(parents=True, exist_ok=True)
 
+    # Ollama probe is cached per (url, model) so repeated loads in a long-
+    # lived API process don't re-query the server on every call.
     try:
         detected_context_window = get_ollama_model_context_window()
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
         logger.warning("Could not query Ollama, using default context: %s", e)
         detected_context_window = 4096
 
-    context_window = min(detected_context_window, OLLAMA_NUM_CTX)
+    context_window = min(detected_context_window, get_ollama_num_ctx())
 
     analysis_config = load_analysis_config()
     brand_corrections, whisper_prompt = load_brand_corrections()
-    manager_mapper = ManagerMapper(MANAGERS_CONFIG)
+    manager_mapper = ManagerMapper(get_managers_config())
 
-    stt_engine = STT_ENGINE
+    stt_engine = get_stt_engine()
     if stt_engine not in {"faster-whisper", "canary"}:
         logger.warning(
             "Unsupported STT_ENGINE=%s, falling back to faster-whisper", stt_engine
@@ -352,76 +639,78 @@ def load_app_config() -> AppConfig:
     force_retranscribe = os.getenv("FORCE_RETRANSCRIBE", "0") == "1"
     force_translate_uk = os.getenv("FORCE_TRANSLATE_UK", "0") == "1"
 
-    analysis_workers = int(os.getenv("ANALYSIS_WORKERS", "1"))
-    spam_probability_threshold = float(os.getenv("SPAM_PROBABILITY_THRESHOLD", "0.7"))
+    analysis_workers = get_analysis_workers()
+    spam_probability_threshold = get_spam_probability_threshold()
 
     logger.info(
         "Configuration loaded: model=%s context=%s tokens brand_corrections=%d "
         "managers=%d whisper=%s(%s/%s) limit=%d reanalyze=%s retranscribe=%s "
         "translate_uk=%s detected_ctx=%s keep_alive=%s think=%s "
         "stt_engine=%s canary_model=%s",
-        OLLAMA_MODEL,
+        get_ollama_model(),
         f"{context_window:,}",
         len(brand_corrections),
         len(manager_mapper.sales)
         + len(manager_mapper.management_dev.get("managers", [])),
-        WHISPER_MODEL,
-        DEVICE,
-        COMPUTE_TYPE,
+        get_whisper_model(),
+        get_device(),
+        get_compute_type(),
         process_limit,
         force_reanalyze,
         force_retranscribe,
         force_translate_uk,
         f"{detected_context_window:,}",
-        OLLAMA_KEEP_ALIVE,
-        OLLAMA_THINK,
+        get_ollama_keep_alive(),
+        get_ollama_think(),
         stt_engine,
-        CANARY_MODEL_ID,
+        get_canary_model_id(),
     )
 
     return AppConfig(
-        root=ROOT,
-        calls_raw=CALLS_RAW,
-        out=OUT,
-        norm=NORM,
-        trans=TRANS,
-        analysis=ANALYSIS,
-        config_dir=CONFIG_DIR,
-        ollama_url=OLLAMA_URL,
-        ollama_model=OLLAMA_MODEL,
+        root=get_root(),
+        calls_raw=get_calls_raw(),
+        out=get_out(),
+        norm=get_norm(),
+        trans=get_trans(),
+        analysis=get_analysis_dir(),
+        config_dir=get_config_dir(),
+        ollama_url=get_ollama_url(),
+        ollama_model=get_ollama_model(),
         ollama_context_window=context_window,
-        ollama_keep_alive=OLLAMA_KEEP_ALIVE,
-        ollama_think=OLLAMA_THINK,
-        ollama_timeout=OLLAMA_GENERATION_TIMEOUT,
-        ollama_retries=OLLAMA_RETRY_ATTEMPTS,
-        ollama_token_overhead=OLLAMA_TOKEN_OVERHEAD,
+        ollama_keep_alive=get_ollama_keep_alive(),
+        ollama_think=get_ollama_think(),
+        ollama_timeout=get_ollama_generation_timeout(),
+        ollama_retries=get_ollama_retry_attempts(),
+        ollama_token_overhead=get_ollama_token_overhead(),
+        ollama_rate_limit=get_ollama_rate_limit(),
+        ollama_rate_interval=get_ollama_rate_interval(),
         analysis_workers=analysis_workers,
-        whisper_model=WHISPER_MODEL,
-        whisper_device=DEVICE,
-        whisper_compute_type=COMPUTE_TYPE,
-        whisper_beam_size=WHISPER_BEAM_SIZE,
-        stt_language=STT_LANGUAGE,
+        whisper_model=get_whisper_model(),
+        whisper_device=get_device(),
+        whisper_compute_type=get_compute_type(),
+        whisper_beam_size=get_whisper_beam_size(),
+        stt_language=get_stt_language(),
         whisper_initial_prompt=whisper_prompt,
         stt_engine=stt_engine,
-        canary_model_id=CANARY_MODEL_ID,
-        canary_model_revision=CANARY_MODEL_REVISION,
-        canary_device=CANARY_DEVICE,
-        canary_compute_type=CANARY_COMPUTE_TYPE,
-        canary_batch_size=CANARY_BATCH_SIZE,
-        canary_beam_size=CANARY_BEAM_SIZE,
-        canary_task=CANARY_TASK,
-        canary_source_lang=CANARY_SOURCE_LANG,
-        canary_target_lang=CANARY_TARGET_LANG,
-        canary_return_hypotheses=CANARY_RETURN_HYPOTHESES,
-        min_bytes=MIN_BYTES,
-        min_seconds=MIN_SECONDS,
+        canary_model_id=get_canary_model_id(),
+        canary_model_revision=get_canary_model_revision(),
+        canary_device=get_canary_device(),
+        canary_compute_type=get_canary_compute_type(),
+        canary_batch_size=get_canary_batch_size(),
+        canary_beam_size=get_canary_beam_size(),
+        canary_task=get_canary_task(),
+        canary_source_lang=get_canary_source_lang(),
+        canary_target_lang=get_canary_target_lang(),
+        canary_return_hypotheses=get_canary_return_hypotheses(),
+        min_bytes=get_min_bytes(),
+        min_seconds=get_min_seconds(),
         process_limit=process_limit,
         force_reanalyze=force_reanalyze,
         force_retranscribe=force_retranscribe,
         force_translate_uk=force_translate_uk,
-        max_segments_translate=MAX_SEGMENTS_TRANSLATE,
-        max_chars_translate=MAX_CHARS_TRANSLATE,
-        max_chars_analyze=MAX_CHARS_ANALYZE,
+        max_segments_translate=get_max_segments_translate(),
+        max_chars_translate=get_max_chars_translate(),
+        max_chars_analyze=get_max_chars_analyze(),
         spam_probability_threshold=spam_probability_threshold,
         analysis_config=analysis_config,
         brand_corrections=brand_corrections,
@@ -432,14 +721,27 @@ def load_app_config() -> AppConfig:
 # ----------------------------
 # Config Loaders
 # ----------------------------
+# Cache the Ollama context-window probe per (url, model) so a long-lived
+# API process doesn't re-query the server on every load_app_config() call.
+_OLLAMA_CTX_CACHE: dict[tuple[str, str], int] = {}
+
+
 def get_ollama_model_context_window() -> int:
     """
     Query Ollama API to get the model's context window size.
     Returns context window in tokens, or default 4096 if unable to determine.
+
+    Results are cached per (url, model) for the process lifetime.
     """
+    url = get_ollama_url()
+    model = get_ollama_model()
+    cache_key = (url, model)
+    if cache_key in _OLLAMA_CTX_CACHE:
+        return _OLLAMA_CTX_CACHE[cache_key]
+
     try:
         r = requests.post(
-            f"{OLLAMA_URL}/api/show", json={"name": OLLAMA_MODEL}, timeout=10
+            f"{url}/api/show", json={"name": model}, timeout=10
         )
         r.raise_for_status()
         data = r.json()
@@ -462,19 +764,23 @@ def get_ollama_model_context_window() -> int:
                 logger.info(
                     "Detected model context window: %s tokens (%s)", f"{ctx:,}", key
                 )
+                _OLLAMA_CTX_CACHE[cache_key] = ctx
                 return ctx
 
         logger.warning("Context window not found in model_info, using default 4096")
+        _OLLAMA_CTX_CACHE[cache_key] = 4096
         return 4096
 
     except requests.exceptions.ConnectionError:
         logger.error(
             "Cannot connect to Ollama at %s — make sure Ollama is running: 'ollama serve'",
-            OLLAMA_URL,
+            url,
         )
+        _OLLAMA_CTX_CACHE[cache_key] = 4096
         return 4096
     except (requests.exceptions.Timeout, ValueError) as e:
         logger.warning("Could not query model info: %s", e)
+        _OLLAMA_CTX_CACHE[cache_key] = 4096
         return 4096
 
 
@@ -511,14 +817,15 @@ def load_analysis_config() -> dict[str, Any]:
         ],
     }
 
-    if not ANALYSIS_CONFIG.exists():
+    analysis_config_path = get_analysis_yaml_config()
+    if not analysis_config_path.exists():
         logger.warning(
-            "Analysis config not found at %s, using defaults", ANALYSIS_CONFIG
+            "Analysis config not found at %s, using defaults", analysis_config_path
         )
         return default_config
 
     try:
-        with open(ANALYSIS_CONFIG, "r", encoding="utf-8") as f:
+        with open(analysis_config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
             return config if config else default_config
     except (OSError, yaml.YAMLError) as e:
@@ -537,12 +844,15 @@ def load_brand_corrections() -> tuple[dict[str, str], str]:
     }
     default_prompt = "Розмова про продукцію компанії."
 
-    if not BRANDS_CONFIG.exists():
-        logger.warning("Brands config not found at %s, using defaults", BRANDS_CONFIG)
+    brands_config_path = get_brands_config()
+    if not brands_config_path.exists():
+        logger.warning(
+            "Brands config not found at %s, using defaults", brands_config_path
+        )
         return default_corrections, default_prompt
 
     try:
-        with open(BRANDS_CONFIG, "r", encoding="utf-8") as f:
+        with open(brands_config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
             corrections = config.get("corrections", default_corrections)
             prompt = config.get("initial_prompt", default_prompt)

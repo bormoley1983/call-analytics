@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from core.rules import correct_brand_names
+from domain.rules import correct_brand_names
 from domain.config import AppConfig
 from domain.stt import SttFailure, SttRequest
 from ports.stt import SttProcessorPort

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -15,13 +14,9 @@ T = TypeVar("T")
 
 
 def _resolve_connect_timeout_seconds() -> int:
-    raw_value = os.getenv(
-        "POSTGRES_CONNECT_TIMEOUT", str(DEFAULT_CONNECT_TIMEOUT_SECONDS)
-    ).strip()
-    try:
-        return max(1, int(raw_value))
-    except ValueError:
-        return DEFAULT_CONNECT_TIMEOUT_SECONDS
+    from domain.config import get_postgres_connect_timeout
+
+    return get_postgres_connect_timeout()
 
 
 def _dsn_with_connect_timeout(dsn: str) -> str:

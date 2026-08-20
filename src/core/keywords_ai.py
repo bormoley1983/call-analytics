@@ -7,14 +7,18 @@ from typing import Any
 from core.keywords_service import build_keywords_report, list_keywords
 from core.reporting_service import build_customers_report
 from domain.reporting import ReportFilters
+from ports.keyword_ai_analysis import KeywordAiAnalysisStorePort
+from ports.keywords import KeywordSource
+from ports.llm import LlmPort
+from ports.reporting import ReportingSource
 
 logger = logging.getLogger(__name__)
 
 
 def prepare_keyword_catalog_analysis_input(
     *,
-    keyword_source: Any,
-    reporting_source: Any | None,
+    keyword_source: KeywordSource,
+    reporting_source: ReportingSource | None,
     include_inactive: bool = False,
     include_match_stats: bool = True,
     keyword_ids: list[str] | None = None,
@@ -143,10 +147,10 @@ def prepare_keyword_catalog_analysis_input(
 def run_keyword_catalog_analysis(
     *,
     request_data: dict[str, Any],
-    keyword_source: Any,
-    reporting_source: Any | None,
-    llm: Any,
-    analysis_store: Any | None,
+    keyword_source: KeywordSource,
+    reporting_source: ReportingSource | None,
+    llm: LlmPort,
+    analysis_store: KeywordAiAnalysisStorePort | None,
     include_inactive: bool = False,
     include_match_stats: bool = True,
     keyword_ids: list[str] | None = None,

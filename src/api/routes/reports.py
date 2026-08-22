@@ -13,6 +13,21 @@ from api.deps import (
     reporting_source_factory,
     require_postgres_dsn,
 )
+from api.keyword_schemas import (
+    KeywordCallsReport,
+    KeywordDetailReport,
+    KeywordManagersReport,
+    KeywordsReport,
+    KeywordTrendReport,
+)
+from api.report_schemas import (
+    CustomerFollowupReport,
+    CustomersReport,
+    ManagerReportDetail,
+    ManagersReport,
+    OverallReport,
+)
+from api.response_schemas import ApiError
 from api.schemas import (
     CustomersSortQuery,
     KeywordCallsSortQuery,
@@ -260,6 +275,8 @@ def _attach_freshness_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     responses={
         200: {"description": "Overall report with totals, top intents/outcomes/questions, and active filter echo."},
     },
+    response_model=OverallReport,
+    operation_id="reports_overall",
 )
 def overall_report(query: Annotated[ReportFiltersQuery, Depends()]):
     filters = _build_filters(query)
@@ -287,6 +304,8 @@ def overall_report(query: Annotated[ReportFiltersQuery, Depends()]):
     responses={
         200: {"description": "Manager aggregates under `all_managers` and `by_role`."},
     },
+    response_model=ManagersReport,
+    operation_id="reports_managers",
 )
 def managers_report(
     query: Annotated[ReportFiltersQuery, Depends()],
@@ -317,6 +336,8 @@ def managers_report(
     responses={
         200: {"description": "Customer aggregates under `all_customers` with first/last call dates and top metrics."},
     },
+    response_model=CustomersReport,
+    operation_id="reports_customers",
 )
 def customers_report(
     query: Annotated[ReportFiltersQuery, Depends()],
@@ -345,13 +366,15 @@ def customers_report(
         200: {"description": "Detailed customer report with aggregated stats and the matching call list."},
         400: {
             "description": "Invalid customer phone.",
-            "content": {"application/json": {"example": {"detail": "Invalid customer_phone"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         404: {
             "description": "No customer found for the normalized phone within selected filters.",
-            "content": {"application/json": {"example": {"detail": "Customer report not found"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
     },
+    response_model=CustomerFollowupReport,
+    operation_id="reports_customer_detail",
 )
 def customer_report(
     customer_phone: Annotated[
@@ -393,13 +416,15 @@ def customer_report(
         200: {"description": "Single manager aggregate payload."},
         400: {
             "description": "Invalid manager id format.",
-            "content": {"application/json": {"example": {"detail": "Invalid manager_id"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         404: {
             "description": "Manager is not present in filtered results.",
-            "content": {"application/json": {"example": {"detail": "Manager report not found"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
     },
+    response_model=ManagerReportDetail,
+    operation_id="reports_manager_detail",
 )
 def manager_report(
     manager_id: Annotated[
@@ -442,6 +467,8 @@ def manager_report(
 
 @router.get(
     "/keywords",
+    response_model=KeywordsReport,
+    operation_id="reports_keywords",
     summary="Keywords aggregate report",
     description=(
         "Returns keyword-level match statistics.\n\n"
@@ -495,6 +522,8 @@ def keywords_report(
 
 @router.get(
     "/keywords/{keyword_id}",
+    response_model=KeywordDetailReport,
+    operation_id="reports_keyword_detail",
     summary="Single keyword aggregate",
     description=(
         "Returns aggregate statistics for one keyword id.\n\n"
@@ -506,11 +535,11 @@ def keywords_report(
         200: {"description": "Single keyword aggregate payload."},
         400: {
             "description": "Invalid keyword id format.",
-            "content": {"application/json": {"example": {"detail": "Invalid keyword_id"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         404: {
             "description": "Keyword is not present in filtered results.",
-            "content": {"application/json": {"example": {"detail": "Keyword report not found"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
     },
 )
@@ -554,6 +583,8 @@ def keyword_detail_report(
 
 @router.get(
     "/keywords/{keyword_id}/calls",
+    response_model=KeywordCallsReport,
+    operation_id="reports_keyword_calls",
     summary="Keyword matched calls (paginated)",
     description=(
         "Returns paginated call list where the selected keyword was matched.\n\n"
@@ -570,23 +601,19 @@ def keyword_detail_report(
         200: {"description": "Paginated matched calls and pagination metadata."},
         400: {
             "description": "Invalid keyword id format.",
-            "content": {"application/json": {"example": {"detail": "Invalid keyword_id"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         404: {
             "description": "Keyword is not found in catalog.",
-            "content": {"application/json": {"example": {"detail": "Keyword report not found"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         405: {
             "description": "Drill-down is unavailable without Postgres.",
-            "content": {
-                "application/json": {"example": {"detail": "Keyword drill-down requires POSTGRES_DSN"}}
-            },
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         409: {
             "description": "Materialized keyword matches are not prepared yet.",
-            "content": {
-                "application/json": {"example": {"detail": "Keyword matches are not materialized yet"}}
-            },
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
     },
 )
@@ -628,6 +655,8 @@ def keyword_calls_report(
 
 @router.get(
     "/keywords/{keyword_id}/trend",
+    response_model=KeywordTrendReport,
+    operation_id="reports_keyword_trend",
     summary="Keyword trend over time",
     description=(
         "Returns trend points for the selected keyword over dates in the filtered range.\n\n"
@@ -641,23 +670,19 @@ def keyword_calls_report(
         200: {"description": "Date-based trend series for one keyword."},
         400: {
             "description": "Invalid keyword id format.",
-            "content": {"application/json": {"example": {"detail": "Invalid keyword_id"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         404: {
             "description": "Keyword is not found in catalog.",
-            "content": {"application/json": {"example": {"detail": "Keyword report not found"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         405: {
             "description": "Drill-down is unavailable without Postgres.",
-            "content": {
-                "application/json": {"example": {"detail": "Keyword drill-down requires POSTGRES_DSN"}}
-            },
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         409: {
             "description": "Materialized keyword matches are not prepared yet.",
-            "content": {
-                "application/json": {"example": {"detail": "Keyword matches are not materialized yet"}}
-            },
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
     },
 )
@@ -689,6 +714,8 @@ def keyword_trend_report(
 
 @router.get(
     "/keywords/{keyword_id}/managers",
+    response_model=KeywordManagersReport,
+    operation_id="reports_keyword_managers",
     summary="Keyword manager distribution",
     description=(
         "Returns manager-level breakdown for one keyword.\n\n"
@@ -705,23 +732,19 @@ def keyword_trend_report(
         200: {"description": "Manager-level aggregates for one keyword."},
         400: {
             "description": "Invalid keyword id format.",
-            "content": {"application/json": {"example": {"detail": "Invalid keyword_id"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         404: {
             "description": "Keyword is not found in catalog.",
-            "content": {"application/json": {"example": {"detail": "Keyword report not found"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         405: {
             "description": "Drill-down is unavailable without Postgres.",
-            "content": {
-                "application/json": {"example": {"detail": "Keyword drill-down requires POSTGRES_DSN"}}
-            },
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         409: {
             "description": "Materialized keyword matches are not prepared yet.",
-            "content": {
-                "application/json": {"example": {"detail": "Keyword matches are not materialized yet"}}
-            },
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
     },
 )

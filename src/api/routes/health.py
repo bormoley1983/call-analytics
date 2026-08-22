@@ -4,6 +4,7 @@ import time
 import requests
 from fastapi import APIRouter
 
+from api.report_schemas import HealthResponse
 from domain.config import get_ollama_url
 
 logger = logging.getLogger(__name__)
@@ -39,14 +40,14 @@ def _probe_ollama(ollama_url: str) -> bool:
     return ok
 
 
-@router.get("/health")
-def health():
+@router.get("/health", response_model=HealthResponse, operation_id="health_get")
+def health() -> HealthResponse:
     # Read the URL at request time, not import time.
     ollama_url = get_ollama_url()
     ollama_ok = _probe_ollama(ollama_url)
 
-    return {
-        "status": "ok",
-        "ollama": "up" if ollama_ok else "down",
-        "ollama_url": ollama_url,
-    }
+    return HealthResponse(
+        status="ok",
+        ollama="up" if ollama_ok else "down",
+        ollama_url=ollama_url,
+    )

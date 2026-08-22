@@ -7,6 +7,15 @@ from fastapi import APIRouter, HTTPException, Path, status
 from adapters.keywords_postgres import PostgresKeywordSource
 from adapters.keywords_yaml import YamlKeywordSource
 from adapters.reporting_postgres import PostgresReportingSource
+from api.keyword_schemas import (
+    KeywordDetailResponse,
+    KeywordDefinitionEntry,
+    KeywordMaterializeResponse,
+    KeywordRefreshResult,
+    KeywordsCatalogResponse,
+    KeywordSyncResponse,
+)
+from api.response_schemas import ApiError
 from api.schemas import KeywordSyncRequest, KeywordUpsertRequest
 from api.deps import (
     get_postgres_dsn,
@@ -63,6 +72,8 @@ def _get_postgres_reporting_source() -> PostgresReportingSource:
 
 @router.get(
     "",
+    response_model=KeywordsCatalogResponse,
+    operation_id="keywords_catalog_list",
     summary="List keyword catalog",
     description=(
         "Returns keyword definitions used for reporting.\n\n"
@@ -93,15 +104,15 @@ def keywords_catalog():
     responses={
         400: {
             "description": "Invalid keyword source data.",
-            "content": {"application/json": {"example": {"detail": "Invalid keyword source data"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         405: {
             "description": "Refresh requires Postgres.",
-            "content": {
-                "application/json": {"example": {"detail": "Keyword materialization requires POSTGRES_DSN"}}
-            },
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
     },
+    response_model=KeywordRefreshResult,
+    operation_id="keywords_refresh",
 )
 def refresh_keywords(req: KeywordSyncRequest | None = None):
     options = req or KeywordSyncRequest()
@@ -136,15 +147,15 @@ def refresh_keywords(req: KeywordSyncRequest | None = None):
     responses={
         400: {
             "description": "Invalid sync source data.",
-            "content": {"application/json": {"example": {"detail": "Invalid keyword source data"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         405: {
             "description": "Write operations require Postgres.",
-            "content": {
-                "application/json": {"example": {"detail": "Keyword catalog is read-only without POSTGRES_DSN"}}
-            },
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
     },
+    response_model=KeywordSyncResponse,
+    operation_id="keywords_sync",
 )
 def sync_keywords(req: KeywordSyncRequest):
     postgres_source = _get_writable_keyword_source()
@@ -175,11 +186,11 @@ def sync_keywords(req: KeywordSyncRequest):
     responses={
         405: {
             "description": "Materialization requires Postgres.",
-            "content": {
-                "application/json": {"example": {"detail": "Keyword materialization requires POSTGRES_DSN"}}
-            },
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         }
     },
+    response_model=KeywordMaterializeResponse,
+    operation_id="keywords_materialize",
 )
 def materialize_keywords():
     reporting_source = _get_postgres_reporting_source()
@@ -199,15 +210,17 @@ def materialize_keywords():
 
 @router.get(
     "/{keyword_id}",
+    response_model=KeywordDetailResponse,
+    operation_id="keywords_detail",
     summary="Get keyword by id",
     responses={
         400: {
             "description": "Invalid keyword id format.",
-            "content": {"application/json": {"example": {"detail": "Invalid keyword_id"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         404: {
             "description": "Keyword not found.",
-            "content": {"application/json": {"example": {"detail": "Keyword not found"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
     },
 )
@@ -235,14 +248,14 @@ def keyword_detail(
 
 @router.post(
     "/upsert",
+    response_model=KeywordDefinitionEntry,
+    operation_id="keywords_upsert",
     summary="Upsert keyword",
     description="Creates or updates a keyword definition in Postgres.",
     responses={
         405: {
             "description": "Upsert requires Postgres.",
-            "content": {
-                "application/json": {"example": {"detail": "Keyword catalog is read-only without POSTGRES_DSN"}}
-            },
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
     },
 )
@@ -273,24 +286,22 @@ def upsert_keyword(req: KeywordUpsertRequest):
 
 @router.put(
     "/{keyword_id}",
+    response_model=KeywordDefinitionEntry,
+    operation_id="keywords_update",
     summary="Update keyword",
     description="Updates an existing keyword in Postgres. Path id must match body `keyword_id`.",
     responses={
         400: {
             "description": "Invalid id or path/body mismatch.",
-            "content": {
-                "application/json": {"example": {"detail": "Path keyword_id must match request body"}}
-            },
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         404: {
             "description": "Keyword not found.",
-            "content": {"application/json": {"example": {"detail": "Keyword not found"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         405: {
             "description": "Update requires Postgres.",
-            "content": {
-                "application/json": {"example": {"detail": "Keyword catalog is read-only without POSTGRES_DSN"}}
-            },
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
     },
 )
@@ -339,22 +350,21 @@ def update_keyword(
 @router.delete(
     "/{keyword_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    operation_id="keywords_delete",
     summary="Delete keyword",
     description="Deletes a keyword definition from Postgres.",
     responses={
         400: {
             "description": "Invalid keyword id format.",
-            "content": {"application/json": {"example": {"detail": "Invalid keyword_id"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         404: {
             "description": "Keyword not found.",
-            "content": {"application/json": {"example": {"detail": "Keyword not found"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
         405: {
             "description": "Delete requires Postgres.",
-            "content": {
-                "application/json": {"example": {"detail": "Keyword catalog is read-only without POSTGRES_DSN"}}
-            },
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         },
     },
 )

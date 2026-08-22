@@ -14,6 +14,14 @@ from api.deps import (
     reporting_source_factory,
     require_postgres_dsn,
 )
+from api.generation_schemas import (
+    AliasSuggestionActionResult,
+    DeepInsightRunDetail,
+    KeywordAnalysesListResponse,
+    KeywordAnalysisDetailResponse,
+    KeywordCatalogAnalysisResponse,
+)
+from api.response_schemas import ApiError
 from api.schemas import (
     AIApplyHistoryEntry,
     AIApplyRequest,
@@ -90,6 +98,8 @@ def _execute_keyword_catalog_analysis(req: KeywordCatalogAnalysisRequest):
 
 @router.post(
     "/analysis",
+    response_model=KeywordCatalogAnalysisResponse,
+    operation_id="ai_analysis_run",
     summary="AI analysis of keyword catalog",
     description=(
         "Uses AI to analyze the existing keyword catalog, group related keywords, and suggest safe cleanup actions.\n\n"
@@ -101,7 +111,7 @@ def _execute_keyword_catalog_analysis(req: KeywordCatalogAnalysisRequest):
             "description": "AI analysis failed.",
             "content": {
                 "application/json": {
-                    "example": {"detail": "Keyword AI analysis failed: ..."}
+                    "schema": ApiError.model_json_schema()
                 }
             },
         },
@@ -113,6 +123,8 @@ def analyze_keyword_catalog(req: KeywordCatalogAnalysisRequest):
 
 @router.get(
     "/analyses",
+    response_model=KeywordAnalysesListResponse,
+    operation_id="ai_analyses_list",
     summary="List persisted AI keyword analyses",
     description="Returns persisted AI keyword catalog analysis runs stored in Postgres.",
     responses={
@@ -120,9 +132,7 @@ def analyze_keyword_catalog(req: KeywordCatalogAnalysisRequest):
             "description": "Analysis history requires Postgres.",
             "content": {
                 "application/json": {
-                    "example": {
-                        "detail": "Keyword AI analysis history requires POSTGRES_DSN"
-                    }
+                    "schema": ApiError.model_json_schema()
                 }
             },
         },
@@ -149,6 +159,8 @@ def list_keyword_analyses(
 
 @router.get(
     "/analyses/{analysis_id}",
+    response_model=KeywordAnalysisDetailResponse,
+    operation_id="ai_analysis_detail",
     summary="Get persisted AI keyword analysis",
     description="Returns one persisted AI keyword catalog analysis from Postgres, including stored analysis items.",
     responses={
@@ -156,7 +168,7 @@ def list_keyword_analyses(
             "description": "Analysis id not found.",
             "content": {
                 "application/json": {
-                    "example": {"detail": "Keyword AI analysis not found"}
+                    "schema": ApiError.model_json_schema()
                 }
             },
         },
@@ -164,9 +176,7 @@ def list_keyword_analyses(
             "description": "Analysis history requires Postgres.",
             "content": {
                 "application/json": {
-                    "example": {
-                        "detail": "Keyword AI analysis history requires POSTGRES_DSN"
-                    }
+                    "schema": ApiError.model_json_schema()
                 }
             },
         },
@@ -201,6 +211,7 @@ def _get_apply_store():
 @router.post(
     "/analyses/{analysis_id}/apply",
     response_model=AIApplyResult,
+    operation_id="ai_apply_actions",
     status_code=status.HTTP_201_CREATED,
     summary="Apply approved catalog actions",
 )
@@ -252,6 +263,7 @@ def apply_analysis_actions(
 @router.get(
     "/analyses/{analysis_id}/apply/history",
     response_model=list[AIApplyHistoryEntry],
+    operation_id="ai_apply_history",
     summary="Get apply history for an analysis",
 )
 def get_analysis_apply_history(
@@ -295,6 +307,7 @@ from api.schemas import (
     AliasSuggestionEntry,
     DeepInsightRequest,
     DeepInsightResult,
+    DeepInsightRunEntry,
     KeywordAliasExpandRequest,
     KeywordAliasExpandResult,
 )
@@ -303,6 +316,7 @@ from api.schemas import (
 @router.post(
     "/{keyword_id}/expand-aliases",
     response_model=KeywordAliasExpandResult,
+    operation_id="alias_expand",
     summary="Generate AI-suggested aliases for a keyword",
     description=(
         "Uses the LLM to suggest aliases for an existing keyword based on evidence from analyses.\n\n"
@@ -348,6 +362,7 @@ def expand_aliases(
 @router.get(
     "/aliases/suggestions",
     response_model=list[AliasSuggestionEntry],
+    operation_id="alias_suggestions_list",
     summary="List pending alias suggestions",
 )
 def list_alias_suggestions(
@@ -387,7 +402,19 @@ def list_alias_suggestions(
 
 @router.post(
     "/aliases/suggestions/{suggestion_id}/approve",
+    response_model=AliasSuggestionActionResult,
+    operation_id="alias_approve",
     summary="Approve alias suggestions (moves to keyword_aliases)",
+    responses={
+        405: {
+            "description": "Alias suggestions require Postgres.",
+            "content": {
+                "application/json": {
+                    "schema": ApiError.model_json_schema()
+                }
+            },
+        },
+    },
 )
 def approve_alias_suggestion(suggestion_id: str = Path(...)):
     # Shared DSN check in api/deps.py
@@ -395,14 +422,32 @@ def approve_alias_suggestion(suggestion_id: str = Path(...)):
 
     store = PostgresAiAliasSuggestionStore(dsn)
     try:
-        return store.approve_suggestion(suggestion_id)
+        success = store.approve_suggestion(suggestion_id)
     finally:
         store.close()
+    return AliasSuggestionActionResult(
+        suggestion_id=suggestion_id,
+        approved=success,
+        rejected=None,
+        success=success,
+    )
 
 
 @router.post(
     "/aliases/suggestions/{suggestion_id}/reject",
+    response_model=AliasSuggestionActionResult,
+    operation_id="alias_reject",
     summary="Reject alias suggestions",
+    responses={
+        405: {
+            "description": "Alias suggestions require Postgres.",
+            "content": {
+                "application/json": {
+                    "schema": ApiError.model_json_schema()
+                }
+            },
+        },
+    },
 )
 def reject_alias_suggestion(suggestion_id: str = Path(...)):
     # Shared DSN check in api/deps.py
@@ -410,9 +455,15 @@ def reject_alias_suggestion(suggestion_id: str = Path(...)):
 
     store = PostgresAiAliasSuggestionStore(dsn)
     try:
-        return store.reject_suggestion(suggestion_id)
+        success = store.reject_suggestion(suggestion_id)
     finally:
         store.close()
+    return AliasSuggestionActionResult(
+        suggestion_id=suggestion_id,
+        approved=None,
+        rejected=success,
+        success=success,
+    )
 
 
 # ---------- Deep Insights endpoints ----------
@@ -421,6 +472,7 @@ def reject_alias_suggestion(suggestion_id: str = Path(...)):
 @router.post(
     "/insights/deep/generate",
     response_model=DeepInsightResult,
+    operation_id="insights_generate",
     summary="Generate deep AI insights from analyses",
     description=(
         "Generates deep insights (pain points, objections, trends, follow-up risks) "
@@ -479,7 +531,19 @@ def generate_deep_insights(req: DeepInsightRequest):
 
 @router.get(
     "/insights/deep/runs",
+    response_model=list[DeepInsightRunEntry],
+    operation_id="insights_runs_list",
     summary="List deep insights runs",
+    responses={
+        405: {
+            "description": "Deep insights require Postgres.",
+            "content": {
+                "application/json": {
+                    "schema": ApiError.model_json_schema()
+                }
+            },
+        },
+    },
 )
 def list_deep_insights_runs(
     limit: int = Query(50, ge=1, le=200),
@@ -497,7 +561,27 @@ def list_deep_insights_runs(
 
 @router.get(
     "/insights/deep/runs/{run_id}",
+    response_model=DeepInsightRunDetail,
+    operation_id="insights_run_detail",
     summary="Get a specific deep insights run with all insights",
+    responses={
+        404: {
+            "description": "Insights run not found.",
+            "content": {
+                "application/json": {
+                    "schema": ApiError.model_json_schema()
+                }
+            },
+        },
+        405: {
+            "description": "Deep insights require Postgres.",
+            "content": {
+                "application/json": {
+                    "schema": ApiError.model_json_schema()
+                }
+            },
+        },
+    },
 )
 def get_deep_insights_run(run_id: str = Path(...)):
     # Shared DSN check in api/deps.py

@@ -355,4 +355,24 @@ mypy --no-incremental src tests
 PYTHONPATH=src ./.venv/bin/python -c "import api.app as app; print(bool(app.app))"
 ```
 
+### OpenAPI Snapshot
+
+The API contract is committed as a deterministic snapshot at
+`openapi/call-analytics.json`. Client code generation and CI contract checks
+consume this file instead of a live server URL, so exports never depend on a
+running service, database, or host environment.
+
+```bash
+# Verify the snapshot matches the current code (exits non-zero on drift):
+PYTHONPATH=src ./.venv/bin/python scripts/openapi_snapshot.py check
+
+# Regenerate after an intentional schema change, then commit the result:
+PYTHONPATH=src ./.venv/bin/python scripts/openapi_snapshot.py generate
+```
+
+Regenerate the snapshot whenever a route's path, method, request/response
+model, `operation_id`, or documented error response changes. The export is
+side-effect safe (no server startup, no DB contact) and byte-for-byte
+reproducible: sorted keys, 2-space indent, no timestamps or host paths.
+
 Online/integration plans are tracked separately in the remaining `DEVPLAN_*` files.

@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Path
 
 from api import job_store
+from api.response_schemas import ApiError
 from api.runner import run_export_snapshots, run_process, run_sync, run_sync_and_process
 from api.schemas import JobResponse, ProcessRequest, SyncRequest
 
@@ -12,6 +13,7 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
     "/sync",
     response_model=JobResponse,
     status_code=202,
+    operation_id="jobs_sync",
     summary="Start sync job",
     description=(
         "Queues a background PBX synchronization job.\n\n"
@@ -24,7 +26,7 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
         409: {
             "description": "A sync-like job is already running.",
             "content": {
-                "application/json": {"example": {"detail": "A sync-like job is already running"}}
+                "application/json": {"schema": ApiError.model_json_schema()}
             },
         }
     },
@@ -41,6 +43,7 @@ def trigger_sync(req: SyncRequest, background_tasks: BackgroundTasks):
     "/process",
     response_model=JobResponse,
     status_code=202,
+    operation_id="jobs_process",
     summary="Start process job",
     description=(
         "Queues a background processing job (transcription + analysis).\n\n"
@@ -61,7 +64,7 @@ def trigger_sync(req: SyncRequest, background_tasks: BackgroundTasks):
         409: {
             "description": "A process-like job is already running.",
             "content": {
-                "application/json": {"example": {"detail": "A process-like job is already running"}}
+                "application/json": {"schema": ApiError.model_json_schema()}
             },
         }
     },
@@ -78,6 +81,7 @@ def trigger_process(req: ProcessRequest, background_tasks: BackgroundTasks):
     "/sync-and-process",
     response_model=JobResponse,
     status_code=202,
+    operation_id="jobs_sync_and_process",
     summary="Start sync and process chain",
     description=(
         "Queues one background job that first syncs PBX records and then processes them.\n\n"
@@ -89,7 +93,7 @@ def trigger_process(req: ProcessRequest, background_tasks: BackgroundTasks):
         409: {
             "description": "A conflicting job is already running.",
             "content": {
-                "application/json": {"example": {"detail": "A conflicting job is already running"}}
+                "application/json": {"schema": ApiError.model_json_schema()}
             },
         }
     },
@@ -106,6 +110,7 @@ def trigger_sync_and_process(req: ProcessRequest, background_tasks: BackgroundTa
     "/export-snapshots",
     response_model=JobResponse,
     status_code=202,
+    operation_id="jobs_export_snapshots",
     summary="Export report snapshots",
     description=(
         "Queues a background export job that builds report snapshot files from persisted data.\n\n"
@@ -115,7 +120,7 @@ def trigger_sync_and_process(req: ProcessRequest, background_tasks: BackgroundTa
         409: {
             "description": "A process-like job is already running.",
             "content": {
-                "application/json": {"example": {"detail": "A process-like job is already running"}}
+                "application/json": {"schema": ApiError.model_json_schema()}
             },
         }
     },
@@ -131,6 +136,7 @@ def trigger_export_snapshots(background_tasks: BackgroundTasks):
 @router.get(
     "",
     response_model=list[JobResponse],
+    operation_id="jobs_list",
     summary="List jobs",
     description="Returns all known jobs in reverse chronological order.",
 )
@@ -141,12 +147,13 @@ def list_jobs():
 @router.get(
     "/{job_id}",
     response_model=JobResponse,
+    operation_id="jobs_status",
     summary="Get job status",
     description="Returns details for one job id. Poll this endpoint until status is `done` or `failed`.",
     responses={
         404: {
             "description": "Job id is not known.",
-            "content": {"application/json": {"example": {"detail": "Job not found"}}},
+            "content": {"application/json": {"schema": ApiError.model_json_schema()}},
         }
     },
 )

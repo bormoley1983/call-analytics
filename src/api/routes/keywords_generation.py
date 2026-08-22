@@ -5,9 +5,16 @@ from fastapi import APIRouter, HTTPException, status
 from adapters.keywords_postgres import PostgresKeywordSource
 from adapters.llm_ollama import OllamaLlm
 from adapters.reporting_postgres import PostgresReportingSource
+from api.generation_schemas import (
+    KeywordGenerationCandidatesResponse,
+    KeywordGenerationPipelineResponse,
+    KeywordPublishResponse,
+)
+from api.response_schemas import ApiError
 from api.schemas import (
     KeywordGenerationBootstrapRequest,
     KeywordGenerationEnrichRequest,
+    KeywordGenerationEnrichResult,
     KeywordGenerationPipelineRequest,
     KeywordGenerationPublishRequest,
     KeywordGenerationRequest,
@@ -152,6 +159,8 @@ def _run_generation_pipeline(
 
 @router.post(
     "/candidates",
+    response_model=KeywordGenerationCandidatesResponse,
+    operation_id="generation_candidates",
     summary="Generate keyword candidates from analyses",
     description=(
         "Scans existing Postgres analyses (`summary`, `key_questions`, `objections`) and returns ranked "
@@ -167,7 +176,7 @@ def _run_generation_pipeline(
             "description": "Generation requires Postgres.",
             "content": {
                 "application/json": {
-                    "example": {"detail": "Keyword generation requires POSTGRES_DSN"}
+                    "schema": ApiError.model_json_schema()
                 }
             },
         },
@@ -201,6 +210,8 @@ def generate_candidates(req: KeywordGenerationRequest):
 
 @router.post(
     "/publish",
+    response_model=KeywordPublishResponse,
+    operation_id="generation_publish",
     summary="Publish generated candidates to keyword catalog",
     description=(
         "Creates/updates keyword catalog entries from generated candidate phrases.\n\n"
@@ -211,7 +222,7 @@ def generate_candidates(req: KeywordGenerationRequest):
             "description": "Publish requires Postgres.",
             "content": {
                 "application/json": {
-                    "example": {"detail": "Keyword generation requires POSTGRES_DSN"}
+                    "schema": ApiError.model_json_schema()
                 }
             },
         },
@@ -257,6 +268,8 @@ def publish_candidates(req: KeywordGenerationPublishRequest):
 
 @router.post(
     "/bootstrap",
+    response_model=KeywordGenerationPipelineResponse,
+    operation_id="generation_bootstrap",
     summary="Bootstrap keyword catalog from existing analyses",
     description=(
         "Generates keyword candidates from existing Postgres analyses, publishes them into keyword catalog, "
@@ -279,7 +292,7 @@ def publish_candidates(req: KeywordGenerationPublishRequest):
             "description": "Bootstrap requires Postgres.",
             "content": {
                 "application/json": {
-                    "example": {"detail": "Keyword generation requires POSTGRES_DSN"}
+                    "schema": ApiError.model_json_schema()
                 }
             },
         },
@@ -322,6 +335,8 @@ def _run_enrichment(
 
 @router.post(
     "/enrich",
+    response_model=KeywordGenerationEnrichResult,
+    operation_id="generation_enrich",
     summary="Enrich keyword candidates with LLM-generated aliases and categories",
     description=(
         "Takes generated candidate phrases and uses the LLM to generate suggested aliases, "
@@ -331,6 +346,16 @@ def _run_enrichment(
         "- Consolidates merged candidates (preserving support_calls and total_matches)\n"
         "- Returns enriched candidates ready for publishing"
     ),
+    responses={
+        500: {
+            "description": "Enrichment failed (LLM error).",
+            "content": {
+                "application/json": {
+                    "schema": ApiError.model_json_schema()
+                }
+            },
+        },
+    },
 )
 def enrich_candidates(req: KeywordGenerationEnrichRequest):
     try:
@@ -351,6 +376,8 @@ def enrich_candidates(req: KeywordGenerationEnrichRequest):
 
 @router.post(
     "/pipeline",
+    response_model=KeywordGenerationPipelineResponse,
+    operation_id="generation_pipeline",
     summary="Full keyword generation pipeline with optional enrichment",
     description=(
         "End-to-end pipeline: generate candidates -> optionally enrich -> publish -> "
@@ -362,7 +389,7 @@ def enrich_candidates(req: KeywordGenerationEnrichRequest):
             "description": "Pipeline requires Postgres.",
             "content": {
                 "application/json": {
-                    "example": {"detail": "Keyword generation requires POSTGRES_DSN"}
+                    "schema": ApiError.model_json_schema()
                 }
             },
         },
